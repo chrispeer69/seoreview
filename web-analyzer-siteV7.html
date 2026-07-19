@@ -520,6 +520,7 @@ async function runScan(){
   const btn=document.getElementById('scanBtn'); btn.disabled=true;
   const psiOn=document.getElementById('psiOn').checked;
   const psiKey=document.getElementById('psiKey').value.trim();
+  try{ localStorage.setItem('bcai_psiKey', psiKey); }catch(e){}
   reports=[]; document.getElementById('actionRow').style.display='none'; document.getElementById('results').innerHTML='';
   for(let i=0;i<list.length;i++){
     btn.textContent=`⏳ Auditing ${i+1} of ${list.length}: ${list[i]}`;
@@ -714,10 +715,18 @@ function renderReport(){
     <div style="font-size:12px;color:#94a3b8;margin-top:4px">${esc(BRAND.web)} · ${fmt}</div>
   </div>`;
 
+  const hasSpeed = reports.some(r=>r.speed);
+  const mob = r => (r.speed&&r.speed.mobile&&!r.speed.mobile.error&&r.speed.mobile.score!=null)?r.speed.mobile.score:null;
+  const dsk = r => (r.speed&&r.speed.desktop&&!r.speed.desktop.error&&r.speed.desktop.score!=null)?r.speed.desktop.score:null;
+  const spCell = s => { if(s==null) return '<td>—</td>'; const col=s>=90?'#16a34a':s>=50?'#f59e0b':'#dc2626'; return `<td style="font-weight:700;color:${col}">${s}</td>`; };
+  // Fastest-first ranking when speed data exists (rows without a score fall to the bottom)
+  const rankRows = hasSpeed ? [...reports].sort((a,b)=>((mob(b)==null?-1:mob(b))-(mob(a)==null?-1:mob(a)))) : reports;
   const summaryTable= multi?`
     <div class="rH2">Audit Summary — ${reports.length} Sites</div>
-    <table class="doc"><thead><tr><th>Website</th><th>Score</th><th>Critical</th><th>To Improve</th><th>Passing</th></tr></thead><tbody>
-    ${reports.map(r=>{const sc=score(r);return `<tr><td>${esc(r.domain)}</td>
+    ${hasSpeed?'<p style="font-size:12px;color:#64748b;margin:-6px 0 12px">Sorted by mobile page speed — fastest first.</p>':''}
+    <table class="doc"><thead><tr><th>Website</th>${hasSpeed?'<th>📱 Mobile</th><th>💻 Desktop</th>':''}<th>SEO Score</th><th>Critical</th><th>To Improve</th><th>Passing</th></tr></thead><tbody>
+    ${rankRows.map(r=>{const sc=score(r);return `<tr><td>${esc(r.domain)}</td>
+      ${hasSpeed?(r.error?'<td>—</td><td>—</td>':(spCell(mob(r))+spCell(dsk(r)))):''}
       <td style="font-weight:700;color:${sc.color}">${sc.score==null?'—':sc.grade+' ('+sc.score+')'}</td>
       <td>${r.error?'—':sc.counts.fail}</td><td>${r.error?'—':sc.counts.warn}</td><td>${r.error?'—':sc.counts.pass}</td></tr>`;}).join('')}
     </tbody></table>`:'';
@@ -746,6 +755,9 @@ function renderReport(){
 }
 function openReport(){renderReport();document.getElementById('scanView').style.display='none';document.getElementById('reportView').style.display='block';window.scrollTo(0,0);}
 function closeReport(){document.getElementById('reportView').style.display='none';document.getElementById('scanView').style.display='block';}
+
+// Remember a saved PageSpeed API key between sessions
+try{ const k=localStorage.getItem('bcai_psiKey'); if(k) document.getElementById('psiKey').value=k; }catch(e){}
 </script>
 </body>
 </html>
