@@ -144,6 +144,7 @@
   <div class="docPad"><div class="printArea" id="printArea"></div></div>
 </div>
 
+<script src="config.local.js" onerror="/* optional local key file not present */"></script>
 <script>
 const BRAND = {
   name:'Blue Collar AI, Inc.',
@@ -756,8 +757,8 @@ function renderReport(){
 function openReport(){renderReport();document.getElementById('scanView').style.display='none';document.getElementById('reportView').style.display='block';window.scrollTo(0,0);}
 function closeReport(){document.getElementById('reportView').style.display='none';document.getElementById('scanView').style.display='block';}
 
-// Remember a saved PageSpeed API key between sessions
-try{ const k=localStorage.getItem('bcai_psiKey'); if(k) document.getElementById('psiKey').value=k; }catch(e){}
+// Pre-fill the PageSpeed API key: saved key first, then a local config.local.js fallback
+try{ const el=document.getElementById('psiKey'); const k=localStorage.getItem('bcai_psiKey')||window.BCAI_PSI_KEY||''; if(el&&!el.value&&k) el.value=k; }catch(e){}
 </script>
 </body>
 </html>

@@ -1,6 +1,10 @@
 # Local backups created during editing
 *.backup.html
 
+# Local secrets — never commit (API keys, etc.)
+config.local.js
+*.local.js
+
 # OS / editor cruft
 .DS_Store
 Thumbs.db
