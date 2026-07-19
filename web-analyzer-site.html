@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Website Analyzer</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, -apple-system, sans-serif; }
+
+  /* ---------- Analyzer view ---------- */
+  #analyzerView { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; padding: 40px 20px; }
+  .wrap { max-width: 1000px; margin: 0 auto; }
+  h1.title { color: #fff; text-align: center; font-size: 2.5em; margin: 0 0 10px; }
+  p.sub { color: rgba(255,255,255,.9); text-align: center; margin: 0 0 30px; }
+  textarea, input { font-family: inherit; }
+  #urls { width: 100%; padding: 14px 18px; font-size: 1em; border: none; border-radius: 6px; outline: none; resize: vertical; margin-bottom: 12px; }
+  .brand { background: rgba(255,255,255,.12); border-radius: 8px; padding: 12px 14px; margin-bottom: 12px; display: flex; gap: 10px; flex-wrap: wrap; }
+  .brand input { flex: 1 1 200px; padding: 10px 12px; font-size: .92em; border: none; border-radius: 5px; outline: none; }
+  #analyzeBtn { width: 100%; padding: 14px 30px; font-size: 1em; font-weight: 600; background: #ff6b6b; color: #fff; border: none; border-radius: 6px; cursor: pointer; margin-bottom: 24px; }
+  #analyzeBtn:disabled { opacity: .85; cursor: default; }
+  #errorBox { background: #ff6b6b; color: #fff; padding: 15px; border-radius: 6px; margin-bottom: 20px; font-weight: 500; line-height: 1.5; }
+  .actionRow { margin-bottom: 20px; display: flex; justify-content: flex-end; }
+  .primaryDark { padding: 12px 22px; background: #1e293b; color: #fff; border: none; border-radius: 8px; font-weight: 600; cursor: pointer; }
+  .resultCard { background: #fff; border-radius: 10px; padding: 35px; box-shadow: 0 10px 40px rgba(0,0,0,.3); margin-bottom: 20px; }
+  .resultHead { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; padding-bottom: 18px; border-bottom: 3px solid #667eea; flex-wrap: wrap; gap: 12px; }
+  .resultHead h2 { margin: 0; }
+  .statGrid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin-bottom: 15px; }
+  .statBox { text-align: center; padding: 15px; background: #f5f5f5; border-radius: 6px; }
+  .statNum { font-size: 1.8em; font-weight: 700; color: #667eea; }
+  .statLbl { font-size: .9em; color: #666; }
+  .good { color: #27ae60; font-weight: 600; }
+  .bad { color: #e74c3c; font-weight: 600; }
+  .boxRed { padding: 15px; border-radius: 4px; background: #fff5f5; border-left: 4px solid #e74c3c; }
+  .boxBlue { padding: 15px; border-radius: 4px; background: #f5f5ff; border-left: 4px solid #667eea; }
+  .issue { padding: 6px 0; padding-left: 20px; }
+  section.block { margin-bottom: 30px; }
+
+  /* ---------- Print / document view ---------- */
+  #printView { min-height: 100vh; background: #e2e8f0; }
+  .toolbar { position: sticky; top: 0; z-index: 5; display: flex; justify-content: space-between; align-items: center; gap: 12px; background: #fff; border-bottom: 1px solid #e2e8f0; padding: 12px 18px; }
+  .btnGhost { background: none; border: 1px solid #cbd5e1; border-radius: 8px; padding: 8px 16px; font-size: .9em; font-weight: 600; color: #475569; cursor: pointer; }
+  .btnPrint { background: #1e293b; color: #fff; border: none; border-radius: 8px; padding: 8px 18px; font-size: .9em; font-weight: 600; cursor: pointer; }
+  .docPad { padding: 24px 16px; }
+  .printArea { max-width: 850px; margin: 0 auto; background: #fff; padding: 56px; box-shadow: 0 10px 40px rgba(0,0,0,.18); }
+  .docHeader { border-bottom: 2px solid #1e293b; padding-bottom: 18px; margin-bottom: 28px; }
+  .docH2 { font-size: 15px; font-weight: 800; text-transform: uppercase; letter-spacing: .05em; color: #1e293b; margin-bottom: 12px; }
+  .docSec { margin-bottom: 28px; break-inside: avoid; }
+  .docLi { padding: 4px 0 4px 18px; font-size: 14px; color: #374151; }
+  table.doc { width: 100%; border-collapse: collapse; font-size: 14px; }
+  table.doc th { text-align: left; padding: 8px 12px; font-weight: 700; color: #334155; border-bottom: 2px solid #cbd5e1; }
+  table.doc td { padding: 8px 12px; color: #334155; border-bottom: 1px solid #e2e8f0; }
+
+  @media print {
+    .no-print { display: none !important; }
+    .printArea { box-shadow: none !important; margin: 0 !important; max-width: 100% !important; padding: 0 !important; }
+    #printView { background: #fff !important; }
+    .docPad { padding: 0 !important; }
+    .page-break { break-before: page; }
+    @page { margin: 16mm; }
+  }
+</style>
+</head>
+<body>
+
+<div id="analyzerView">
+  <div class="wrap">
+    <h1 class="title">🔍 Website Analyzer</h1>
+    <p class="sub">Detect ad networks, trackers, performance &amp; SEO issues</p>
+
+    <textarea id="urls" rows="3" placeholder="Enter one or more URLs, one per line:&#10;example.com&#10;anothersite.org"></textarea>
+
+    <div class="brand">
+      <input id="company" type="text" placeholder="Report company / author (optional)" />
+      <input id="logo" type="text" placeholder="Logo image URL (optional)" />
+    </div>
+
+    <button id="analyzeBtn" onclick="runAnalyze()">⚡ Analyze</button>
+
+    <div id="errorBox" style="display:none"></div>
+    <div id="actionRow" class="actionRow" style="display:none">
+      <button class="primaryDark" onclick="openPrint()" id="openPrintBtn">📄 Open Printable Report</button>
+    </div>
+    <div id="results"></div>
+  </div>
+</div>
+
+<div id="printView" style="display:none">
+  <div class="toolbar no-print">
+    <button class="btnGhost" onclick="closePrint()">← Back to analyzer</button>
+    <button class="btnPrint" onclick="window.print()">🖨 Print / Save as PDF</button>
+  </div>
+  <div class="docPad"><div class="printArea" id="printArea"></div></div>
+</div>
+
+<script>
+const AD_NETWORKS = {
+  'Google AdSense': ['pagead2.googlesyndication.com','googlesyndication.com','googleadservices.com','adservice.google'],
+  'Google Ad Manager / DoubleClick': ['doubleclick.net','securepubads.g.doubleclick'],
+  'Amazon Ads': ['amazon-adsystem.com'],
+  'Criteo': ['criteo.com','criteo.net'],
+  'Taboola': ['taboola.com'],
+  'Outbrain': ['outbrain.com'],
+  'Media.net': ['media.net'],
+  'AppNexus / Xandr': ['adnxs.com'],
+  'PubMatic': ['pubmatic.com'],
+  'Magnite / Rubicon': ['rubiconproject.com'],
+  'OpenX': ['openx.net'],
+  'Index Exchange': ['casalemedia.com'],
+};
+const TRACKERS = {
+  'Google Analytics': ['google-analytics.com','gtag(','_gaq','/g/collect'],
+  'Google Tag Manager': ['googletagmanager.com'],
+  'Facebook Pixel': ['connect.facebook.net','fbq(','facebook.com/tr'],
+  'LinkedIn Insight': ['snap.licdn.com','_linkedin_partner_id'],
+  'X / Twitter Pixel': ['static.ads-twitter.com','analytics.twitter.com','twq('],
+  'TikTok Pixel': ['analytics.tiktok.com','ttq.'],
+  'Pinterest Tag': ['pintrk(','s.pinimg.com/ct'],
+  'Hotjar': ['hotjar.com','hjid'],
+  'Microsoft Clarity': ['clarity.ms'],
+  'Mixpanel': ['mixpanel'],
+  'Amplitude': ['amplitude.com','cdn.amplitude'],
+  'Segment': ['cdn.segment.com'],
+  'Matomo / Piwik': ['matomo.js','piwik.js'],
+  'Plausible': ['plausible.io'],
+  'Intercom': ['widget.intercom.io','intercomcdn'],
+};
+const PROXIES = [
+  { name:'allorigins-raw', build:u=>`https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`, json:false },
+  { name:'codetabs',       build:u=>`https://api.codetabs.com/v1/proxy/?quest=${encodeURIComponent(u)}`, json:false },
+  { name:'corsfix',        build:u=>`https://proxy.corsfix.com/?${u}`, json:false },
+  { name:'allorigins-get', build:u=>`https://api.allorigins.win/get?url=${encodeURIComponent(u)}`, json:true },
+  { name:'corsproxy',      build:u=>`https://corsproxy.io/?url=${encodeURIComponent(u)}`, json:false },
+];
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+let reports = [];
+
+function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+async function fetchHtml(targetUrl){
+  let lastErr;
+  for(const p of PROXIES){
+    const ctrl = new AbortController();
+    const timer = setTimeout(()=>ctrl.abort(), 12000);
+    try{
+      const res = await fetch(p.build(targetUrl), { signal: ctrl.signal });
+      if(!res.ok){ lastErr = new Error(p.name+' HTTP '+res.status); continue; }
+      const html = p.json ? (await res.json()).contents : await res.text();
+      if(html && html.length > 50) return html;
+      lastErr = new Error(p.name+' returned empty');
+    }catch(e){ lastErr = e; }
+    finally{ clearTimeout(timer); }
+  }
+  throw lastErr || new Error('All proxies failed');
+}
+
+function matchSignatures(html, table){
+  const found = {};
+  for(const [name, sigs] of Object.entries(table)){
+    const hit = sigs.find(s => html.includes(s));
+    if(hit) found[name] = hit;
+  }
+  return found;
+}
+
+async function analyzeOne(raw){
+  let targetUrl = raw.trim();
+  if(!/^https?:\/\//i.test(targetUrl)) targetUrl = 'https://'+targetUrl;
+  const urlObj = new URL(targetUrl);
+  const html = await fetchHtml(targetUrl);
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+
+  const ads = matchSignatures(html, AD_NETWORKS);
+  const trackers = matchSignatures(html, TRACKERS);
+
+  const images = doc.querySelectorAll('img').length;
+  const scripts = doc.querySelectorAll('script').length;
+  const inlineScripts = doc.querySelectorAll('script:not([src])').length;
+  const stylesheets = doc.querySelectorAll('link[rel="stylesheet"]').length;
+  const blocking = doc.querySelectorAll('head script[src]:not([async]):not([defer])').length;
+  const perfIssues = [];
+  if(blocking > 3) perfIssues.push(blocking+' render-blocking scripts in <head>');
+  if(stylesheets > 5) perfIssues.push(stylesheets+' stylesheets (consider bundling)');
+  if(html.length > 500000) perfIssues.push('Large HTML payload ('+Math.round(html.length/1024)+' KB)');
+  if(inlineScripts > 15) perfIssues.push(inlineScripts+' inline scripts');
+
+  const title = (doc.querySelector('title')?.textContent || '').trim();
+  const desc = (doc.querySelector('meta[name="description"]')?.getAttribute('content') || '').trim();
+  const h1s = doc.querySelectorAll('h1').length;
+  const imgs = [...doc.querySelectorAll('img')];
+  const withAlt = imgs.filter(i => (i.getAttribute('alt')||'').trim()).length;
+  const seoIssues = [];
+  if(!title) seoIssues.push('Missing <title> tag');
+  else if(title.length > 60) seoIssues.push('Title longer than 60 chars');
+  if(!desc) seoIssues.push('Missing meta description');
+  else if(desc.length > 160) seoIssues.push('Meta description over 160 chars');
+  if(h1s === 0) seoIssues.push('No H1 tag');
+  else if(h1s > 1) seoIssues.push('Multiple H1 tags ('+h1s+')');
+  if(!doc.querySelector('link[rel="canonical"]')) seoIssues.push('No canonical link');
+  if(!doc.querySelector('meta[property="og:title"], meta[property="og:image"]')) seoIssues.push('Missing Open Graph tags');
+  if(!doc.querySelector('meta[name="viewport"]')) seoIssues.push('No viewport meta (mobile)');
+  if(!doc.documentElement.getAttribute('lang')) seoIssues.push('No lang attribute on <html>');
+  if(imgs.length && withAlt/imgs.length < 0.8) seoIssues.push('Only '+withAlt+'/'+imgs.length+' images have alt text');
+
+  return {
+    url: targetUrl, domain: urlObj.hostname, timestamp: new Date().toLocaleString(),
+    ads: Object.keys(ads).length ? ads : null,
+    trackers: Object.keys(trackers).length ? Object.keys(trackers) : null,
+    performance: { images, scripts, stylesheets, sizeKb: Math.round(html.length/1024), issues: perfIssues },
+    seo: { title: title || 'Not found', description: desc || 'Not found', issues: seoIssues },
+    ssl: targetUrl.startsWith('https'),
+  };
+}
+
+function computeScore(r){
+  if(r.error) return { score:null, grade:'—', color:'#94a3b8' };
+  let s = 100;
+  if(!r.ssl) s -= 25;
+  s -= Math.min(20, r.seo.issues.length*5);
+  s -= Math.min(20, r.performance.issues.length*5);
+  s -= Math.min(18, (r.trackers?r.trackers.length:0)*3);
+  s -= Math.min(12, (r.ads?Object.keys(r.ads).length:0)*3);
+  s = Math.max(0, Math.min(100, s));
+  let grade, color;
+  if(s>=85){grade='A';color='#16a34a';}
+  else if(s>=75){grade='B';color='#65a30d';}
+  else if(s>=60){grade='C';color='#f59e0b';}
+  else if(s>=45){grade='D';color='#f97316';}
+  else {grade='F';color='#dc2626';}
+  return { score:s, grade, color };
+}
+
+function badge(r, size){
+  const {score, grade, color} = computeScore(r);
+  return `<div style="width:${size}px;height:${size}px;border-radius:50%;border:4px solid ${color};display:flex;flex-direction:column;align-items:center;justify-content:center;flex-shrink:0">
+    <span style="font-size:${size*0.34}px;font-weight:800;color:${color};line-height:1">${grade}</span>
+    <span style="font-size:${size*0.16}px;color:#64748b;margin-top:2px">${score==null?'n/a':score}</span>
+  </div>`;
+}
+
+async function runAnalyze(){
+  const errBox = document.getElementById('errorBox');
+  errBox.style.display = 'none';
+  const list = document.getElementById('urls').value.split(/[\n,]+/).map(u=>u.trim()).filter(Boolean);
+  if(!list.length){ errBox.textContent = 'Enter at least one URL.'; errBox.style.display='block'; return; }
+
+  const btn = document.getElementById('analyzeBtn');
+  btn.disabled = true;
+  reports = [];
+  document.getElementById('actionRow').style.display = 'none';
+  document.getElementById('results').innerHTML = '';
+
+  for(let i=0;i<list.length;i++){
+    btn.textContent = `⏳ Analyzing ${i+1} of ${list.length}: ${list[i]}`;
+    try{
+      reports.push(await analyzeOne(list[i]));
+    }catch(e){
+      let domain = list[i];
+      try{ domain = new URL(/^https?:\/\//i.test(list[i])?list[i]:'https://'+list[i]).hostname; }catch(_){}
+      reports.push({ url:list[i], domain, error:'Could not fetch (proxy blocked, rate-limited, or invalid URL).' });
+    }
+    renderResults();
+    if(list.length > 1 && i < list.length-1) await sleep(800);
+  }
+
+  btn.textContent = '⚡ Analyze';
+  btn.disabled = false;
+  if(reports.length && reports.every(r=>r.error)){
+    errBox.textContent = 'None of the URLs could be fetched. Public CORS proxies are often rate-limited — try again shortly.';
+    errBox.style.display = 'block';
+  }
+}
+
+function cardHtml(r){
+  if(r.error){
+    return `<div class="resultCard">
+      <div class="resultHead"><div><h2>${esc(r.domain)}</h2><span style="font-size:.85em;color:#888">Scan failed</span></div></div>
+      <p class="bad">⚠ ${esc(r.error)}</p></div>`;
+  }
+  const ads = r.ads
+    ? `<div class="boxRed">${Object.entries(r.ads).map(([k,v])=>`<div><strong>${esc(k)}</strong> <span style="color:#999;font-size:.85em">· ${esc(v)}</span></div>`).join('')}</div>`
+    : `<p class="good">✓ No known ad networks detected</p>`;
+  const trk = r.trackers
+    ? `<div class="boxBlue">${r.trackers.map(t=>`<div>• ${esc(t)}</div>`).join('')}</div>`
+    : `<p class="good">✓ No trackers detected</p>`;
+  const perfIssues = r.performance.issues.length
+    ? r.performance.issues.map(x=>`<div class="issue">• ${esc(x)}</div>`).join('')
+    : `<p class="good">✓ No major issues flagged</p>`;
+  const seoIssues = r.seo.issues.length
+    ? r.seo.issues.map(x=>`<div class="issue">• ${esc(x)}</div>`).join('')
+    : `<p class="good">✓ No common SEO issues found</p>`;
+  return `<div class="resultCard">
+    <div class="resultHead">
+      <div><h2>${esc(r.domain)}</h2><span style="font-size:.85em;color:#888">${esc(r.timestamp)}</span></div>
+      ${badge(r,64)}
+    </div>
+    <section class="block"><h3>📊 Advertising Networks</h3>${ads}</section>
+    <section class="block"><h3>🔍 Tracking Services</h3>${trk}</section>
+    <section class="block"><h3>⚡ Performance</h3>
+      <div class="statGrid">
+        <div class="statBox"><div class="statNum">${r.performance.images}</div><div class="statLbl">Images</div></div>
+        <div class="statBox"><div class="statNum">${r.performance.scripts}</div><div class="statLbl">Scripts</div></div>
+        <div class="statBox"><div class="statNum">${r.performance.stylesheets}</div><div class="statLbl">Stylesheets</div></div>
+        <div class="statBox"><div class="statNum">${r.performance.sizeKb}</div><div class="statLbl">KB HTML</div></div>
+      </div>${perfIssues}</section>
+    <section class="block"><h3>🔎 SEO</h3>
+      <p style="margin:6px 0"><strong>Title:</strong> ${esc(r.seo.title)}</p>
+      <p style="margin:6px 0"><strong>Description:</strong> ${esc(r.seo.description)}</p>${seoIssues}</section>
+    <section><h3>🔒 Security</h3>
+      <p class="${r.ssl?'good':'bad'}">${r.ssl?'✓ HTTPS enabled':'✗ Not using HTTPS'}</p></section>
+  </div>`;
+}
+
+function renderResults(){
+  document.getElementById('results').innerHTML = reports.map(cardHtml).join('');
+  const row = document.getElementById('actionRow');
+  if(reports.length){
+    row.style.display = 'flex';
+    document.getElementById('openPrintBtn').textContent =
+      '📄 Open Printable Report' + (reports.length>1 ? ` (${reports.length} sites)` : '');
+  } else row.style.display = 'none';
+}
+
+function detailHtml(r){
+  if(r.error) return `<p class="bad" style="font-size:14px">${esc(r.error)}</p>`;
+  const overview = [
+    ['Ad Networks', r.ads?Object.keys(r.ads).length:0],
+    ['Trackers', r.trackers?r.trackers.length:0],
+    ['Images', r.performance.images],
+    ['Scripts', r.performance.scripts],
+    ['Stylesheets', r.performance.stylesheets],
+    ['HTML (KB)', r.performance.sizeKb],
+  ];
+  const ads = r.ads
+    ? `<table class="doc"><thead><tr><th>Network</th><th>Signature matched</th></tr></thead><tbody>${Object.entries(r.ads).map(([k,v])=>`<tr><td>${esc(k)}</td><td style="color:#64748b">${esc(v)}</td></tr>`).join('')}</tbody></table>`
+    : `<p style="font-size:14px;color:#16a34a;font-weight:600">No known ad networks detected.</p>`;
+  const trk = r.trackers
+    ? r.trackers.map(t=>`<div class="docLi">• ${esc(t)}</div>`).join('')
+    : `<p style="font-size:14px;color:#16a34a;font-weight:600">No trackers detected in the initial HTML.</p>`;
+  const seo = r.seo.issues.length ? r.seo.issues.map(x=>`<div class="docLi">• ${esc(x)}</div>`).join('') : `<p style="font-size:14px;color:#16a34a;font-weight:600">No common SEO issues found.</p>`;
+  const perf = r.performance.issues.length ? r.performance.issues.map(x=>`<div class="docLi">• ${esc(x)}</div>`).join('') : `<p style="font-size:14px;color:#16a34a;font-weight:600">No major issues flagged.</p>`;
+  return `
+    <section class="docSec"><div class="docH2">Overview</div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px">
+        ${overview.map(([l,v])=>`<div style="border:1px solid #e2e8f0;background:#f8fafc;border-radius:8px;padding:14px"><div style="font-size:24px;font-weight:800;color:#0f172a">${v}</div><div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:#64748b;margin-top:2px">${l}</div></div>`).join('')}
+      </div></section>
+    <section class="docSec"><div class="docH2">Advertising Networks</div>${ads}</section>
+    <section class="docSec"><div class="docH2">Tracking Services</div>${trk}</section>
+    <section class="docSec"><div class="docH2">SEO</div>
+      <p style="font-size:14px;color:#374151;margin:4px 0"><strong>Title:</strong> ${esc(r.seo.title)}</p>
+      <p style="font-size:14px;color:#374151;margin:4px 0 10px"><strong>Description:</strong> ${esc(r.seo.description)}</p>${seo}</section>
+    <section class="docSec"><div class="docH2">Performance Notes</div>${perf}</section>
+    <section class="docSec"><div class="docH2">Security</div>
+      <p style="font-size:14px;font-weight:600;color:${r.ssl?'#16a34a':'#dc2626'}">${r.ssl?'HTTPS enabled':'Not using HTTPS'}</p></section>`;
+}
+
+function renderPrint(){
+  const company = document.getElementById('company').value.trim();
+  const logo = document.getElementById('logo').value.trim();
+  const fmtDate = new Date().toLocaleDateString(undefined,{year:'numeric',month:'long',day:'numeric'});
+  const showSummary = reports.length > 1;
+
+  const brandBlock = `
+    <div style="text-align:right">
+      ${logo ? `<img src="${esc(logo)}" alt="" style="max-height:48px;max-width:160px;object-fit:contain" onerror="this.style.display='none'" />` : ''}
+      ${company ? `<div style="font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:#475569;margin-top:${logo?'6px':'0'}">${esc(company)}</div>`
+        : (!logo ? `<div style="font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:#475569">Site Audit</div>` : '')}
+    </div>`;
+
+  const summary = showSummary ? `
+    <section class="docSec"><div class="docH2">Summary</div>
+      <table class="doc"><thead><tr>
+        <th>Site</th><th style="text-align:center">Score</th><th style="text-align:center">Trackers</th><th style="text-align:center">Ad Networks</th><th style="text-align:center">HTTPS</th>
+      </tr></thead><tbody>
+        ${reports.map(r=>{const sc=computeScore(r);return `<tr>
+          <td>${esc(r.domain)}</td>
+          <td style="text-align:center;font-weight:700;color:${sc.color}">${sc.score==null?'—':sc.grade+' ('+sc.score+')'}</td>
+          <td style="text-align:center;color:#475569">${r.error?'—':(r.trackers?r.trackers.length:0)}</td>
+          <td style="text-align:center;color:#475569">${r.error?'—':(r.ads?Object.keys(r.ads).length:0)}</td>
+          <td style="text-align:center;color:#475569">${r.error?'—':(r.ssl?'✓':'✗')}</td>
+        </tr>`;}).join('')}
+      </tbody></table></section>` : '';
+
+  const sites = reports.map((r,i)=>`
+    <div class="${(showSummary||i>0)?'page-break':''}" style="margin-top:${i>0?'40px':'0'}">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:20px;padding-bottom:12px;border-bottom:1px solid #e2e8f0">
+        <div><h2 style="font-size:20px;font-weight:800;color:#0f172a;margin:0">${esc(r.domain)}</h2>
+        <p style="font-size:12px;color:#94a3b8;margin:2px 0 0;word-break:break-all">${esc(r.url)}</p></div>
+        ${r.error?'':badge(r,58)}
+      </div>${detailHtml(r)}
+    </div>`).join('');
+
+  document.getElementById('printArea').innerHTML = `
+    <header class="docHeader">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px">
+        <div><h1 style="font-size:28px;font-weight:800;color:#0f172a;margin:0;line-height:1.2">Website Analysis Report</h1>
+        <p style="margin:6px 0 0;font-size:15px;color:#64748b">${reports.length===1?esc(reports[0].domain):reports.length+' sites audited'}</p></div>
+        ${brandBlock}
+      </div>
+      <div style="margin-top:12px;font-size:13px;color:#64748b">${fmtDate}</div>
+    </header>
+    ${summary}${sites}
+    <footer style="margin-top:40px;border-top:1px solid #e2e8f0;padding-top:14px;font-size:11px;color:#94a3b8;line-height:1.5">
+      Generated ${new Date().toLocaleString()}. The audit score weighs security, SEO, performance, and the number of third-party trackers and ad networks. Analysis reflects the initial server-returned HTML only; scripts injected later by JavaScript (e.g. via a tag manager) may not appear.
+    </footer>`;
+}
+
+function openPrint(){
+  renderPrint();
+  document.getElementById('analyzerView').style.display = 'none';
+  document.getElementById('printView').style.display = 'block';
+  window.scrollTo(0,0);
+}
+function closePrint(){
+  document.getElementById('printView').style.display = 'none';
+  document.getElementById('analyzerView').style.display = 'block';
+}
+</script>
+</body>
+</html>

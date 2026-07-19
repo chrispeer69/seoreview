@@ -1,0 +1,630 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Blue Collar AI — SEO &amp; AI Search Audit</title>
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;font-family:system-ui,-apple-system,sans-serif;color:#1e293b}
+
+  /* Scanner screen */
+  #scanView{background:linear-gradient(135deg,#1e3a8a 0%,#312e81 100%);min-height:100vh;padding:40px 20px}
+  .wrap{max-width:1040px;margin:0 auto}
+  h1.title{color:#fff;text-align:center;font-size:2.4em;margin:0 0 8px;font-weight:800}
+  p.sub{color:rgba(255,255,255,.85);text-align:center;margin:0 0 6px}
+  p.byline{color:rgba(255,255,255,.65);text-align:center;margin:0 0 30px;font-size:.9em;font-weight:600;letter-spacing:.02em}
+  #urls{width:100%;padding:14px 18px;font-size:1em;border:none;border-radius:8px;outline:none;resize:vertical;margin-bottom:12px;font-family:inherit}
+  #scanBtn{width:100%;padding:15px 30px;font-size:1.05em;font-weight:700;background:#22c55e;color:#fff;border:none;border-radius:8px;cursor:pointer;margin-bottom:24px}
+  #scanBtn:disabled{opacity:.85;cursor:default}
+  #errorBox{background:#ef4444;color:#fff;padding:15px;border-radius:8px;margin-bottom:20px;font-weight:500;line-height:1.5}
+  .actionRow{margin-bottom:20px;display:flex;justify-content:flex-end}
+  .primaryDark{padding:13px 24px;background:#0f172a;color:#fff;border:none;border-radius:8px;font-weight:700;cursor:pointer;font-size:1em}
+
+  .card{background:#fff;border-radius:12px;padding:30px;box-shadow:0 10px 40px rgba(0,0,0,.25);margin-bottom:20px}
+  .cardHead{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;border-bottom:2px solid #e2e8f0;padding-bottom:18px;margin-bottom:20px}
+  .cardHead h2{margin:0;font-size:1.4em}
+  .muted{color:#94a3b8;font-size:.85em}
+  .tally{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:8px}
+  .pill{padding:6px 12px;border-radius:999px;font-size:.85em;font-weight:700}
+  .pill.ok{background:#dcfce7;color:#15803d}
+  .pill.warn{background:#fef3c7;color:#b45309}
+  .pill.fail{background:#fee2e2;color:#b91c1c}
+  .findRow{display:flex;gap:10px;padding:11px 0;border-bottom:1px solid #f1f5f9;align-items:flex-start}
+  .dot{width:10px;height:10px;border-radius:50%;margin-top:6px;flex-shrink:0}
+  .findLabel{font-weight:600}
+  .findFix{font-size:.9em;color:#475569;margin-top:2px}
+  .sectionTitle{font-size:.8em;font-weight:800;text-transform:uppercase;letter-spacing:.06em;color:#64748b;margin:22px 0 6px}
+  details{margin-top:8px}
+  summary{cursor:pointer;font-weight:700;color:#475569;padding:6px 0}
+
+  /* Report */
+  #reportView{min-height:100vh;background:#e2e8f0;display:none}
+  .toolbar{position:sticky;top:0;z-index:5;display:flex;justify-content:space-between;align-items:center;gap:12px;background:#fff;border-bottom:1px solid #e2e8f0;padding:12px 18px}
+  .btnGhost{background:none;border:1px solid #cbd5e1;border-radius:8px;padding:9px 16px;font-weight:700;color:#475569;cursor:pointer}
+  .btnPrint{background:#0f172a;color:#fff;border:none;border-radius:8px;padding:9px 18px;font-weight:700;cursor:pointer}
+  .docPad{padding:24px 16px}
+  .printArea{max-width:850px;margin:0 auto;background:#fff;padding:54px;box-shadow:0 10px 40px rgba(0,0,0,.18)}
+  .rHeader{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;border-bottom:3px solid #0f172a;padding-bottom:20px;margin-bottom:26px}
+  .rH2{font-size:14px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;color:#0f172a;margin:30px 0 12px;padding-bottom:6px;border-bottom:1px solid #e2e8f0}
+  .rSec{break-inside:avoid}
+
+  /* Executive summary */
+  .execBox{border:2px solid #cbd5e1;border-radius:12px;padding:22px 24px;margin-bottom:8px;background:#f8fafc;break-inside:avoid}
+  .execTop{display:flex;gap:20px;align-items:center;flex-wrap:wrap}
+  .execLabel{font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;color:#64748b}
+  .execScore{font-size:30px;font-weight:800;line-height:1.1;margin:2px 0}
+  .execVerdict{font-size:14px;color:#334155}
+  .execText{font-size:14px;color:#334155;line-height:1.65;margin:16px 0 6px}
+  .execList{margin:6px 0 0;padding-left:20px}
+  .execList li{font-size:13.5px;color:#334155;margin:5px 0;line-height:1.5}
+
+  .catbar{display:flex;align-items:center;gap:10px;margin:7px 0;font-size:13px}
+  .catbar .lbl{flex:0 0 200px;color:#475569}
+  .track{flex:1;height:8px;background:#e2e8f0;border-radius:999px;overflow:hidden}
+  .fill{height:100%;border-radius:999px}
+
+  .planSub{font-size:14px;font-weight:800;color:#0f172a;margin:18px 0 4px;display:flex;align-items:center;gap:8px}
+  .planNote{font-size:12.5px;color:#64748b;margin:0 0 12px}
+  .issueCard{border:1px solid #e2e8f0;border-left-width:5px;border-radius:8px;padding:14px 16px;margin-bottom:12px;break-inside:avoid}
+  .issueCard h4{margin:0 0 4px;font-size:15px}
+  .issueCard .why{font-size:13px;color:#475569;margin:4px 0}
+  .issueCard .fix{font-size:13px;color:#0f172a;margin:6px 0 0}
+  .tagRow{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px}
+  .sevTag{display:inline-block;font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.05em;padding:2px 8px;border-radius:4px}
+  .winGrid{display:grid;grid-template-columns:1fr 1fr;gap:6px 18px}
+  .win{font-size:13px;color:#334155;padding:3px 0}
+  table.doc{width:100%;border-collapse:collapse;font-size:13px}
+  table.doc th{text-align:left;padding:7px 10px;font-weight:700;color:#334155;border-bottom:2px solid #cbd5e1}
+  table.doc td{padding:7px 10px;border-bottom:1px solid #eef2f7;vertical-align:top}
+
+  /* CTA */
+  .ctaBox{background:#0f172a;color:#fff;border-radius:12px;padding:26px 28px;margin-top:6px;break-inside:avoid}
+  .ctaBox p{margin:0 0 12px;font-size:14px;line-height:1.65;color:#e2e8f0}
+  .ctaBox a{color:#7dd3fc;text-decoration:none}
+  .ctaContact{display:flex;flex-wrap:wrap;gap:6px 28px;margin-top:6px;padding-top:16px;border-top:1px solid rgba(255,255,255,.18);font-size:14px}
+  .ctaContact .co{font-weight:800;font-size:16px;width:100%;margin-bottom:4px;color:#fff}
+  .ctaContact span{color:#cbd5e1}
+
+  .footerNote{margin-top:36px;border-top:1px solid #e2e8f0;padding-top:14px;font-size:11px;color:#94a3b8;line-height:1.6}
+
+  @media print{
+    *{-webkit-print-color-adjust:exact !important;print-color-adjust:exact !important}
+    .no-print{display:none!important}
+    .printArea{box-shadow:none!important;margin:0!important;max-width:100%!important;padding:0!important}
+    #reportView{background:#fff!important}
+    .docPad{padding:0!important}
+    .page-break{break-before:page}
+    @page{margin:15mm}
+  }
+  @media(max-width:560px){.winGrid{grid-template-columns:1fr}.catbar .lbl{flex:0 0 130px}}
+</style>
+</head>
+<body>
+
+<div id="scanView">
+  <div class="wrap">
+    <h1 class="title">SEO &amp; AI Search Audit</h1>
+    <p class="sub">Scan a site for Google SEO <em>and</em> AI-search readiness, then hand over a branded report.</p>
+    <p class="byline">by Blue Collar AI, Inc.</p>
+
+    <textarea id="urls" rows="3" placeholder="Enter one or more sites, one per line:&#10;example.com&#10;anothershop.com"></textarea>
+    <button id="scanBtn" onclick="runScan()">🔎 Run Audit</button>
+
+    <div id="errorBox" style="display:none"></div>
+    <div id="actionRow" class="actionRow" style="display:none">
+      <button class="primaryDark" id="openReportBtn" onclick="openReport()">📄 Open Branded Report</button>
+    </div>
+    <div id="results"></div>
+  </div>
+</div>
+
+<div id="reportView">
+  <div class="toolbar no-print">
+    <button class="btnGhost" onclick="closeReport()">← Back</button>
+    <button class="btnPrint" onclick="window.print()">🖨 Print / Save as PDF</button>
+  </div>
+  <div class="docPad"><div class="printArea" id="printArea"></div></div>
+</div>
+
+<script>
+const BRAND = {
+  name:'Blue Collar AI, Inc.',
+  tagline:'AI-Powered Local SEO',
+  email:'chris@bluecollarai.online',
+  web:'www.bluecollarai.online',
+  webUrl:'https://www.bluecollarai.online'
+};
+
+const PROXIES = [
+  { name:'allorigins-raw', build:u=>`https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`, json:false },
+  { name:'codetabs',       build:u=>`https://api.codetabs.com/v1/proxy/?quest=${encodeURIComponent(u)}`, json:false },
+  { name:'corsfix',        build:u=>`https://proxy.corsfix.com/?${u}`, json:false },
+  { name:'allorigins-get', build:u=>`https://api.allorigins.win/get?url=${encodeURIComponent(u)}`, json:true },
+  { name:'corsproxy',      build:u=>`https://corsproxy.io/?url=${encodeURIComponent(u)}`, json:false },
+];
+const TAGS = {
+  'Google Analytics':['google-analytics.com','gtag(','/g/collect','_gaq'],
+  'Google Tag Manager':['googletagmanager.com'],
+  'Google Ads':['googleadservices.com','gtag/js?id=AW-'],
+  'Meta / Facebook Pixel':['connect.facebook.net','fbq(','facebook.com/tr'],
+  'Microsoft Clarity':['clarity.ms'],
+  'Hotjar':['hotjar.com'],
+  'TikTok Pixel':['analytics.tiktok.com','ttq.'],
+  'LinkedIn Insight':['snap.licdn.com'],
+};
+// AI / answer-engine crawlers worth allowing for AI-search visibility
+const AI_BOTS = ['GPTBot','OAI-SearchBot','ChatGPT-User','ClaudeBot','anthropic-ai','Claude-Web','PerplexityBot','Perplexity-User','Google-Extended','CCBot','Applebot-Extended','Amazonbot','Bytespider','Meta-ExternalAgent'];
+
+const AISEARCH = 'AI Search & Answer Engines';
+
+const sleep = ms => new Promise(r=>setTimeout(r,ms));
+function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function firstSentence(str){const m=String(str||'').match(/^[^.]*\./);return (m?m[0]:String(str||'')).trim();}
+
+// Fixes that are bigger projects (need content, dev work, or third-party setup) vs. quick wins.
+const PROJECT_FIXES = new Set([
+  'Sufficient content','Served over HTTPS','No mixed (insecure) content','LocalBusiness structured data',
+  'Reasonable page weight','Limited render-blocking scripts','Q&A / FAQ structured data',
+  'Semantic main-content region','Review / rating schema (stars)'
+]);
+function isQuick(label){ return !PROJECT_FIXES.has(label); }
+function impactOf(points){ return points>=8?{lbl:'High impact',col:'#dc2626'} : points>=4?{lbl:'Medium impact',col:'#f59e0b'} : {lbl:'Low impact',col:'#64748b'}; }
+
+async function fetchHtml(targetUrl){
+  let lastErr;
+  for(const p of PROXIES){
+    const ctrl=new AbortController(); const t=setTimeout(()=>ctrl.abort(),12000);
+    try{
+      const res=await fetch(p.build(targetUrl),{signal:ctrl.signal});
+      if(!res.ok){lastErr=new Error(p.name+' HTTP '+res.status);continue;}
+      const html=p.json?(await res.json()).contents:await res.text();
+      if(html&&html.length>50)return html;
+      lastErr=new Error(p.name+' empty');
+    }catch(e){lastErr=e;}finally{clearTimeout(t);}
+  }
+  throw lastErr||new Error('All proxies failed');
+}
+async function fetchAux(u){
+  for(const p of PROXIES.slice(0,4)){
+    const ctrl=new AbortController(); const t=setTimeout(()=>ctrl.abort(),8000);
+    try{
+      const res=await fetch(p.build(u),{signal:ctrl.signal});
+      if(res.ok){const txt=p.json?(await res.json()).contents:await res.text();clearTimeout(t);return txt||'';}
+    }catch(e){}finally{clearTimeout(t);}
+  }
+  return null;
+}
+
+// Parse robots.txt into user-agent groups and report which AI crawlers are blocked from the whole site.
+function aiCrawlerStatus(robots){
+  const lines=String(robots).split(/\r?\n/);
+  let groups=[]; let cur=null;
+  for(const raw of lines){
+    const line=raw.replace(/#.*/,'').trim(); if(!line)continue;
+    const ua=line.match(/^user-agent:\s*(.+)$/i);
+    if(ua){ if(!cur||cur.hasRules){cur={agents:[],hasRules:false,disallowAll:false};groups.push(cur);} cur.agents.push(ua[1].trim().toLowerCase()); continue; }
+    const dis=line.match(/^disallow:\s*(.*)$/i);
+    if(dis&&cur){ cur.hasRules=true; if(dis[1].trim()==='/') cur.disallowAll=true; }
+    if(/^allow:/i.test(line)&&cur) cur.hasRules=true;
+  }
+  const globalBlocked = groups.some(g=>g.agents.includes('*')&&g.disallowAll);
+  const blocked=[];
+  AI_BOTS.forEach(bot=>{ const lb=bot.toLowerCase(); if(groups.some(g=>g.agents.includes(lb)&&g.disallowAll)) blocked.push(bot); });
+  return {blocked, globalBlocked};
+}
+
+const SEV = { fail:{tag:'Critical',color:'#dc2626',sevColor:'#dc2626'}, warn:{tag:'Improve',color:'#f59e0b',sevColor:'#f59e0b'}, pass:{color:'#16a34a'}, info:{color:'#94a3b8'} };
+
+async function auditOne(raw){
+  let url=raw.trim();
+  if(!/^https?:\/\//i.test(url)) url='https://'+url;
+  const o=new URL(url); const origin=o.origin;
+  const html=await fetchHtml(url);
+  const doc=new DOMParser().parseFromString(html,'text/html');
+
+  // guards
+  const bodyText=(doc.body?.textContent||'').trim();
+  if(html.length<500||bodyText.length<30) throw {blocked:true,reason:'Empty or near-empty response — the real page could not be retrieved (proxy or site issue). Try again.'};
+  const tLow=(doc.querySelector('title')?.textContent||'').trim().toLowerCase();
+  const cTitles=['just a moment','one moment','attention required','checking your browser','please wait','verifying you are human','ddos-guard'];
+  const cSigs=['challenges.cloudflare.com','cf-browser-verification','__cf_chl','cf_chl_opt','/cdn-cgi/challenge','ddos-guard','_imperva_','distil_r_captcha'];
+  if(cTitles.some(t=>tLow.includes(t))||cSigs.some(s=>html.includes(s))) throw {blocked:true,reason:'Blocked by bot protection (a Cloudflare / DDoS-Guard style challenge page was returned, not the site).'};
+
+  const checks=[];
+  const add=(cat,label,points,status,detail,why,fix)=>checks.push({cat,label,points,status,detail,why,fix});
+
+  // ---- gather ----
+  const titleEl=doc.querySelector('title');
+  const title=(titleEl?.textContent||'').trim();
+  const titleCount=doc.querySelectorAll('title').length;
+  const desc=(doc.querySelector('meta[name="description"]')?.getAttribute('content')||'').trim();
+  const h1=doc.querySelectorAll('h1'); const h2=doc.querySelectorAll('h2');
+  const robotsMeta=(doc.querySelector('meta[name="robots"]')?.getAttribute('content')||'').toLowerCase();
+  const noindex=robotsMeta.includes('noindex');
+  const canonical=doc.querySelector('link[rel="canonical"]');
+  const viewport=doc.querySelector('meta[name="viewport"]');
+  const charset=doc.querySelector('meta[charset]')||doc.querySelector('meta[http-equiv="Content-Type" i]');
+  const lang=doc.documentElement.getAttribute('lang');
+  const favicon=doc.querySelector('link[rel~="icon"]');
+  const ogT=doc.querySelector('meta[property="og:title"]'), ogD=doc.querySelector('meta[property="og:description"]'), ogI=doc.querySelector('meta[property="og:image"]');
+  const ogCount=[ogT,ogD,ogI].filter(Boolean).length;
+  const twCard=doc.querySelector('meta[name="twitter:card"]');
+  const imgs=[...doc.querySelectorAll('img')];
+  const withAlt=imgs.filter(i=>(i.getAttribute('alt')||'').trim()).length;
+  const withDim=imgs.filter(i=>i.getAttribute('width')&&i.getAttribute('height')).length;
+  const words=bodyText.split(/\s+/).filter(Boolean).length;
+  const tel=doc.querySelectorAll('a[href^="tel:"]').length;
+  const hasMap=/google\.com\/maps|maps\.google|goo\.gl\/maps/i.test(html);
+  const ssl=url.startsWith('https');
+  const mixed= ssl ? [...doc.querySelectorAll('[src],[href]')].filter(el=>/^http:\/\//i.test(el.getAttribute('src')||el.getAttribute('href')||'')).length : 0;
+  const blocking=doc.querySelectorAll('head script[src]:not([async]):not([defer])').length;
+  const sizeKb=Math.round(html.length/1024);
+  // schema
+  let schemaTypes=[];
+  doc.querySelectorAll('script[type="application/ld+json"]').forEach(n=>{try{const j=JSON.parse(n.textContent);const arr=Array.isArray(j)?j:[j];arr.forEach(x=>{const t=x['@type'];if(t)schemaTypes=schemaTypes.concat(Array.isArray(t)?t:[t]);if(x['@graph'])x['@graph'].forEach(g=>{if(g['@type'])schemaTypes=schemaTypes.concat(g['@type'])})});}catch(e){}});
+  if(doc.querySelector('[itemtype]')) schemaTypes.push((doc.querySelector('[itemtype]').getAttribute('itemtype')||'').split('/').pop());
+  schemaTypes=[...new Set(schemaTypes.filter(Boolean))];
+  const schemaStr=schemaTypes.join(' ');
+  const localSchema=schemaTypes.some(t=>/LocalBusiness|AutoRepair|AutomotiveBusiness|Store|Organization|ProfessionalService|HomeAndConstructionBusiness|EmergencyService/i.test(t));
+  // AI-search / rich-result signals
+  const hasFaq = /FAQPage|QAPage|Question/i.test(schemaStr) || /"@type"\s*:\s*"(FAQPage|QAPage|Question)"/i.test(html);
+  const hasOrg = schemaTypes.some(t=>/Organization|LocalBusiness|AutoRepair|AutomotiveBusiness|Store|ProfessionalService|HomeAndConstructionBusiness|EmergencyService/i.test(t));
+  const hasSameAs = /"sameAs"/i.test(html);
+  const hasReview = /AggregateRating|"@type"\s*:\s*"Review"|"reviewRating"|"ratingValue"/i.test(html);
+  const hasMain = !!(doc.querySelector('main')||doc.querySelector('article'));
+  // tracking (informational)
+  const tracking=Object.keys(TAGS).filter(name=>TAGS[name].some(s=>html.includes(s)));
+
+  // ---- CHECKS ----
+  const INDEX='Indexability & Crawlability', CONTENT='On-Page Content', TECH='Technical & Mobile', LOCAL='Local SEO', SOCIAL='Social Sharing', MEDIA='Images & Accessibility', PERF='Performance Hygiene';
+
+  add(INDEX,'Page is indexable',14, noindex?'fail':'pass',
+    noindex?'A "noindex" directive is present':'No noindex directive',
+    'A "noindex" tag is a stop sign telling Google to hide this page completely. If it is there by mistake, nothing else you do matters — you are invisible in search.',
+    'Remove the "noindex" value from the robots meta tag so search engines can list the page.');
+  add(INDEX,'Canonical URL set',6, canonical?'pass':'fail',
+    canonical?('→ '+canonical.getAttribute('href')):'No canonical link',
+    'This tells Google which version of your web address is the real one, so your ranking power is not split between www / non-www or trailing-slash duplicates.',
+    'Add <link rel="canonical" href="'+esc(origin)+'/"> in the page head pointing to the preferred URL.');
+
+  add(CONTENT,'Title tag present',12, title?'pass':'fail',
+    title?('"'+title+'"'):'Missing',
+    'Your title is the blue headline people click in Google. It is the single strongest thing on the page for both ranking and earning the click.',
+    'Add a unique <title> of about 50–60 characters that names the business and primary service + city.');
+  if(title){
+    const tl=title.length;
+    add(CONTENT,'Title length optimal',4, (tl>=30&&tl<=60)?'pass':'warn',
+      tl+' characters',
+      'Titles under ~30 characters waste the opportunity; over ~60 get chopped off mid-sentence in results.',
+      'Aim for 50–60 characters, e.g. "Auto Repair in Hilliard, OH | Shop Name".');
+    if(titleCount>1) add(CONTENT,'Single title tag',2,'warn',titleCount+' title tags found','More than one title confuses search engines about which one to show.','Keep exactly one <title> tag.');
+  }
+  add(CONTENT,'Meta description present',9, desc?'pass':'fail',
+    desc?('"'+desc.slice(0,90)+(desc.length>90?'…':'')+'"'):'Missing',
+    'This is the grey summary under your title in Google. It does not change ranking, but a good one convinces people to click you instead of a competitor.',
+    'Write a compelling 120–155 character summary with the service, location, and a reason to click (e.g. "Call now").');
+  if(desc) add(CONTENT,'Description length optimal',3,(desc.length>=80&&desc.length<=160)?'pass':'warn',desc.length+' characters','Too short under-sells you; over ~160 characters gets cut off.','Target 120–155 characters.');
+  add(CONTENT,'Exactly one H1 heading',8, h1.length===1?'pass':'fail',
+    h1.length+' H1 tag(s)',
+    'The H1 is the big headline on the page. None means Google cannot tell what the page is about; several muddy the signal and can look spammy.',
+    h1.length===0?'Add a single visible <h1> with your main service + city.':'Keep one <h1> and demote the others to <h2>.');
+  add(CONTENT,'Uses subheadings (H2)',3, h2.length>0?'pass':'warn',h2.length+' H2 tag(s)','Subheadings make the page easy to skim for customers and easy to understand for search engines and AI.','Break content into sections with descriptive H2 headings.');
+  add(CONTENT,'Sufficient content',5, words>=250?'pass':'warn',words+' words of visible text','Thin pages rarely rank. Google rewards pages that actually answer what the visitor came for.','Add genuinely useful content — services, areas served, FAQs — aiming for 300+ words.');
+
+  add(TECH,'Served over HTTPS',9, ssl?'pass':'fail', ssl?'Secure':'Not secure','The padlock in the browser bar. Google ranks secure sites higher and browsers scare visitors away from sites without it.','Install an SSL certificate (free via Let\'s Encrypt or your host) and force HTTPS.');
+  add(TECH,'Mobile viewport set',7, viewport?'pass':'fail', viewport?'Configured':'Missing','Without this the site looks broken on phones — and Google judges your site by its phone version first.','Add <meta name="viewport" content="width=device-width, initial-scale=1">.');
+  add(TECH,'No mixed (insecure) content',4, mixed===0?'pass':'warn', mixed===0?'Clean':(mixed+' http:// resources'),'Insecure files on a secure page trigger browser warnings and can stop images or features from loading.','Update http:// links for images/scripts/styles to https://.');
+  add(TECH,'Character encoding declared',2, charset?'pass':'warn', charset?'Declared':'Missing','Prevents letters and symbols from showing up as garbled characters.','Add <meta charset="UTF-8"> as the first head tag.');
+  add(TECH,'Language declared',2, lang?'pass':'warn', lang?('lang="'+lang+'"'):'Missing','Tells search engines what language your site is in so it reaches the right people.','Add lang="en" to the <html> tag.');
+  add(TECH,'Favicon present',1, favicon?'pass':'warn', favicon?'Present':'Missing','The little icon in the browser tab and search results — small, but it makes you look established.','Add a favicon link in the head.');
+
+  add(LOCAL,'LocalBusiness structured data',12, localSchema?'pass':'fail',
+    schemaTypes.length?('Schema: '+schemaTypes.join(', ')):'No schema found',
+    'This is the behind-the-scenes data that powers the Google Map pack and "near me" results — the single biggest win there is for a local service business.',
+    'Add JSON-LD LocalBusiness (or AutoRepair) schema with name, address, phone, hours, and geo coordinates.');
+  add(LOCAL,'Review / rating schema (stars)',4, hasReview?'pass':'warn',
+    hasReview?'Rating / review markup found':'No review or rating schema',
+    'Review and rating schema is what puts the gold star rating under your Google listing — it dramatically boosts clicks and is a strong trust signal for AI answers too.',
+    'Add AggregateRating / Review JSON-LD reflecting your real Google reviews.');
+  add(LOCAL,'Click-to-call phone link',4, tel>0?'pass':'warn', tel>0?(tel+' tel: link(s)'):'None found','A tappable phone number turns a phone visitor into a phone call with one tap. Missing it quietly costs you leads.','Wrap the phone number in <a href="tel:+1...">.');
+  add(LOCAL,'Map / location reference',3, hasMap?'pass':'warn', hasMap?'Map detected':'No map embed found','A map and visible address prove to Google (and customers) exactly where you serve.','Embed a Google Map and show the full address (matching your Google Business Profile).');
+
+  add(SOCIAL,'Open Graph tags',5, ogCount>=2?'pass':(ogCount===1?'warn':'fail'), ogCount+' of 3 core OG tags','Controls how your link looks when shared on Facebook, in texts, and on LinkedIn. A bare, ugly link looks unprofessional and gets ignored.','Add og:title, og:description, and og:image meta tags.');
+  add(SOCIAL,'Twitter / X card',3, twCard?'pass':'warn', twCard?'Configured':'Missing','Controls the preview when your link is shared on X (Twitter).','Add <meta name="twitter:card" content="summary_large_image">.');
+
+  add(MEDIA,'Images have alt text',6, !imgs.length?'warn':(withAlt/imgs.length>=0.8?'pass':(withAlt/imgs.length>=0.4?'warn':'fail')),
+    imgs.length?(withAlt+' of '+imgs.length+' images have alt text'):'No images detected in HTML',
+    'Alt text describes images for visually-impaired visitors and helps you show up in Google Images — a free spot to work in your service and city.',
+    'Add descriptive alt text to every meaningful image (e.g. "tow truck in Columbus OH").');
+  add(MEDIA,'Images have dimensions',2, !imgs.length?'pass':(withDim/Math.max(1,imgs.length)>=0.6?'pass':'warn'),
+    imgs.length?(withDim+' of '+imgs.length+' images set width/height'):'n/a','Telling the browser each image size stops the page from jumping around as it loads (something Google measures and dislikes).','Add width and height attributes to images.');
+
+  add(PERF,'Reasonable page weight',3, sizeKb<500?'pass':'warn', sizeKb+' KB of HTML','A heavy page is slow to appear, especially on phones and slower connections — and slow pages lose visitors.','Trim inline content and let the builder lazy-load below-the-fold sections.');
+  add(PERF,'Limited render-blocking scripts',3, blocking<=3?'pass':'warn', blocking+' blocking script(s) in head','Scripts loaded the wrong way make visitors stare at a blank screen longer before your page appears.','Add async or defer to non-critical head scripts.');
+
+  // ---- AI SEARCH / ANSWER ENGINES ----
+  add(AISEARCH,'Q&A / FAQ structured data',5, hasFaq?'pass':'warn',
+    hasFaq?'FAQ / Q&A schema found':'No FAQ or Q&A schema',
+    'AI answer engines (ChatGPT, Google AI Overviews, Perplexity) pull short answers straight from FAQ and Q&A markup — one of the best ways to get your business quoted in an AI answer.',
+    'Add a short FAQ section to the page and mark it up with FAQPage JSON-LD schema.');
+  add(AISEARCH,'Organization / entity data',4, (hasOrg&&hasSameAs)?'pass':(hasOrg?'warn':'fail'),
+    hasOrg?(hasSameAs?'Organization schema with linked profiles':'Organization schema, but no sameAs links'):'No Organization schema',
+    'AI tools build a profile of your business from Organization schema and "sameAs" links to your other profiles. Without it, they may not know who you are or trust your details.',
+    'Add Organization (or LocalBusiness) JSON-LD with your name, logo, and sameAs links to your Google Business Profile, Facebook, etc.');
+  add(AISEARCH,'Semantic main-content region',2, hasMain?'pass':'warn',
+    hasMain?'Uses <main> / <article>':'No <main> or <article> landmark',
+    'A clear main-content region helps AI crawlers and screen readers find your real content instead of menus and footers.',
+    'Wrap the primary content of each page in a <main> or <article> tag.');
+
+  return { url, domain:o.hostname, origin, timestamp:new Date().toLocaleString(), ssl, checks, tracking, schemaTypes,
+    stats:{images:imgs.length, scripts:doc.querySelectorAll('script').length, stylesheets:doc.querySelectorAll('link[rel="stylesheet"]').length, sizeKb, words},
+    aux:{robots:null,sitemap:null}, _origin:origin };
+}
+
+async function addAux(r){
+  // best-effort robots.txt + sitemap + AI-crawler + llms.txt, never fail the audit
+  const INDEX='Indexability & Crawlability';
+  const robots=await fetchAux(r.origin+'/robots.txt');
+  if(robots===null){
+    r.checks.push({cat:INDEX,label:'robots.txt present',points:0,status:'info',detail:'Could not verify (fetch blocked)',why:'',fix:''});
+    r.checks.push({cat:AISEARCH,label:'AI search crawlers allowed',points:0,status:'info',detail:'Could not verify robots.txt',why:'',fix:''});
+  }else{
+    const ok=/user-agent|disallow|sitemap/i.test(robots)&&!/<html/i.test(robots.slice(0,200));
+    r.checks.push({cat:INDEX,label:'robots.txt present',points:4,status:ok?'pass':'warn',
+      detail:ok?'Found':'Not found / not a valid robots file',
+      why:'This file guides search engines and is usually where your sitemap is listed.',
+      fix:'Add a /robots.txt that allows crawling and lists your sitemap.'});
+    let smUrl=(robots.match(/sitemap:\s*(\S+)/i)||[])[1];
+    let sm=null;
+    if(smUrl) sm=await fetchAux(smUrl);
+    if(!sm) sm=await fetchAux(r.origin+'/sitemap.xml');
+    const smOk= sm!==null && /<urlset|<sitemapindex/i.test(sm);
+    r.checks.push({cat:INDEX,label:'XML sitemap present',points:5,status: sm===null?'info':(smOk?'pass':'warn'),
+      detail: sm===null?'Could not verify':(smOk?'Found':'Not found'),
+      why:'A sitemap is a table of contents that helps Google find and list all your pages quickly.',
+      fix:'Generate /sitemap.xml and reference it in robots.txt.'});
+    // AI crawler access (uses the robots.txt we already fetched)
+    const ai=aiCrawlerStatus(robots);
+    let st,det;
+    if(ai.globalBlocked){ st='fail'; det='robots.txt blocks all crawlers (Disallow: /)'; }
+    else if(ai.blocked.length){ st='warn'; det='Blocking: '+ai.blocked.join(', '); }
+    else { st='pass'; det='No AI crawlers blocked'; }
+    r.checks.push({cat:AISEARCH,label:'AI search crawlers allowed',points:5,status:st,detail:det,
+      why:'Search is shifting toward AI answers. If robots.txt blocks bots like GPTBot, ClaudeBot, PerplexityBot or Google-Extended, those tools cannot read your site and will not recommend your business.',
+      fix:'In robots.txt, avoid disallowing AI crawlers (GPTBot, OAI-SearchBot, ChatGPT-User, ClaudeBot, PerplexityBot, Google-Extended) unless you have a specific reason to.'});
+  }
+  // llms.txt — emerging AI-guide standard
+  const llms=await fetchAux(r.origin+'/llms.txt');
+  const llmsOk = llms!==null && llms.length>20 && !/<html/i.test(llms.slice(0,200));
+  r.checks.push({cat:AISEARCH,label:'llms.txt AI guide file',points:3,status: llms===null?'info':(llmsOk?'pass':'warn'),
+    detail: llms===null?'Could not verify':(llmsOk?'Found':'Not found'),
+    why:'llms.txt is a fast-emerging standard: a plain-text file that tells AI assistants what your site offers and which pages matter most, so they describe and recommend you accurately.',
+    fix:'Add a /llms.txt file summarizing your business, key services, and important page links in plain text / markdown.'});
+}
+
+function score(r){
+  if(r.error) return {score:null,grade:'—',color:'#94a3b8',counts:{pass:0,warn:0,fail:0},byCat:{},verdict:'',scored:0};
+  let earned=0,total=0,scored=0; const counts={pass:0,warn:0,fail:0}; const byCat={};
+  r.checks.forEach(c=>{
+    if(c.status==='pass')counts.pass++; else if(c.status==='warn')counts.warn++; else if(c.status==='fail')counts.fail++;
+    if(c.status==='info'||!c.points) return;
+    scored++;
+    const w= c.status==='pass'?1: c.status==='warn'?0.5:0;
+    earned+=c.points*w; total+=c.points;
+    if(!byCat[c.cat])byCat[c.cat]={e:0,t:0};
+    byCat[c.cat].e+=c.points*w; byCat[c.cat].t+=c.points;
+  });
+  const s= total? Math.round(100*earned/total):0;
+  let grade,color;
+  if(s>=90){grade='A';color='#16a34a';} else if(s>=80){grade='B';color='#65a30d';}
+  else if(s>=70){grade='C';color='#f59e0b';} else if(s>=55){grade='D';color='#f97316';} else {grade='F';color='#dc2626';}
+  const verdict = s>=90?'Strong SEO foundation with only minor polish needed.'
+    : s>=80?'Solid, but a handful of fixes would meaningfully improve visibility.'
+    : s>=70?'Several important gaps are holding this site back in search.'
+    : s>=55?'Significant SEO problems are limiting how often this site is found.'
+    : 'Major SEO issues — the site is likely losing substantial search traffic.';
+  return {score:s,grade,color,counts,byCat,verdict,scored};
+}
+
+let reports=[];
+
+async function runScan(){
+  const eb=document.getElementById('errorBox'); eb.style.display='none';
+  const list=document.getElementById('urls').value.split(/[\n,]+/).map(u=>u.trim()).filter(Boolean);
+  if(!list.length){eb.textContent='Enter at least one URL.';eb.style.display='block';return;}
+  const btn=document.getElementById('scanBtn'); btn.disabled=true;
+  reports=[]; document.getElementById('actionRow').style.display='none'; document.getElementById('results').innerHTML='';
+  for(let i=0;i<list.length;i++){
+    btn.textContent=`⏳ Auditing ${i+1} of ${list.length}: ${list[i]}`;
+    try{
+      const r=await auditOne(list[i]);
+      btn.textContent=`⏳ Checking crawlability & AI readiness ${i+1}/${list.length}…`;
+      try{ await addAux(r); }catch(e){}
+      reports.push(r);
+    }catch(e){
+      let domain=list[i]; try{domain=new URL(/^https?:\/\//i.test(list[i])?list[i]:'https://'+list[i]).hostname;}catch(_){}
+      reports.push({url:list[i],domain,error:(e&&e.blocked&&e.reason)?e.reason:'Could not fetch (proxy blocked, rate-limited, or invalid URL).'});
+    }
+    renderResults();
+    if(list.length>1&&i<list.length-1) await sleep(900);
+  }
+  btn.textContent='🔎 Run Audit'; btn.disabled=false;
+  if(reports.length&&reports.every(r=>r.error)){eb.textContent='None of the sites could be audited — public proxies may be rate-limited. Try again shortly.';eb.style.display='block';}
+}
+
+function badge(r,size){
+  const sc=score(r);
+  return `<div style="width:${size}px;height:${size}px;border-radius:50%;border:5px solid ${sc.color};display:flex;flex-direction:column;align-items:center;justify-content:center;flex-shrink:0">
+    <span style="font-size:${size*0.36}px;font-weight:800;color:${sc.color};line-height:1">${sc.grade}</span>
+    <span style="font-size:${size*0.17}px;color:#64748b;margin-top:2px">${sc.score==null?'n/a':sc.score}</span></div>`;
+}
+function findRow(c){
+  const col=SEV[c.status].color;
+  const showFix = c.status!=='pass'&&c.fix;
+  return `<div class="findRow"><span class="dot" style="background:${col}"></span><div>
+    <div class="findLabel">${esc(c.label)} <span class="muted">— ${esc(c.detail)}</span></div>
+    ${showFix?`<div class="findFix"><strong>Fix:</strong> ${esc(c.fix)}</div>`:''}</div></div>`;
+}
+function cardHtml(r){
+  if(r.error) return `<div class="card"><div class="cardHead"><div><h2>${esc(r.domain)}</h2><span class="muted">Audit failed</span></div></div><p style="color:#dc2626;font-weight:600">⚠ ${esc(r.error)}</p></div>`;
+  const sc=score(r);
+  const issues=r.checks.filter(c=>c.status==='fail'||c.status==='warn').sort((a,b)=>(a.status===b.status?b.points-a.points:(a.status==='fail'?-1:1)));
+  const passes=r.checks.filter(c=>c.status==='pass');
+  return `<div class="card">
+    <div class="cardHead"><div><h2>${esc(r.domain)}</h2><span class="muted">${esc(r.timestamp)}</span></div>${badge(r,72)}</div>
+    <div class="tally">
+      <span class="pill ok">✓ ${sc.counts.pass} passing</span>
+      <span class="pill warn">! ${sc.counts.warn} to improve</span>
+      <span class="pill fail">✕ ${sc.counts.fail} critical</span>
+    </div>
+    <p class="muted" style="margin:4px 0 0">${esc(sc.verdict)}</p>
+    <div class="sectionTitle">What needs attention</div>
+    ${issues.length?issues.map(findRow).join(''):'<p class="muted">Nothing major — nice site.</p>'}
+    <details><summary>✓ What's working (${passes.length})</summary>${passes.map(findRow).join('')}</details>
+    ${r.tracking.length?`<div class="sectionTitle">Tracking detected</div><p class="muted">${r.tracking.map(esc).join(' · ')}${r.tracking.includes('Google Tag Manager')?' — note: Tag Manager can load more tags than are visible here.':''}</p>`:''}
+  </div>`;
+}
+function renderResults(){
+  document.getElementById('results').innerHTML=reports.map(cardHtml).join('');
+  const row=document.getElementById('actionRow');
+  if(reports.length){row.style.display='flex';document.getElementById('openReportBtn').textContent='📄 Open Branded Report'+(reports.length>1?` (${reports.length} sites)`:'');}
+  else row.style.display='none';
+}
+
+// ---------- REPORT ----------
+function issueCardHtml(c){
+  const s=SEV[c.status]; const im=impactOf(c.points);
+  return `<div class="issueCard" style="border-left-color:${s.sevColor}">
+    <div class="tagRow">
+      <span class="sevTag" style="background:${s.sevColor}1a;color:${s.sevColor}">${s.tag}</span>
+      <span class="sevTag" style="background:${im.col}1a;color:${im.col}">${im.lbl}</span>
+    </div>
+    <h4>${esc(c.label)}</h4>
+    <div class="why"><strong>Right now:</strong> ${esc(c.detail)}</div>
+    <div class="why"><strong>Why it matters:</strong> ${esc(c.why)}</div>
+    <div class="fix"><strong>How to fix:</strong> ${esc(c.fix)}</div>
+  </div>`;
+}
+function reportSection(r){
+  const sc=score(r);
+  if(r.error) return `<p style="color:#dc2626;font-weight:700;font-size:14px">⚠ ${esc(r.error)}</p>`;
+  const issues=r.checks.filter(c=>c.status==='fail'||c.status==='warn').sort((a,b)=>(a.status===b.status?b.points-a.points:(a.status==='fail'?-1:1)));
+  const passes=r.checks.filter(c=>c.status==='pass');
+  const cats=Object.keys(sc.byCat);
+  const top=issues.slice(0,3);
+  const quick=issues.filter(c=>isQuick(c.label));
+  const proj=issues.filter(c=>!isQuick(c.label));
+
+  // Plain-language executive summary
+  let sum=`We ran a ${sc.scored}-point inspection of this site's homepage — it passed ${sc.counts.pass} of them. `;
+  if(sc.counts.fail) sum+=`${sc.counts.fail} critical issue${sc.counts.fail>1?'s were':' was'} found that can directly limit how often you appear in Google and AI search results. `;
+  if(sc.counts.warn) sum+=`Another ${sc.counts.warn} area${sc.counts.warn>1?'s are':' is'} worth improving to win more nearby customers. `;
+  if(!sc.counts.fail&&!sc.counts.warn) sum+=`No significant problems were found — this is a well-optimized page. `;
+  else sum+=`Start with the Quick Wins below for the fastest results.`;
+
+  const execTop = `<section class="rSec execBox" style="border-color:${sc.color}">
+    <div class="execTop">
+      ${badge(r,84)}
+      <div>
+        <div class="execLabel">Executive Summary</div>
+        <div class="execScore" style="color:${sc.color}">${sc.score}/100 · Grade ${sc.grade}</div>
+        <div class="execVerdict">${esc(sc.verdict)}</div>
+        <div style="margin-top:6px;font-size:13px;color:#475569">
+          <strong style="color:#16a34a">${sc.counts.pass}</strong> passing &nbsp;·&nbsp;
+          <strong style="color:#b45309">${sc.counts.warn}</strong> to improve &nbsp;·&nbsp;
+          <strong style="color:#b91c1c">${sc.counts.fail}</strong> critical
+        </div>
+      </div>
+    </div>
+    <p class="execText">${esc(sum)}</p>
+    ${top.length?`<div class="execLabel">Top ${top.length} ${top.length>1?'priorities':'priority'}</div>
+      <ol class="execList">${top.map(c=>`<li><strong>${esc(c.label)}</strong> — ${esc(firstSentence(c.why))}</li>`).join('')}</ol>`:''}
+  </section>`;
+
+  const catBreakdown = `<div class="rH2">Category Breakdown</div>
+  ${cats.map(c=>{const p=Math.round(100*sc.byCat[c].e/sc.byCat[c].t);const col=p>=80?'#16a34a':p>=60?'#f59e0b':'#dc2626';
+    return `<div class="catbar"><span class="lbl">${esc(c)}</span><span class="track"><span class="fill" style="width:${p}%;background:${col}"></span></span><span style="flex:0 0 38px;text-align:right;font-weight:700;color:${col}">${p}%</span></div>`;}).join('')}`;
+
+  let actionPlan;
+  if(!issues.length){
+    actionPlan = `<div class="rH2">Your Action Plan</div><p style="font-size:14px;color:#16a34a;font-weight:600">No significant issues found — nice work.</p>`;
+  }else{
+    actionPlan = `<div class="rH2">Your Action Plan (${issues.length} item${issues.length>1?'s':''})</div>
+    ${quick.length?`<div class="planSub">⚡ Quick Wins <span style="font-weight:600;color:#64748b;font-size:12px">— high impact, low effort</span></div>
+      <p class="planNote">Fast fixes you (or your web person) can usually make in minutes inside your site builder or settings.</p>
+      ${quick.map(issueCardHtml).join('')}`:''}
+    ${proj.length?`<div class="planSub">🔧 Bigger Projects <span style="font-weight:600;color:#64748b;font-size:12px">— worth planning for</span></div>
+      <p class="planNote">These take a bit more work (content, code, or setup) but deliver lasting gains. ${esc(BRAND.name.replace(/,.*/,''))} can handle these for you.</p>
+      ${proj.map(issueCardHtml).join('')}`:''}`;
+  }
+
+  return `
+  ${execTop}
+  ${catBreakdown}
+  ${actionPlan}
+  <div class="rH2">What This Site Does Right (${passes.length})</div>
+  <div class="winGrid">${passes.map(c=>`<div class="win">✓ ${esc(c.label)}</div>`).join('')}</div>
+  ${r.tracking.length?`<div class="rH2">Analytics &amp; Tracking</div><p style="font-size:13px;color:#475569">Detected: ${r.tracking.map(esc).join(', ')}.${r.tracking.includes('Google Tag Manager')?' Google Tag Manager is present, which can load additional tags client-side beyond what this scan sees.':''}</p>`:''}
+  <div class="rH2">Page Snapshot</div>
+  <table class="doc"><tbody>
+    <tr><td>HTTPS</td><td>${r.ssl?'Yes':'No'}</td><td>Images</td><td>${r.stats.images}</td></tr>
+    <tr><td>Word count</td><td>${r.stats.words}</td><td>Scripts</td><td>${r.stats.scripts}</td></tr>
+    <tr><td>HTML size</td><td>${r.stats.sizeKb} KB</td><td>Structured data</td><td>${r.schemaTypes.length?esc(r.schemaTypes.join(', ')):'None'}</td></tr>
+  </tbody></table>`;
+}
+
+function ctaBlock(){
+  return `<div class="rH2">Ready to Fix This?</div>
+  <div class="ctaBox">
+    <p>Everything in this report is fixable — most of it faster than you'd think. <strong>${esc(BRAND.name)}</strong> helps local businesses turn audits like this into more calls, more customers, and higher rankings in both Google <em>and</em> the new AI search tools.</p>
+    <p><strong>Your next steps:</strong> &nbsp;1) Knock out the Quick Wins. &nbsp;2) Re-scan to confirm. &nbsp;3) Reach out and we'll handle the heavy lifting — including the AI-search items most agencies aren't even checking yet.</p>
+    <div class="ctaContact">
+      <div class="co">${esc(BRAND.name)}</div>
+      <span>✉ <a href="mailto:${esc(BRAND.email)}">${esc(BRAND.email)}</a></span>
+      <span>🌐 <a href="${esc(BRAND.webUrl)}">${esc(BRAND.web)}</a></span>
+    </div>
+  </div>`;
+}
+
+function renderReport(){
+  const fmt=new Date().toLocaleDateString(undefined,{year:'numeric',month:'long',day:'numeric'});
+  const multi=reports.length>1;
+  const brand=`<div style="text-align:right">
+    <div style="font-size:17px;font-weight:800;color:#0f172a">${esc(BRAND.name)}</div>
+    <div style="font-size:11px;color:#64748b;letter-spacing:.03em;text-transform:uppercase">${esc(BRAND.tagline)}</div>
+    <div style="font-size:12px;color:#94a3b8;margin-top:4px">${esc(BRAND.web)} · ${fmt}</div>
+  </div>`;
+
+  const summaryTable= multi?`
+    <div class="rH2">Audit Summary — ${reports.length} Sites</div>
+    <table class="doc"><thead><tr><th>Website</th><th>Score</th><th>Critical</th><th>To Improve</th><th>Passing</th></tr></thead><tbody>
+    ${reports.map(r=>{const sc=score(r);return `<tr><td>${esc(r.domain)}</td>
+      <td style="font-weight:700;color:${sc.color}">${sc.score==null?'—':sc.grade+' ('+sc.score+')'}</td>
+      <td>${r.error?'—':sc.counts.fail}</td><td>${r.error?'—':sc.counts.warn}</td><td>${r.error?'—':sc.counts.pass}</td></tr>`;}).join('')}
+    </tbody></table>`:'';
+
+  const sites=reports.map((r,i)=>`<div class="${(multi||i>0)?'page-break':''}" style="margin-top:${i>0?'34px':'0'}">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:14px;border-bottom:1px solid #e2e8f0;padding-bottom:12px;margin-bottom:18px">
+      <div><h2 style="margin:0;font-size:22px;color:#0f172a">${esc(r.domain)}</h2>
+      <div style="font-size:12px;color:#94a3b8;word-break:break-all">${esc(r.url)}</div></div>
+    </div>${reportSection(r)}</div>`).join('');
+
+  document.getElementById('printArea').innerHTML=`
+    <div class="rHeader">
+      <div><h1 style="margin:0;font-size:30px;font-weight:800;color:#0f172a">SEO &amp; AI Search Audit</h1>
+      <p style="margin:6px 0 0;font-size:15px;color:#64748b">${multi?reports.length+' websites':esc(reports[0].domain)}</p></div>
+      ${brand}
+    </div>
+    ${summaryTable}${sites}
+    ${ctaBlock()}
+    <div class="footerNote">
+      <strong>Prepared by ${esc(BRAND.name)}</strong> · ${esc(BRAND.email)} · ${esc(BRAND.web)}<br>
+      Generated ${new Date().toLocaleString()}. This audit analyzes the homepage's initial HTML. Some content and tags loaded by JavaScript (e.g. via Google Tag Manager) and other pages on the site are not included. For Core Web Vitals (real load speed) we recommend a follow-up with Google PageSpeed Insights.
+    </div>`;
+}
+function openReport(){renderReport();document.getElementById('scanView').style.display='none';document.getElementById('reportView').style.display='block';window.scrollTo(0,0);}
+function closeReport(){document.getElementById('reportView').style.display='none';document.getElementById('scanView').style.display='block';}
+</script>
+</body>
+</html>
