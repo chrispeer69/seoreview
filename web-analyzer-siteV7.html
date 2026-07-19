@@ -78,6 +78,16 @@
   table.doc th{text-align:left;padding:7px 10px;font-weight:700;color:#334155;border-bottom:2px solid #cbd5e1}
   table.doc td{padding:7px 10px;border-bottom:1px solid #eef2f7;vertical-align:top}
 
+  /* AI search explainer */
+  .aiBox{background:#f0f9ff;border:1px solid #bae6fd;border-radius:12px;padding:22px 24px;margin-top:6px;break-inside:avoid}
+  .aiBox p{font-size:13.5px;color:#334155;line-height:1.65;margin:0 0 12px}
+  .aiBox p:last-child{margin-bottom:0}
+  .aiCols{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:6px 0 14px}
+  .aiCol{background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:12px 14px}
+  .aiCol h5{margin:0 0 6px;font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;color:#0369a1}
+  .aiCol p{font-size:12.5px;line-height:1.55;margin:0;color:#475569}
+  @media(max-width:560px){.aiCols{grid-template-columns:1fr}}
+
   /* CTA */
   .ctaBox{background:#0f172a;color:#fff;border-radius:12px;padding:26px 28px;margin-top:6px;break-inside:avoid}
   .ctaBox p{margin:0 0 12px;font-size:14px;line-height:1.65;color:#e2e8f0}
@@ -578,6 +588,18 @@ function reportSection(r){
   </tbody></table>`;
 }
 
+function aiExplainer(){
+  return `<div class="rH2">Why AI Search Matters</div>
+  <div class="aiBox">
+    <p><strong>What it is.</strong> AI search tools — ChatGPT, Google's AI Overviews, Perplexity, Microsoft Copilot, and Gemini — answer a question in plain language instead of handing back a page of links. You ask, and the AI writes a direct answer, often recommending just one or two businesses by name.</p>
+    <div class="aiCols">
+      <div class="aiCol"><h5>Traditional search — Google &amp; Bing</h5><p>Hands you a list of ~10 links and lets you click around to decide. The site that ranks #1 wins the visit. Success is largely about keywords and backlinks.</p></div>
+      <div class="aiCol"><h5>AI search — ChatGPT, AI Overviews, Perplexity…</h5><p>Gives one written answer and usually names only a few sources — the customer often never clicks a website at all. The goal isn't ranking #1; it's being the business the AI recommends. It leans on clear content, structured data, and reviews to decide who to trust.</p></div>
+    </div>
+    <p><strong>Who's using it.</strong> Adoption has been the fastest of any consumer technology in history — hundreds of millions of people now use these tools every week. Usage runs highest among Gen Z and Millennials (roughly ages 18–44), who increasingly ask AI for recommendations before they ever open Google, but it's growing quickly across every age group, including older customers.</p>
+    <p><strong>Why it matters for you.</strong> People now research local services through AI the same way they used to Google them — "who's the best-reviewed shop near me," "is this company trustworthy," "who can tow my car tonight." If the AI can't read and understand your site, your business simply isn't part of that conversation. The AI-search items in this report are what make sure you are.</p>
+  </div>`;
+}
 function ctaBlock(){
   return `<div class="rH2">Ready to Fix This?</div>
   <div class="ctaBox">
@@ -621,6 +643,7 @@ function renderReport(){
       ${brand}
     </div>
     ${summaryTable}${sites}
+    ${aiExplainer()}
     ${ctaBlock()}
     <div class="footerNote">
       <strong>Prepared by ${esc(BRAND.name)}</strong><br>
