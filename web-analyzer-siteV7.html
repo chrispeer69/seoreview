@@ -117,6 +117,11 @@
 
 <div id="scanView">
   <div class="wrap">
+    <div id="teamBar" style="display:none;justify-content:flex-end;align-items:center;gap:12px;font-size:13px;margin-bottom:6px">
+      <span id="teamUser" class="muted"></span>
+      <a id="teamLoginBtn" href="/auth/google" style="display:none;text-decoration:none;font-weight:700;color:#2563eb">🔐 Team sign in</a>
+      <a id="teamLogoutBtn" href="/auth/logout" style="display:none;text-decoration:none;color:#64748b">Sign out</a>
+    </div>
     <h1 class="title">SEO &amp; AI Search Audit</h1>
     <p class="sub">Scan a site for Google SEO <em>and</em> AI-search readiness, then hand over a branded report.</p>
     <p class="byline">by Blue Collar AI, Inc.</p>
@@ -135,8 +140,21 @@
     <div id="errorBox" style="display:none"></div>
     <div id="actionRow" class="actionRow" style="display:none">
       <button class="primaryDark" id="openReportBtn" onclick="openReport()">📄 Open Branded Report</button>
-      <button class="btnGhost" id="saveBtn" onclick="saveCurrent()">💾 Save report</button>
+      <button class="btnGhost" id="saveBtn" onclick="saveCurrent()">💾 Save (this browser)</button>
+      <button class="btnGhost" id="saveTeamBtn" onclick="saveToTeam()" style="display:none">☁ Save to team</button>
     </div>
+
+    <div id="leadBox" style="display:none;margin-top:14px;padding:14px;border:1px solid #e2e8f0;border-radius:12px;background:#f8fafc">
+      <div style="font-weight:700;margin-bottom:6px">📧 Want the full report + a free consult?</div>
+      <div class="muted" style="margin-bottom:8px">Leave your email and Blue Collar AI will follow up.</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <input type="email" id="leadEmail" placeholder="you@business.com" style="flex:1;min-width:200px" />
+        <button class="primaryDark" onclick="submitLead()">Send me the report</button>
+      </div>
+      <div id="leadMsg" class="muted" style="margin-top:8px"></div>
+    </div>
+
+    <div id="teamPanel" style="display:none"></div>
     <div id="savedPanel"></div>
     <div id="results"></div>
   </div>
@@ -673,6 +691,129 @@ function renderResults(){
   const row=document.getElementById('actionRow');
   if(reports.length){row.style.display='flex';document.getElementById('openReportBtn').textContent='📄 Open Branded Report'+(reports.length>1?` (${reports.length} sites)`:'');}
   else row.style.display='none';
+  // Lead-capture prompt for public (non-team) visitors after a report
+  const lb=document.getElementById('leadBox');
+  if(lb) lb.style.display=(reports.length && !(TEAM && TEAM.user))?'block':'none';
+}
+
+// ---------- TEAM ZONE (server-backed, shared) + LEAD CAPTURE ----------
+let TEAM = { enabled:false, placesEnabled:false, user:null };
+
+function scoreSummary(){
+  return reports.map(r=>{
+    if(r.error) return {domain:r.domain, error:true, score:null, grade:null};
+    const sc=score(r); return {domain:r.domain, error:false, score:sc.score, grade:sc.grade};
+  });
+}
+
+async function initTeam(){
+  try{
+    const c=await fetch('/api/config').then(r=>r.json());
+    TEAM={ enabled:!!c.teamEnabled, placesEnabled:!!c.placesEnabled, user:c.user||null };
+  }catch(e){ TEAM={enabled:false,placesEnabled:false,user:null}; }
+  const bar=document.getElementById('teamBar');
+  const loginBtn=document.getElementById('teamLoginBtn');
+  const logoutBtn=document.getElementById('teamLogoutBtn');
+  const userEl=document.getElementById('teamUser');
+  const saveTeamBtn=document.getElementById('saveTeamBtn');
+  const teamPanel=document.getElementById('teamPanel');
+  if(!TEAM.enabled){ bar.style.display='none'; teamPanel.style.display='none'; saveTeamBtn.style.display='none'; return; }
+  bar.style.display='flex';
+  if(TEAM.user){
+    userEl.textContent='👤 '+(TEAM.user.name||TEAM.user.email);
+    loginBtn.style.display='none'; logoutBtn.style.display='inline';
+    saveTeamBtn.style.display='inline-block';
+    teamPanel.style.display='block';
+    loadTeamReports('');
+  }else{
+    userEl.textContent='';
+    loginBtn.style.display='inline'; logoutBtn.style.display='none';
+    saveTeamBtn.style.display='none';
+    teamPanel.style.display='block';
+    teamPanel.innerHTML='<div class="sectionTitle" style="margin-top:20px">🔒 Team reports</div><p class="muted">Sign in with your team Google account to save, search, and re-run customer reports.</p>';
+  }
+  if(/[?&]login=denied/.test(location.search)){ const eb=document.getElementById('errorBox'); eb.textContent='Sign-in denied — that Google account is not on the team whitelist.'; eb.style.display='block'; }
+}
+
+async function loadTeamReports(q){
+  const teamPanel=document.getElementById('teamPanel');
+  let rows=[];
+  try{ rows=await fetch('/api/reports?q='+encodeURIComponent(q||'')).then(r=>r.ok?r.json():[]); }catch(e){ rows=[]; }
+  const search=`<div style="margin:10px 0"><input type="text" id="teamSearch" placeholder="Search saved reports (name, customer, URL)…" value="${esc(q||'')}" style="width:100%" oninput="teamSearchDebounced(this.value)" /></div>`;
+  const list = rows.length ? rows.map(s=>{
+    const sm=Array.isArray(s.summary)?s.summary:[];
+    const chips=sm.slice(0,4).map(x=>x.error?`<span class="muted">${esc(x.domain)}: —</span>`:`<span style="font-weight:700">${esc(x.domain)}: ${esc(x.grade||'')} ${x.score!=null?'('+x.score+')':''}</span>`).join(' · ');
+    return `<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 12px;border:1px solid #e2e8f0;border-radius:10px;margin-top:8px">
+      <div style="min-width:0">
+        <div><strong>${esc(s.name)}</strong>${s.customer?` <span class="muted">· ${esc(s.customer)}</span>`:''} <span class="muted">· ${s.count} site${s.count===1?'':'s'}</span></div>
+        <div class="muted" style="font-size:12px">${chips||''}</div>
+        <div class="muted" style="font-size:11px">saved ${esc(new Date(s.created_at).toLocaleString())}${s.created_by?' by '+esc(s.created_by):''}</div>
+      </div>
+      <div style="display:flex;gap:8px;flex-shrink:0">
+        <button class="btnGhost" onclick="openTeam(${s.id})">Open</button>
+        <button class="btnGhost" onclick="rerunTeam(${s.id})">Re-run</button>
+        <button class="btnGhost" onclick="deleteTeam(${s.id})">Delete</button>
+      </div>
+    </div>`;
+  }).join('') : '<p class="muted">No saved reports yet — run an audit and click “☁ Save to team”.</p>';
+  teamPanel.innerHTML='<div class="sectionTitle" style="margin-top:20px">☁ Team reports</div>'+search+list;
+  const si=document.getElementById('teamSearch'); if(si && document.activeElement!==si){ /* keep focus only if user was typing */ }
+}
+
+let _teamSearchT=null;
+function teamSearchDebounced(v){ clearTimeout(_teamSearchT); _teamSearchT=setTimeout(()=>loadTeamReports(v),250); }
+
+async function saveToTeam(){
+  if(!reports.length){ alert('Run an audit first.'); return; }
+  const domains=reports.map(r=>r.domain).filter(Boolean);
+  const name=(prompt('Report name:', (domains[0]||'report')+(reports.length>1?` +${reports.length-1} more`:''))||'').trim();
+  if(!name) return;
+  const customer=(prompt('Customer / prospect name (optional):','')||'').trim();
+  try{
+    const res=await fetch('/api/reports',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,customer,reports,summary:scoreSummary()})});
+    if(!res.ok) throw 0;
+    const si=document.getElementById('teamSearch'); loadTeamReports(si?si.value:'');
+    alert('Saved to team — everyone signed in can see it.');
+  }catch(e){ alert('Could not save to team — you may need to sign in again.'); }
+}
+async function openTeam(id){
+  try{
+    const row=await fetch('/api/reports/'+id).then(r=>r.ok?r.json():null);
+    if(!row){ alert('Could not load report.'); return; }
+    reports=Array.isArray(row.results)?row.results:[];
+    renderResults();
+    document.getElementById('resetBtn').style.display='';
+    document.getElementById('results').scrollIntoView({behavior:'smooth',block:'nearest'});
+  }catch(e){ alert('Could not load report.'); }
+}
+async function rerunTeam(id){
+  try{
+    const row=await fetch('/api/reports/'+id).then(r=>r.ok?r.json():null);
+    if(!row) return;
+    document.getElementById('urls').value=(row.urls||[]).join('\n');
+    window.scrollTo({top:0,behavior:'smooth'});
+    await runScan();
+    if(reports.length && confirm('Re-run complete. Save this fresh snapshot to the team?')){
+      await fetch('/api/reports',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:row.name+' (re-run)',customer:row.customer||'',reports,summary:scoreSummary()})});
+      loadTeamReports('');
+    }
+  }catch(e){}
+}
+async function deleteTeam(id){
+  if(!confirm('Delete this team report for everyone?')) return;
+  try{ await fetch('/api/reports/'+id,{method:'DELETE'}); const si=document.getElementById('teamSearch'); loadTeamReports(si?si.value:''); }catch(e){}
+}
+
+async function submitLead(){
+  const email=(document.getElementById('leadEmail').value||'').trim();
+  const msg=document.getElementById('leadMsg');
+  if(!/.+@.+\..+/.test(email)){ msg.textContent='Please enter a valid email.'; return; }
+  const urls=reports.map(r=>r.url||r.domain).filter(Boolean);
+  try{
+    const res=await fetch('/api/lead',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email,url:urls[0]||'',meta:{urls,summary:scoreSummary()}})});
+    msg.textContent = res.ok ? 'Thanks! We’ll be in touch shortly.' : 'Could not submit — please try again.';
+    if(res.ok) document.getElementById('leadEmail').value='';
+  }catch(e){ msg.textContent='Could not submit — please try again.'; }
 }
 
 // ---------- REPORT ----------
@@ -855,6 +996,8 @@ function closeReport(){document.getElementById('reportView').style.display='none
 try{ const el=document.getElementById('psiKey'); const k=localStorage.getItem('bcai_psiKey')||window.BCAI_PSI_KEY||''; if(el&&!el.value&&k) el.value=k; }catch(e){}
 // Show any previously saved reports on load
 try{ renderSaved(); }catch(e){}
+// Initialize team zone (login state, saved-report panel) if configured
+try{ initTeam(); }catch(e){}
 </script>
 </body>
 </html>
