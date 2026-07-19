@@ -15,6 +15,9 @@
   p.sub{color:rgba(255,255,255,.85);text-align:center;margin:0 0 6px}
   p.byline{color:rgba(255,255,255,.65);text-align:center;margin:0 0 30px;font-size:.9em;font-weight:600;letter-spacing:.02em}
   #urls{width:100%;padding:14px 18px;font-size:1em;border:none;border-radius:8px;outline:none;resize:vertical;margin-bottom:12px;font-family:inherit}
+  .opts{background:rgba(255,255,255,.12);border-radius:8px;padding:12px 14px;margin-bottom:12px;display:flex;gap:12px;flex-wrap:wrap;align-items:center;color:#fff;font-size:.9em}
+  .opts label{display:flex;align-items:center;gap:8px;cursor:pointer}
+  .opts input[type=text]{flex:1 1 220px;padding:9px 11px;border:none;border-radius:6px;font-size:.9em}
   #scanBtn{width:100%;padding:15px 30px;font-size:1.05em;font-weight:700;background:#22c55e;color:#fff;border:none;border-radius:8px;cursor:pointer;margin-bottom:24px}
   #scanBtn:disabled{opacity:.85;cursor:default}
   #errorBox{background:#ef4444;color:#fff;padding:15px;border-radius:8px;margin-bottom:20px;font-weight:500;line-height:1.5}
@@ -119,6 +122,10 @@
     <p class="byline">by Blue Collar AI, Inc.</p>
 
     <textarea id="urls" rows="3" placeholder="Enter one or more sites, one per line:&#10;example.com&#10;anothershop.com"></textarea>
+    <div class="opts">
+      <label><input type="checkbox" id="psiOn" checked /> Include Google PageSpeed (mobile + desktop) — adds ~20–40s per site</label>
+      <input type="text" id="psiKey" placeholder="PageSpeed API key (optional — avoids rate limits)" />
+    </div>
     <button id="scanBtn" onclick="runScan()">🔎 Run Audit</button>
 
     <div id="errorBox" style="display:none"></div>
@@ -180,7 +187,8 @@ function firstSentence(str){const m=String(str||'').match(/^[^.]*\./);return (m?
 const PROJECT_FIXES = new Set([
   'Sufficient content','Served over HTTPS','No mixed (insecure) content','LocalBusiness structured data',
   'Reasonable page weight','Limited render-blocking scripts','Q&A / FAQ structured data',
-  'Semantic main-content region','Review / rating schema (stars)'
+  'Semantic main-content region','Review / rating schema (stars)',
+  'Mobile speed score','Desktop speed score','Largest Contentful Paint (mobile)','Layout stability (mobile CLS)'
 ]);
 function isQuick(label){ return !PROJECT_FIXES.has(label); }
 function impactOf(points){ return points>=8?{lbl:'High impact',col:'#dc2626'} : points>=4?{lbl:'Medium impact',col:'#f59e0b'} : {lbl:'Low impact',col:'#64748b'}; }
@@ -417,6 +425,68 @@ async function addAux(r){
     fix:'Add a /llms.txt file summarizing your business, key services, and important page links in plain text / markdown.'});
 }
 
+// ---- Google PageSpeed Insights (real load speed, mobile + desktop) ----
+async function fetchPSI(url, strategy, key){
+  let api=`https://www.googleapis.com/pagespeedonline/v5/runPagespeed?url=${encodeURIComponent(url)}&strategy=${strategy}&category=performance`;
+  if(key) api+=`&key=${encodeURIComponent(key)}`;
+  const ctrl=new AbortController(); const t=setTimeout(()=>ctrl.abort(),60000);
+  try{
+    const res=await fetch(api,{signal:ctrl.signal});
+    if(!res.ok) return {error:'HTTP '+res.status};
+    const j=await res.json();
+    const lh=j.lighthouseResult;
+    if(!lh) return {error:'no data'};
+    const a=lh.audits||{};
+    const perf=lh.categories&&lh.categories.performance?lh.categories.performance.score:null;
+    return {
+      score: perf==null?null:Math.round(perf*100),
+      lcp: a['largest-contentful-paint']?a['largest-contentful-paint'].numericValue:null,
+      lcpTxt: a['largest-contentful-paint']?a['largest-contentful-paint'].displayValue:null,
+      cls: a['cumulative-layout-shift']?a['cumulative-layout-shift'].numericValue:null,
+      clsTxt: a['cumulative-layout-shift']?a['cumulative-layout-shift'].displayValue:null,
+      tbtTxt: a['total-blocking-time']?a['total-blocking-time'].displayValue:null,
+      field: j.loadingExperience&&j.loadingExperience.overall_category?j.loadingExperience.overall_category:null
+    };
+  }catch(e){ return {error:e.name==='AbortError'?'timeout':'fetch failed'}; }
+  finally{ clearTimeout(t); }
+}
+async function addSpeed(r, key){
+  const SPEED='Page Speed & Core Web Vitals';
+  const [m,d]=await Promise.all([fetchPSI(r.url,'mobile',key), fetchPSI(r.url,'desktop',key)]);
+  r.speed={mobile:m, desktop:d};
+  const scoreStatus=s=> s==null?'info' : s>=90?'pass' : s>=50?'warn':'fail';
+  // Mobile score (weighted highest — Google is mobile-first)
+  if(m.error){
+    r.checks.push({cat:SPEED,label:'Mobile speed score',points:0,status:'info',detail:'Could not measure ('+m.error+')',why:'',fix:''});
+  }else{
+    r.checks.push({cat:SPEED,label:'Mobile speed score',points:6,status:scoreStatus(m.score),
+      detail:(m.score!=null?m.score+'/100':'n/a')+(m.field?' · real users: '+m.field.toLowerCase().replace('_',' '):''),
+      why:'Google measures your site by its phone version first, and most local searches happen on phones. A slow mobile site quietly loses customers and rankings.',
+      fix:'Compress and lazy-load images, enable caching / a CDN, and defer non-critical scripts. PageSpeed Insights lists the exact opportunities.'});
+    if(m.lcp!=null){ const s= m.lcp<=2500?'pass':m.lcp<=4000?'warn':'fail';
+      r.checks.push({cat:SPEED,label:'Largest Contentful Paint (mobile)',points:4,status:s,
+        detail:(m.lcpTxt||Math.round(m.lcp)+' ms')+' (good ≤ 2.5s)',
+        why:'LCP is how long until the main content actually appears. Over 2.5 seconds feels slow and hurts both conversions and ranking.',
+        fix:'Optimize the largest image / hero, use modern formats (WebP/AVIF), and remove render-blocking CSS and scripts.'});
+    }
+    if(m.cls!=null){ const s= m.cls<=0.1?'pass':m.cls<=0.25?'warn':'fail';
+      r.checks.push({cat:SPEED,label:'Layout stability (mobile CLS)',points:2,status:s,
+        detail:(m.clsTxt!=null?String(m.clsTxt):String(m.cls))+' (good ≤ 0.1)',
+        why:'CLS measures how much the page jumps around while loading. Jumpy pages frustrate visitors and are penalized by Google.',
+        fix:'Set width and height on images and reserve space for ads, banners, and embeds.'});
+    }
+  }
+  // Desktop score
+  if(d.error){
+    r.checks.push({cat:SPEED,label:'Desktop speed score',points:0,status:'info',detail:'Could not measure ('+d.error+')',why:'',fix:''});
+  }else{
+    r.checks.push({cat:SPEED,label:'Desktop speed score',points:3,status:scoreStatus(d.score),
+      detail:(d.score!=null?d.score+'/100':'n/a'),
+      why:'Desktop speed still matters for the office and at-home customers researching your services on a computer.',
+      fix:'Same wins as mobile: optimize images, enable caching, and defer non-critical scripts.'});
+  }
+}
+
 function score(r){
   if(r.error) return {score:null,grade:'—',color:'#94a3b8',counts:{pass:0,warn:0,fail:0},byCat:{},verdict:'',scored:0};
   let earned=0,total=0,scored=0; const counts={pass:0,warn:0,fail:0}; const byCat={};
@@ -448,6 +518,8 @@ async function runScan(){
   const list=document.getElementById('urls').value.split(/[\n,]+/).map(u=>u.trim()).filter(Boolean);
   if(!list.length){eb.textContent='Enter at least one URL.';eb.style.display='block';return;}
   const btn=document.getElementById('scanBtn'); btn.disabled=true;
+  const psiOn=document.getElementById('psiOn').checked;
+  const psiKey=document.getElementById('psiKey').value.trim();
   reports=[]; document.getElementById('actionRow').style.display='none'; document.getElementById('results').innerHTML='';
   for(let i=0;i<list.length;i++){
     btn.textContent=`⏳ Auditing ${i+1} of ${list.length}: ${list[i]}`;
@@ -455,6 +527,7 @@ async function runScan(){
       const r=await auditOne(list[i]);
       btn.textContent=`⏳ Checking crawlability & AI readiness ${i+1}/${list.length}…`;
       try{ await addAux(r); }catch(e){}
+      if(psiOn){ btn.textContent=`⏳ Measuring page speed (mobile + desktop) ${i+1}/${list.length}…`; try{ await addSpeed(r, psiKey); }catch(e){} }
       reports.push(r);
     }catch(e){
       let domain=list[i]; try{domain=new URL(/^https?:\/\//i.test(list[i])?list[i]:'https://'+list[i]).hostname;}catch(_){}
@@ -579,6 +652,7 @@ function reportSection(r){
   ${actionPlan}
   <div class="rH2">What This Site Does Right (${passes.length})</div>
   <div class="winGrid">${passes.map(c=>`<div class="win">✓ ${esc(c.label)}</div>`).join('')}</div>
+  ${speedPanel(r)}
   ${r.tracking.length?`<div class="rH2">Analytics &amp; Tracking</div><p style="font-size:13px;color:#475569">Detected: ${r.tracking.map(esc).join(', ')}.${r.tracking.includes('Google Tag Manager')?' Google Tag Manager is present, which can load additional tags client-side beyond what this scan sees.':''}</p>`:''}
   <div class="rH2">Page Snapshot</div>
   <table class="doc"><tbody>
@@ -588,6 +662,24 @@ function reportSection(r){
   </tbody></table>`;
 }
 
+function speedPanel(r){
+  if(!r.speed) return '';
+  const m=r.speed.mobile, d=r.speed.desktop;
+  if((!m||m.error)&&(!d||d.error)) return '';
+  const chip=(lbl,s)=>{ if(s==null)return ''; const col=s>=90?'#16a34a':s>=50?'#f59e0b':'#dc2626';
+    return `<div style="text-align:center;min-width:90px"><div style="font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;color:#64748b">${lbl}</div><div style="font-size:32px;font-weight:800;color:${col};line-height:1.1">${s}</div><div style="font-size:10px;color:#94a3b8">out of 100</div></div>`; };
+  return `<div class="rH2">Page Speed — Google PageSpeed Insights</div>
+   <div class="scoreWrap" style="display:flex;gap:26px;flex-wrap:wrap;align-items:center;background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:18px 22px">
+     ${chip('📱 Mobile', m&&!m.error?m.score:null)}
+     ${chip('💻 Desktop', d&&!d.error?d.score:null)}
+     <div style="flex:1;min-width:220px;font-size:12.5px;color:#475569;line-height:1.6">
+       ${m&&!m.error&&m.lcpTxt?`Largest Contentful Paint: <strong>${esc(m.lcpTxt)}</strong> <span style="color:#94a3b8">(mobile · good ≤ 2.5s)</span><br>`:''}
+       ${m&&!m.error&&m.clsTxt!=null?`Cumulative Layout Shift: <strong>${esc(String(m.clsTxt))}</strong> <span style="color:#94a3b8">(mobile · good ≤ 0.1)</span><br>`:''}
+       ${m&&!m.error&&m.field?`Real-world experience: <strong>${esc(m.field.toLowerCase().replace('_',' '))}</strong><br>`:''}
+       <span style="color:#94a3b8">Scores: 90–100 fast · 50–89 needs work · under 50 slow.</span>
+     </div>
+   </div>`;
+}
 function aiExplainer(){
   return `<div class="rH2">Why AI Search Matters</div>
   <div class="aiBox">
@@ -649,7 +741,7 @@ function renderReport(){
       <strong>Prepared by ${esc(BRAND.name)}</strong><br>
       ${BRAND.contacts.map(c=>`${esc(c.name)} ${esc(c.phone)} · ${esc(c.email)}`).join(' &nbsp;|&nbsp; ')}<br>
       ${BRAND.sites.map(esc).join(' &nbsp;·&nbsp; ')}<br>
-      Generated ${new Date().toLocaleString()}. This audit analyzes the homepage's initial HTML. Some content and tags loaded by JavaScript (e.g. via Google Tag Manager) and other pages on the site are not included. For Core Web Vitals (real load speed) we recommend a follow-up with Google PageSpeed Insights.
+      Generated ${new Date().toLocaleString()}. This audit analyzes the homepage's initial HTML. Some content and tags loaded by JavaScript (e.g. via Google Tag Manager) and other pages on the site are not included. Page-speed and Core Web Vitals data, when shown, is measured live by Google PageSpeed Insights.
     </div>`;
 }
 function openReport(){renderReport();document.getElementById('scanView').style.display='none';document.getElementById('reportView').style.display='block';window.scrollTo(0,0);}
