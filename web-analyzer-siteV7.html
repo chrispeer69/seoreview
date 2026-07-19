@@ -126,12 +126,18 @@
       <label><input type="checkbox" id="psiOn" checked /> Include Google PageSpeed (mobile + desktop) — adds ~20–40s per site</label>
       <input type="text" id="psiKey" placeholder="PageSpeed API key (optional — avoids rate limits)" />
     </div>
-    <button id="scanBtn" onclick="runScan()">🔎 Run Audit</button>
+    <div class="runRow" style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+      <button id="scanBtn" onclick="runScan()">🔎 Run Audit</button>
+      <button id="stopBtn" onclick="stopScan()" style="display:none;background:#dc2626;color:#fff;border:none;padding:12px 18px;border-radius:10px;font-weight:700;cursor:pointer">⏹ Stop</button>
+      <button id="resetBtn" class="btnGhost" onclick="resetScan()" style="display:none">↺ Start over</button>
+    </div>
 
     <div id="errorBox" style="display:none"></div>
     <div id="actionRow" class="actionRow" style="display:none">
       <button class="primaryDark" id="openReportBtn" onclick="openReport()">📄 Open Branded Report</button>
+      <button class="btnGhost" id="saveBtn" onclick="saveCurrent()">💾 Save report</button>
     </div>
+    <div id="savedPanel"></div>
     <div id="results"></div>
   </div>
 </div>
@@ -182,6 +188,8 @@ const AI_BOTS = ['GPTBot','OAI-SearchBot','ChatGPT-User','ClaudeBot','anthropic-
 const AISEARCH = 'AI Search & Answer Engines';
 
 const sleep = ms => new Promise(r=>setTimeout(r,ms));
+let scanCtrl=null; // whole-scan AbortController, wired to the Stop button
+function linkAbort(ctrl){ if(scanCtrl){ if(scanCtrl.signal.aborted){ try{ctrl.abort();}catch(e){} } else scanCtrl.signal.addEventListener('abort',()=>{try{ctrl.abort();}catch(e){}},{once:true}); } }
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function firstSentence(str){const m=String(str||'').match(/^[^.]*\./);return (m?m[0]:String(str||'')).trim();}
 
@@ -198,7 +206,8 @@ function impactOf(points){ return points>=8?{lbl:'High impact',col:'#dc2626'} : 
 async function fetchHtml(targetUrl){
   let lastErr;
   for(const p of PROXIES){
-    const ctrl=new AbortController(); const t=setTimeout(()=>ctrl.abort(),12000);
+    if(scanCtrl&&scanCtrl.signal.aborted) throw new DOMException('aborted','AbortError');
+    const ctrl=new AbortController(); const t=setTimeout(()=>ctrl.abort(),12000); linkAbort(ctrl);
     try{
       const res=await fetch(p.build(targetUrl),{signal:ctrl.signal});
       if(!res.ok){lastErr=new Error(p.name+' HTTP '+res.status);continue;}
@@ -211,7 +220,8 @@ async function fetchHtml(targetUrl){
 }
 async function fetchAux(u){
   for(const p of PROXIES.slice(0,4)){
-    const ctrl=new AbortController(); const t=setTimeout(()=>ctrl.abort(),8000);
+    if(scanCtrl&&scanCtrl.signal.aborted) return '';
+    const ctrl=new AbortController(); const t=setTimeout(()=>ctrl.abort(),8000); linkAbort(ctrl);
     try{
       const res=await fetch(p.build(u),{signal:ctrl.signal});
       if(res.ok){const txt=p.json?(await res.json()).contents:await res.text();clearTimeout(t);return txt||'';}
@@ -431,7 +441,7 @@ async function addAux(r){
 async function fetchPSI(url, strategy, key){
   let api=`https://www.googleapis.com/pagespeedonline/v5/runPagespeed?url=${encodeURIComponent(url)}&strategy=${strategy}&category=performance`;
   if(key) api+=`&key=${encodeURIComponent(key)}`;
-  const ctrl=new AbortController(); const t=setTimeout(()=>ctrl.abort(),60000);
+  const ctrl=new AbortController(); const t=setTimeout(()=>ctrl.abort(),60000); linkAbort(ctrl);
   try{
     const res=await fetch(api,{signal:ctrl.signal});
     if(!res.ok) return {error:'HTTP '+res.status};
@@ -514,33 +524,114 @@ function score(r){
 }
 
 let reports=[];
+let scanning=false;   // a scan loop is currently running
+let resetting=false;  // Start-over pressed mid-scan; suppress the "stopped" banner
 
 async function runScan(){
   const eb=document.getElementById('errorBox'); eb.style.display='none';
   const list=document.getElementById('urls').value.split(/[\n,]+/).map(u=>u.trim()).filter(Boolean);
   if(!list.length){eb.textContent='Enter at least one URL.';eb.style.display='block';return;}
-  const btn=document.getElementById('scanBtn'); btn.disabled=true;
+  const btn=document.getElementById('scanBtn');
+  const stopBtn=document.getElementById('stopBtn');
+  const resetBtn=document.getElementById('resetBtn');
   const psiOn=document.getElementById('psiOn').checked;
   const psiKey=document.getElementById('psiKey').value.trim();
   try{ localStorage.setItem('bcai_psiKey', psiKey); }catch(e){}
   reports=[]; document.getElementById('actionRow').style.display='none'; document.getElementById('results').innerHTML='';
-  for(let i=0;i<list.length;i++){
-    btn.textContent=`⏳ Auditing ${i+1} of ${list.length}: ${list[i]}`;
-    try{
-      const r=await auditOne(list[i]);
-      btn.textContent=`⏳ Checking crawlability & AI readiness ${i+1}/${list.length}…`;
-      try{ await addAux(r); }catch(e){}
-      if(psiOn){ btn.textContent=`⏳ Measuring page speed (mobile + desktop) ${i+1}/${list.length}…`; try{ await addSpeed(r, psiKey); }catch(e){} }
-      reports.push(r);
-    }catch(e){
-      let domain=list[i]; try{domain=new URL(/^https?:\/\//i.test(list[i])?list[i]:'https://'+list[i]).hostname;}catch(_){}
-      reports.push({url:list[i],domain,error:(e&&e.blocked&&e.reason)?e.reason:'Could not fetch (proxy blocked, rate-limited, or invalid URL).'});
+  scanning=true; resetting=false; scanCtrl=new AbortController();
+  btn.disabled=true; resetBtn.style.display='none';
+  stopBtn.style.display=''; stopBtn.disabled=false; stopBtn.textContent='⏹ Stop';
+  try{
+    for(let i=0;i<list.length;i++){
+      if(scanCtrl.signal.aborted) break;
+      btn.textContent=`⏳ Auditing ${i+1} of ${list.length}: ${list[i]}`;
+      try{
+        const r=await auditOne(list[i]);
+        if(scanCtrl.signal.aborted) break;
+        btn.textContent=`⏳ Checking crawlability & AI readiness ${i+1}/${list.length}…`;
+        try{ await addAux(r); }catch(e){}
+        if(scanCtrl.signal.aborted) break;
+        if(psiOn){ btn.textContent=`⏳ Measuring page speed (mobile + desktop) ${i+1}/${list.length}…`; try{ await addSpeed(r, psiKey); }catch(e){} }
+        if(scanCtrl.signal.aborted) break;
+        reports.push(r);
+      }catch(e){
+        if(scanCtrl.signal.aborted) break;
+        let domain=list[i]; try{domain=new URL(/^https?:\/\//i.test(list[i])?list[i]:'https://'+list[i]).hostname;}catch(_){}
+        reports.push({url:list[i],domain,error:(e&&e.blocked&&e.reason)?e.reason:'Could not fetch (proxy blocked, rate-limited, or invalid URL).'});
+      }
+      renderResults();
+      if(scanCtrl.signal.aborted) break;
+      if(list.length>1&&i<list.length-1) await sleep(900);
     }
-    renderResults();
-    if(list.length>1&&i<list.length-1) await sleep(900);
+  } finally {
+    const stopped=scanCtrl && scanCtrl.signal.aborted;
+    scanning=false;
+    btn.textContent='🔎 Run Audit'; btn.disabled=false;
+    stopBtn.style.display='none';
+    if(resetting){ resetting=false; renderResults(); }
+    else {
+      renderResults();
+      resetBtn.style.display=(reports.length||stopped)?'':'none';
+      if(stopped){ eb.textContent=`Audit stopped — ${reports.length} site${reports.length===1?'':'s'} completed. You can open, save, or start over.`; eb.style.display='block'; }
+      else if(reports.length&&reports.every(r=>r.error)){eb.textContent='None of the sites could be audited — public proxies may be rate-limited. Try again shortly.';eb.style.display='block';}
+    }
   }
-  btn.textContent='🔎 Run Audit'; btn.disabled=false;
-  if(reports.length&&reports.every(r=>r.error)){eb.textContent='None of the sites could be audited — public proxies may be rate-limited. Try again shortly.';eb.style.display='block';}
+}
+
+function stopScan(){
+  if(scanCtrl) scanCtrl.abort();
+  const sb=document.getElementById('stopBtn'); sb.disabled=true; sb.textContent='⏹ Stopping…';
+}
+
+function resetScan(){
+  resetting=true;
+  if(scanCtrl) scanCtrl.abort();
+  reports=[];
+  document.getElementById('results').innerHTML='';
+  document.getElementById('actionRow').style.display='none';
+  document.getElementById('errorBox').style.display='none';
+  document.getElementById('resetBtn').style.display='none';
+  const btn=document.getElementById('scanBtn'); btn.textContent='🔎 Run Audit'; btn.disabled=false;
+  document.getElementById('stopBtn').style.display='none';
+}
+
+// ---------- SAVED REPORTS (this browser — localStorage) ----------
+function getSaved(){ try{ return JSON.parse(localStorage.getItem('bcai_saved_reports')||'[]'); }catch(e){ return []; } }
+function setSaved(a){ try{ localStorage.setItem('bcai_saved_reports', JSON.stringify(a)); return true; }catch(e){ alert('Could not save — browser storage may be full or blocked.'); return false; } }
+function saveCurrent(){
+  if(!reports.length){ alert('Run an audit first, then save it.'); return; }
+  const domains=reports.map(r=>r.domain).filter(Boolean);
+  const def=(domains[0]||'report')+(reports.length>1?` +${reports.length-1} more`:'');
+  const name=(prompt('Name this saved report:', def)||'').trim();
+  if(!name) return;
+  const arr=getSaved();
+  arr.unshift({ id:'r'+Date.now(), name, date:new Date().toLocaleString(), count:reports.length, reports:JSON.parse(JSON.stringify(reports)) });
+  if(setSaved(arr)) renderSaved();
+}
+function loadSaved(id){
+  const s=getSaved().find(x=>x.id===id); if(!s) return;
+  reports=JSON.parse(JSON.stringify(s.reports));
+  renderResults();
+  document.getElementById('resetBtn').style.display='';
+  document.getElementById('errorBox').style.display='none';
+  document.getElementById('results').scrollIntoView({behavior:'smooth',block:'nearest'});
+}
+function deleteSaved(id){
+  if(!confirm('Delete this saved report?')) return;
+  setSaved(getSaved().filter(x=>x.id!==id)); renderSaved();
+}
+function renderSaved(){
+  const el=document.getElementById('savedPanel'); if(!el) return;
+  const arr=getSaved();
+  if(!arr.length){ el.innerHTML=''; return; }
+  el.innerHTML='<div class="sectionTitle" style="margin-top:20px">💾 Saved reports</div>'+arr.map(s=>
+    `<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 12px;border:1px solid #e2e8f0;border-radius:10px;margin-top:8px">
+      <div><strong>${esc(s.name)}</strong> <span class="muted">— ${esc(s.date)} · ${s.count} site${s.count===1?'':'s'}</span></div>
+      <div style="display:flex;gap:8px;flex-shrink:0">
+        <button class="btnGhost" onclick="loadSaved('${s.id}')">Open</button>
+        <button class="btnGhost" onclick="deleteSaved('${s.id}')">Delete</button>
+      </div>
+    </div>`).join('');
 }
 
 function badge(r,size){
@@ -760,6 +851,8 @@ function closeReport(){document.getElementById('reportView').style.display='none
 
 // Pre-fill the PageSpeed API key: saved key first, then a local config.local.js fallback
 try{ const el=document.getElementById('psiKey'); const k=localStorage.getItem('bcai_psiKey')||window.BCAI_PSI_KEY||''; if(el&&!el.value&&k) el.value=k; }catch(e){}
+// Show any previously saved reports on load
+try{ renderSaved(); }catch(e){}
 </script>
 </body>
 </html>
