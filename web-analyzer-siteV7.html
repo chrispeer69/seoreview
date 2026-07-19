@@ -166,11 +166,13 @@ const BRAND = {
 };
 
 const PROXIES = [
+  // Our own server-side proxy first (reliable, no rate limits). Public proxies
+  // remain as fallback for local file:// use or if the server is unavailable.
+  { name:'self',           build:u=>`/api/proxy?url=${encodeURIComponent(u)}`, json:false },
   { name:'allorigins-raw', build:u=>`https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`, json:false },
-  { name:'codetabs',       build:u=>`https://api.codetabs.com/v1/proxy/?quest=${encodeURIComponent(u)}`, json:false },
-  { name:'corsfix',        build:u=>`https://proxy.corsfix.com/?${u}`, json:false },
-  { name:'allorigins-get', build:u=>`https://api.allorigins.win/get?url=${encodeURIComponent(u)}`, json:true },
   { name:'corsproxy',      build:u=>`https://corsproxy.io/?url=${encodeURIComponent(u)}`, json:false },
+  { name:'allorigins-get', build:u=>`https://api.allorigins.win/get?url=${encodeURIComponent(u)}`, json:true },
+  { name:'corsfix',        build:u=>`https://proxy.corsfix.com/?${u}`, json:false },
 ];
 const TAGS = {
   'Google Analytics':['google-analytics.com','gtag(','/g/collect','_gaq'],

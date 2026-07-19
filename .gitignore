@@ -5,6 +5,10 @@
 config.local.js
 *.local.js
 
+# Node
+node_modules/
+npm-debug.log*
+
 # OS / editor cruft
 .DS_Store
 Thumbs.db
