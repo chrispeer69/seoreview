@@ -131,9 +131,13 @@
 const BRAND = {
   name:'Blue Collar AI, Inc.',
   tagline:'AI-Powered Local SEO',
-  email:'chris@bluecollarai.online',
   web:'www.bluecollarai.online',
-  webUrl:'https://www.bluecollarai.online'
+  webUrl:'https://www.bluecollarai.online',
+  sites:['www.bluecollarai.online','www.ustowalliance.com','www.usautoalliance.com'],
+  contacts:[
+    { name:'Chris',  phone:'614-633-7935', tel:'+16146337935', email:'chris@bluecollarai.online' },
+    { name:'Dustin', phone:'614-206-3606', tel:'+16142063606', email:'dustin@bluecollarai.online' },
+  ]
 };
 
 const PROXIES = [
@@ -581,8 +585,8 @@ function ctaBlock(){
     <p><strong>Your next steps:</strong> &nbsp;1) Knock out the Quick Wins. &nbsp;2) Re-scan to confirm. &nbsp;3) Reach out and we'll handle the heavy lifting — including the AI-search items most agencies aren't even checking yet.</p>
     <div class="ctaContact">
       <div class="co">${esc(BRAND.name)}</div>
-      <span>✉ <a href="mailto:${esc(BRAND.email)}">${esc(BRAND.email)}</a></span>
-      <span>🌐 <a href="${esc(BRAND.webUrl)}">${esc(BRAND.web)}</a></span>
+      ${BRAND.contacts.map(c=>`<span><strong style="color:#fff">${esc(c.name)}</strong> &nbsp;📞 <a href="tel:${esc(c.tel)}">${esc(c.phone)}</a> &nbsp;✉ <a href="mailto:${esc(c.email)}">${esc(c.email)}</a></span>`).join('')}
+      <span>🌐 ${BRAND.sites.map(s=>`<a href="https://${esc(s)}">${esc(s)}</a>`).join(' &nbsp;·&nbsp; ')}</span>
     </div>
   </div>`;
 }
@@ -619,7 +623,9 @@ function renderReport(){
     ${summaryTable}${sites}
     ${ctaBlock()}
     <div class="footerNote">
-      <strong>Prepared by ${esc(BRAND.name)}</strong> · ${esc(BRAND.email)} · ${esc(BRAND.web)}<br>
+      <strong>Prepared by ${esc(BRAND.name)}</strong><br>
+      ${BRAND.contacts.map(c=>`${esc(c.name)} ${esc(c.phone)} · ${esc(c.email)}`).join(' &nbsp;|&nbsp; ')}<br>
+      ${BRAND.sites.map(esc).join(' &nbsp;·&nbsp; ')}<br>
       Generated ${new Date().toLocaleString()}. This audit analyzes the homepage's initial HTML. Some content and tags loaded by JavaScript (e.g. via Google Tag Manager) and other pages on the site are not included. For Core Web Vitals (real load speed) we recommend a follow-up with Google PageSpeed Insights.
     </div>`;
 }
