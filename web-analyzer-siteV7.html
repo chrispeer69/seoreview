@@ -577,7 +577,7 @@ async function runScan(){
       }catch(e){
         if(scanCtrl.signal.aborted) break;
         let domain=list[i]; try{domain=new URL(/^https?:\/\//i.test(list[i])?list[i]:'https://'+list[i]).hostname;}catch(_){}
-        reports.push({url:list[i],domain,error:(e&&e.blocked&&e.reason)?e.reason:'Could not fetch (proxy blocked, rate-limited, or invalid URL).'});
+        reports.push({url:list[i],domain,error:(e&&e.blocked&&e.reason)?e.reason:'Could not fetch — the site may block automated audits (e.g., Cloudflare bot protection), or the URL is invalid / temporarily unavailable.'});
       }
       renderResults();
       if(scanCtrl.signal.aborted) break;
@@ -593,7 +593,7 @@ async function runScan(){
       renderResults();
       resetBtn.style.display=(reports.length||stopped)?'':'none';
       if(stopped){ eb.textContent=`Audit stopped — ${reports.length} site${reports.length===1?'':'s'} completed. You can open, save, or start over.`; eb.style.display='block'; }
-      else if(reports.length&&reports.every(r=>r.error)){eb.textContent='None of the sites could be audited — public proxies may be rate-limited. Try again shortly.';eb.style.display='block';}
+      else if(reports.length&&reports.every(r=>r.error)){eb.textContent='None of the sites could be audited. They may block automated access (e.g., Cloudflare bot protection), or a proxy was temporarily unavailable — try again shortly.';eb.style.display='block';}
     }
   }
 }

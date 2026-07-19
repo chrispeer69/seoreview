@@ -157,13 +157,28 @@ app.get('/api/proxy', async (req, res) => {
       signal: ctrl.signal,
       redirect: 'follow',
       headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; BlueCollarAI-SEO-Audit/1.0; +https://www.bluecollarai.online)',
-        'Accept': 'text/html,application/xhtml+xml,application/xml,text/plain;q=0.9,*/*;q=0.8',
+        // Present as a real Chrome browser so header-based bot filters pass.
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Upgrade-Insecure-Requests': '1',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'none',
+        'Sec-Fetch-User': '?1',
+        'Sec-Ch-Ua': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+        'Sec-Ch-Ua-Mobile': '?0',
+        'Sec-Ch-Ua-Platform': '"Windows"',
       },
     });
     const body = await r.text();
     res.set('Access-Control-Allow-Origin', '*');
-    res.status(r.status).type('text/plain; charset=utf-8').send(body);
+    // Detect interstitial bot-challenge pages (Cloudflare et al.) so the client
+    // shows an accurate message rather than a generic proxy error.
+    const challenged = (r.status === 403 || r.status === 503) &&
+      /just a moment|cf-chl|challenge-platform|cf-mitigated|enable javascript and cookies/i.test(body);
+    if (challenged) res.set('X-Proxy-Reason', 'bot-protection');
+    res.status(challenged ? 502 : r.status).type('text/plain; charset=utf-8').send(body);
   } catch (e) {
     res.status(502).send('fetch failed: ' + (e && e.name ? e.name : 'error'));
   } finally { clearTimeout(t); }
