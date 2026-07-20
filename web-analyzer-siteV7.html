@@ -209,8 +209,6 @@
       </div>
     </div>
 
-    <div id="teamPanel" style="display:none"></div>
-    <div id="savedPanel"></div>
     <div id="results"></div>
   </main>
 </div>
@@ -242,6 +240,7 @@
       </div>
       <div class="crmActions">
         <button class="primaryDark" onclick="runCrmQuery()">Run query</button>
+        <button class="primaryDark" onclick="addBusiness()">+ Add business</button>
         <button class="btnGhost" onclick="exportCrmCsv()">Export results (CSV)</button>
         <button class="btnGhost" onclick="document.getElementById('crmImportFile').click()">Import businesses (CSV)</button>
         <input type="file" id="crmImportFile" accept=".csv,text/csv" style="display:none" onchange="importCrmCsv(this)">
@@ -251,6 +250,8 @@
       <div id="crmMsg" class="hint" style="margin-top:10px"></div>
     </div>
     <div id="crmResults"></div>
+    <div id="teamPanel" style="display:none"></div>
+    <div id="savedPanel"></div>
   </main>
 </div>
 
@@ -859,7 +860,8 @@ async function initTeam(){
 }
 
 // Build an email-friendly (inline-styled) HTML version of the current report
-function buildReportEmail(clientName){
+function buildReportEmail(clientName, arr){
+  const R = (arr && arr.length) ? arr : reports;
   const F='font-family:system-ui,Arial,sans-serif';
   const siteBlock=(r)=>{
     if(r.error) return `<div style="border:1px solid #e5e7eb;border-radius:10px;padding:14px;margin:0 0 12px"><b>${esc(r.domain)}</b><div style="color:#b91c1c">⚠ ${esc(r.error)}</div></div>`;
@@ -877,8 +879,8 @@ function buildReportEmail(clientName){
   };
   let comp='';
   const _cmpEl=document.getElementById('compareOn');
-  if(reports.length>1 && _cmpEl && _cmpEl.checked){
-    const ranked=reports.map(r=>({r,sc:score(r)})).sort((a,b)=>((b.sc.score==null?-1:b.sc.score)-(a.sc.score==null?-1:a.sc.score)));
+  if(R.length>1 && _cmpEl && _cmpEl.checked){
+    const ranked=R.map(r=>({r,sc:score(r)})).sort((a,b)=>((b.sc.score==null?-1:b.sc.score)-(a.sc.score==null?-1:a.sc.score)));
     comp=`<h3 style="margin:18px 0 8px">Competitor Comparison</h3>
       <table style="border-collapse:collapse;width:100%;font-size:13px">
         <tr style="background:#f1f5f9"><th style="text-align:left;padding:6px 8px;border:1px solid #e5e7eb">#</th><th style="text-align:left;padding:6px 8px;border:1px solid #e5e7eb">Website</th><th style="padding:6px 8px;border:1px solid #e5e7eb">Score</th><th style="padding:6px 8px;border:1px solid #e5e7eb">Critical</th></tr>
@@ -893,7 +895,7 @@ function buildReportEmail(clientName){
     ${clientName?`<p>Hi ${esc(clientName)},</p>`:''}
     <p>Here is your website audit summary. Every item below is fixable — we can handle the heavy lifting.</p>
     ${comp}
-    ${reports.map(siteBlock).join('')}
+    ${R.map(siteBlock).join('')}
     <p style="margin-top:16px">Just reply to this email and we'll walk you through the results and a plan.</p>
     <p style="color:#64748b;font-size:12px">${esc(BRAND.name)} · ${esc(BRAND.web)}</p>
   </div>`;
@@ -1099,51 +1101,135 @@ function renderCrmResults(){
       <th>Business</th><th>Location</th><th>Industry</th><th>Grade</th><th>Memberships</th><th>Status</th><th></th>
     </tr></thead><tbody>${rows}</tbody></table></div></div>`;
 }
+function leadFields(){
+  return `
+    <div class="crmGrid">
+      <label class="crmField">Business name<input id="edName"></label>
+      <label class="crmField">Website<input id="edWebsite" placeholder="joetow.com"></label>
+      <label class="crmField">Industry<input id="edIndustry"></label>
+      <label class="crmField">Business phone<input id="edPhone"></label>
+      <label class="crmField">Email<input id="edEmail"></label>
+      <label class="crmField">Address<input id="edAddress"></label>
+      <label class="crmField">City<input id="edCity"></label>
+      <label class="crmField">State<input id="edState"></label>
+      <label class="crmField">ZIP<input id="edZip"></label>
+      <label class="crmField">Status<select id="edStatus"><option>new</option><option>working</option><option>contacted</option><option>client</option><option>lost</option></select></label>
+      <label class="crmField">Follow-up<input id="edFollow" type="date"></label>
+    </div>
+    <div class="panelTitle" style="margin:14px 0 8px">Owner contact</div>
+    <div class="crmGrid">
+      <label class="crmField">Owner name<input id="edOwnerName"></label>
+      <label class="crmField">Owner phone<input id="edOwnerPhone"></label>
+      <label class="crmField">Owner email<input id="edOwnerEmail"></label>
+    </div>
+    <div class="panelTitle" style="margin:14px 0 8px">Manager contact</div>
+    <div class="crmGrid">
+      <label class="crmField">Manager name<input id="edMgrName"></label>
+      <label class="crmField">Manager phone<input id="edMgrPhone"></label>
+      <label class="crmField">Manager email<input id="edMgrEmail"></label>
+    </div>
+    <label class="crmField" style="display:block;margin:12px 0 10px">Notes<textarea id="edNotes" rows="3" style="width:100%;padding:8px 10px;border:1px solid #cbd5e1;border-radius:6px;font:inherit"></textarea></label>`;
+}
+function fillLead(b){
+  const set=(id,v)=>{ const e=document.getElementById(id); if(e) e.value=(v==null?'':v); };
+  set('edName',b.name); set('edWebsite',b.website); set('edIndustry',b.industry); set('edPhone',b.phone); set('edEmail',b.email);
+  set('edAddress',b.address); set('edCity',b.city); set('edState',b.state); set('edZip',b.zip);
+  set('edStatus',b.status||'new'); set('edFollow',b.follow_up?String(b.follow_up).slice(0,10):'');
+  set('edOwnerName',b.owner_name); set('edOwnerPhone',b.owner_phone); set('edOwnerEmail',b.owner_email);
+  set('edMgrName',b.manager_name); set('edMgrPhone',b.manager_phone); set('edMgrEmail',b.manager_email);
+  set('edNotes',b.notes);
+}
+function leadBody(){
+  const g=id=>{ const e=document.getElementById(id); return e?e.value.trim():''; };
+  return { name:g('edName'), website:g('edWebsite'), industry:g('edIndustry'), phone:g('edPhone'), email:g('edEmail'),
+    address:g('edAddress'), city:g('edCity'), state:g('edState'), zip:g('edZip'), status:g('edStatus'), follow_up:g('edFollow'),
+    owner_name:g('edOwnerName'), owner_phone:g('edOwnerPhone'), owner_email:g('edOwnerEmail'),
+    manager_name:g('edMgrName'), manager_phone:g('edMgrPhone'), manager_email:g('edMgrEmail'), notes:g('edNotes') };
+}
+function modalShell(title, inner){
+  const wrap=document.createElement('div'); wrap.id='leadModal';
+  wrap.style.cssText='position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:50;display:flex;align-items:flex-start;justify-content:center;padding:40px 16px;overflow:auto';
+  wrap.onclick=e=>{ if(e.target===wrap) closeLead(); };
+  wrap.innerHTML=`<div style="background:#fff;border-radius:10px;max-width:600px;width:100%;padding:24px;box-shadow:0 20px 60px rgba(0,0,0,.3)">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:6px">
+      <h2 style="margin:0;font-size:20px">${title}</h2>
+      <button class="btnGhost" onclick="closeLead()">Close</button>
+    </div>${inner}</div>`;
+  document.body.appendChild(wrap);
+}
+function closeLead(){ const m=document.getElementById('leadModal'); if(m) m.remove(); }
+
+function addBusiness(){
+  modalShell('Add a business', leadFields()+`
+    <div id="edAuditMsg" class="hint"></div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px">
+      <button class="primaryDark" onclick="createBusiness()">Save business</button>
+      <button class="btnGhost" onclick="closeLead()">Cancel</button>
+    </div>`);
+  fillLead({});
+}
+async function createBusiness(){
+  const body=leadBody(); const st=document.getElementById('edAuditMsg');
+  if(!body.name && !body.website){ if(st) st.textContent='Enter at least a business name or website.'; return; }
+  if(st) st.textContent='Saving…';
+  try{ const res=await fetch('/api/crm/businesses',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const d=await res.json().catch(()=>({}));
+    if(res.ok){ closeLead(); loadCrmFacets(); runCrmQuery(); if(d.id) openLead(d.id); }
+    else if(st) st.textContent='Save failed'+(d.error?': '+d.error:'')+'.';
+  }catch(e){ if(st) st.textContent='Save failed — network error.'; }
+}
 async function openLead(id){
   let b; try{ b=await fetch('/api/crm/businesses/'+id).then(r=>r.ok?r.json():null); }catch(e){}
   if(!b){ alert('Could not load lead.'); return; }
   const comments=(Array.isArray(b.comments)?b.comments:[]).map(c=>`<div style="border-top:1px solid #eef2f7;padding:6px 0;font-size:12px"><span class="muted">${esc(new Date(c.at).toLocaleString())} · ${esc(c.by||'')}</span><br>${esc(c.text)}</div>`).join('')||'<span class="muted">No comments yet.</span>';
-  const wrap=document.createElement('div'); wrap.id='leadModal';
-  wrap.style.cssText='position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:50;display:flex;align-items:flex-start;justify-content:center;padding:40px 16px;overflow:auto';
-  wrap.onclick=e=>{ if(e.target===wrap) closeLead(); };
-  wrap.innerHTML=`<div style="background:#fff;border-radius:10px;max-width:560px;width:100%;padding:24px;box-shadow:0 20px 60px rgba(0,0,0,.3)">
-    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px">
-      <div><h2 style="margin:0;font-size:20px">${esc(b.name||b.domain)}</h2><div class="muted">${esc(b.website||b.domain||'')}</div></div>
-      <button class="btnGhost" onclick="closeLead()">Close</button>
-    </div>
-    <div class="crmGrid" style="margin-top:16px">
-      <label class="crmField">Status<select id="edStatus"><option>new</option><option>working</option><option>contacted</option><option>client</option><option>lost</option></select></label>
-      <label class="crmField">Follow-up<input id="edFollow" type="date"></label>
-      <label class="crmField">Phone<input id="edPhone"></label>
-      <label class="crmField">Email<input id="edEmail"></label>
-      <label class="crmField">Industry<input id="edIndustry"></label>
-      <label class="crmField">City<input id="edCity"></label>
-      <label class="crmField">State<input id="edState"></label>
-    </div>
-    <label class="crmField" style="margin-bottom:10px">Notes<textarea id="edNotes" rows="3" style="padding:8px 10px;border:1px solid #cbd5e1;border-radius:6px;font:inherit"></textarea></label>
-    <label class="crmField" style="margin-bottom:10px">Add comment<textarea id="edComment" rows="2" style="padding:8px 10px;border:1px solid #cbd5e1;border-radius:6px;font:inherit"></textarea></label>
+  const audited=b.last_report?('Last audit: grade '+esc(b.latest_grade||'—')+(b.latest_score!=null?' ('+b.latest_score+'/100)':'')+(b.last_audit_at?' · '+esc(new Date(b.last_audit_at).toLocaleDateString()):'')):'No audit yet — click Run audit.';
+  modalShell(esc(b.name||b.domain||'Lead'), leadFields()+`
+    <label class="crmField" style="display:block;margin:0 0 10px">Add comment<textarea id="edComment" rows="2" style="width:100%;padding:8px 10px;border:1px solid #cbd5e1;border-radius:6px;font:inherit"></textarea></label>
+    <div id="edAuditMsg" class="hint" style="margin-bottom:10px">${audited}</div>
     <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px">
       <button class="primaryDark" onclick="saveLead(${b.id})">Save</button>
-      ${b.website?`<button class="btnGhost" onclick="auditLead('${esc(b.website)}')">Run audit</button>`:''}
+      <button class="btnGhost" onclick="auditForCrm(${b.id})">Run audit</button>
+      <button class="btnGhost" onclick="emailCrmReport(${b.id})">Email report</button>
     </div>
     <div class="panelTitle" style="margin:0 0 6px">Activity</div>
-    <div style="max-height:180px;overflow:auto">${comments}</div>
-  </div>`;
-  document.body.appendChild(wrap);
-  const set=(id,v)=>{ const e=document.getElementById(id); if(e) e.value=v||''; };
-  set('edStatus',b.status||'new'); set('edFollow',b.follow_up?String(b.follow_up).slice(0,10):''); set('edPhone',b.phone);
-  set('edEmail',b.email); set('edIndustry',b.industry); set('edCity',b.city); set('edState',b.state); set('edNotes',b.notes);
+    <div style="max-height:170px;overflow:auto">${comments}</div>`);
+  fillLead(b);
 }
-function closeLead(){ const m=document.getElementById('leadModal'); if(m) m.remove(); }
 async function saveLead(id){
-  const g=id2=>document.getElementById(id2)?document.getElementById(id2).value:'';
-  const body={ status:g('edStatus'), follow_up:g('edFollow'), phone:g('edPhone'), email:g('edEmail'), industry:g('edIndustry'), city:g('edCity'), state:g('edState'), notes:g('edNotes') };
-  const cm=(g('edComment')||'').trim(); if(cm) body.comment=cm;
+  const body=leadBody();
+  const cmEl=document.getElementById('edComment'); const cm=(cmEl&&cmEl.value||'').trim(); if(cm) body.comment=cm;
   try{ const res=await fetch('/api/crm/businesses/'+id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     if(res.ok){ closeLead(); runCrmQuery(); } else alert('Save failed.'); }
   catch(e){ alert('Save failed — network error.'); }
 }
-function auditLead(website){ closeLead(); const u=document.getElementById('urls'); if(u) u.value=website; showView('scanView'); runScan(); }
+async function auditForCrm(id){
+  const wEl=document.getElementById('edWebsite'); const website=(wEl&&wEl.value||'').trim();
+  const st=document.getElementById('edAuditMsg');
+  if(!website){ if(st) st.textContent='Add a website first (and Save) to run an audit.'; return; }
+  if(st) st.textContent='Auditing '+website+'… this can take ~30s.';
+  try{
+    const r=await auditOne(website);
+    try{ await addAux(r); }catch(e){}
+    const key=(document.getElementById('psiKey')&&document.getElementById('psiKey').value)||window.BCAI_PSI_KEY||'';
+    try{ await addSpeed(r,key); }catch(e){}
+    const sc=score(r);
+    await fetch('/api/crm/businesses/'+id+'/report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({report:r,score:sc.score,grade:sc.grade})});
+    if(st) st.textContent='Audit complete — grade '+sc.grade+' ('+sc.score+'/100). Saved to this business.';
+    runCrmQuery();
+  }catch(e){ if(st) st.textContent='Audit failed — the site may block automated access, or the URL is invalid.'; }
+}
+async function emailCrmReport(id){
+  let b; try{ b=await fetch('/api/crm/businesses/'+id).then(r=>r.ok?r.json():null); }catch(e){}
+  if(!b){ alert('Could not load lead.'); return; }
+  if(!b.last_report){ alert('Run an audit first, then email it.'); return; }
+  const to=(prompt('Email the report to:', b.owner_email||b.manager_email||b.email||'')||'').trim();
+  if(!to) return;
+  const arr=Array.isArray(b.last_report)?b.last_report:[b.last_report];
+  const html=buildReportEmail(b.owner_name||b.manager_name||b.name||'', arr);
+  try{ const res=await fetch('/api/send-report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({to,subject:'Your SEO & AI Search Audit — '+BRAND.name,html})});
+    alert(res.ok?('Report emailed to '+to+'.'):'Email failed — are you signed in?'); }
+  catch(e){ alert('Email failed — network error.'); }
+}
 function exportCrmCsv(){
   if(!crmRows.length){ crmMsg('Run a query first, then export.'); return; }
   const cols=['name','domain','website','industry','address','city','state','zip','phone','email','latest_grade','latest_score','status','follow_up','memberships'];
