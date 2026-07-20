@@ -385,7 +385,13 @@ async function auditOne(raw){
 
   // guards
   const bodyText=(doc.body?.textContent||'').trim();
-  if(html.length<500||bodyText.length<30) throw {blocked:true,reason:'Empty or near-empty response — the real page could not be retrieved (proxy or site issue). Try again.'};
+  // JS-rendered shell detection: scripts / SPA markers but almost no readable text = client-side-rendered content
+  // that crawlers & AI answer engines can't see. Flag it as a finding, don't fail the audit.
+  const _scriptCount=doc.querySelectorAll('script').length;
+  const _hasBundle=/<script[^>]+\bsrc=/i.test(html);
+  const _spaRoot=/id=["'](root|app|__next|__nuxt|__gatsby|q-app|svelte)["']|data-reactroot|__NEXT_DATA__|window\.__NUXT__|ng-version|data-server-rendered/i.test(html);
+  const jsShell = bodyText.length<200 && html.length>=500 && (_hasBundle||_spaRoot||_scriptCount>=2);
+  if((html.length<500||bodyText.length<30) && !jsShell) throw {blocked:true,reason:'Empty or near-empty response — the real page could not be retrieved (proxy or site issue). Try again.'};
   const tLow=(doc.querySelector('title')?.textContent||'').trim().toLowerCase();
   const cTitles=['just a moment','one moment','attention required','checking your browser','please wait','verifying you are human','ddos-guard'];
   // Cloudflare injects "/cdn-cgi/challenge-platform/" into NORMAL 200 pages, so that substring is NOT a block signal.
@@ -519,6 +525,12 @@ async function auditOne(raw){
     hasMain?'Uses <main> / <article>':'No <main> or <article> landmark',
     'A clear main-content region helps AI crawlers and screen readers find your real content instead of menus and footers.',
     'Wrap the primary content of each page in a <main> or <article> tag.');
+
+  add(AISEARCH,'Content readable without JavaScript',6, jsShell?'fail':'pass',
+    jsShell?('Only ~'+bodyText.length+' characters of text in the raw HTML — this page is JavaScript-rendered')
+           :(words+' words of readable text in the raw HTML'),
+    'Google can render JavaScript, but AI answer engines (ChatGPT, Perplexity, Google AI Overviews) and many crawlers do NOT. If your content only appears after JavaScript runs, they see a near-empty page and cannot read or recommend you.',
+    'Serve your main content, headings and business info in the initial HTML via server-side rendering (SSR), static generation, or prerendering.');
 
   return { url, domain:o.hostname, origin, timestamp:new Date().toLocaleString(), ssl, checks, tracking, schemaTypes,
     stats:{images:imgs.length, scripts:doc.querySelectorAll('script').length, stylesheets:doc.querySelectorAll('link[rel="stylesheet"]').length, sizeKb, words},
