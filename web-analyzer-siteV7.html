@@ -956,17 +956,63 @@ function renderReport(){
   const mob = r => (r.speed&&r.speed.mobile&&!r.speed.mobile.error&&r.speed.mobile.score!=null)?r.speed.mobile.score:null;
   const dsk = r => (r.speed&&r.speed.desktop&&!r.speed.desktop.error&&r.speed.desktop.score!=null)?r.speed.desktop.score:null;
   const spCell = s => { if(s==null) return '<td>—</td>'; const col=s>=90?'#16a34a':s>=50?'#f59e0b':'#dc2626'; return `<td style="font-weight:700;color:${col}">${s}</td>`; };
-  // Fastest-first ranking when speed data exists (rows without a score fall to the bottom)
-  const rankRows = hasSpeed ? [...reports].sort((a,b)=>((mob(b)==null?-1:mob(b))-(mob(a)==null?-1:mob(a)))) : reports;
+  // ---- Competitor comparison (scales to 30+ sites) ----
+  const CAT_LOCAL='Local SEO', CAT_AI='AI Search & Answer Engines', CAT_CONTENT='On-Page Content', CAT_TECH='Technical & Mobile';
+  const catPct=(sc,name)=>{ const b=sc.byCat[name]; return (b&&b.t)?Math.round(100*b.e/b.t):null; };
+  const cRows = reports.map((r,i)=>{ const sc=score(r); return {
+    i, primary:i===0, err:!!r.error, domain:r.domain,
+    overall:sc.score, grade:sc.grade, color:sc.color,
+    mob:mob(r), dsk:dsk(r),
+    local:catPct(sc,CAT_LOCAL), ai:catPct(sc,CAT_AI), onpage:catPct(sc,CAT_CONTENT), tech:catPct(sc,CAT_TECH),
+    crit:r.error?null:sc.counts.fail,
+  };});
+  const ranked=[...cRows].sort((a,b)=>((b.overall==null?-1:b.overall)-(a.overall==null?-1:a.overall))||(a.i-b.i));
+  ranked.forEach((x,idx)=>x.rank=idx+1);
+  const colVals=k=>cRows.map(x=>x[k]).filter(v=>v!=null);
+  const bestOf=k=>{ const v=colVals(k); return v.length?Math.max(...v):null; };
+  const best={ overall:bestOf('overall'), mob:bestOf('mob'), dsk:bestOf('dsk'), local:bestOf('local'), ai:bestOf('ai'), onpage:bestOf('onpage'), tech:bestOf('tech'), crit:(colVals('crit').length?Math.min(...colVals('crit')):null) };
+  const isBest=(v,b)=>v!=null&&b!=null&&v===b;
+  const pctCell=(v,win)=>{ if(v==null) return '<td style="text-align:center;color:#cbd5e1">—</td>'; const col=v>=80?'#16a34a':v>=60?'#f59e0b':'#dc2626'; return `<td style="text-align:center;font-weight:700;color:${col}${win?';background:#dcfce7':''}">${v}%${win?' 🏆':''}</td>`; };
+  const spCell2=(v,win)=>{ if(v==null) return '<td style="text-align:center;color:#cbd5e1">—</td>'; const col=v>=90?'#16a34a':v>=50?'#f59e0b':'#dc2626'; return `<td style="text-align:center;font-weight:700;color:${col}${win?';background:#dcfce7':''}">${v}${win?' 🏆':''}</td>`; };
+  const compRows=ranked.map(x=>{
+    const rowBg=x.primary?'background:#eff6ff;':'';
+    const nameCell=`<td style="${x.primary?'border-left:3px solid #2563eb;':''}">${x.primary?`<strong>${esc(x.domain)}</strong> <span style="background:#2563eb;color:#fff;font-size:10px;font-weight:700;padding:1px 6px;border-radius:6px">CLIENT</span>`:esc(x.domain)}</td>`;
+    if(x.err) return `<tr style="${rowBg}"><td style="text-align:center;color:#94a3b8">${x.rank}</td>${nameCell}<td colspan="${(hasSpeed?2:0)+6}" style="color:#dc2626">⚠ Could not audit</td></tr>`;
+    return `<tr style="${rowBg}">
+      <td style="text-align:center;font-weight:700">${x.rank}</td>${nameCell}
+      <td style="text-align:center;font-weight:800;color:${x.color}${isBest(x.overall,best.overall)?';background:#dcfce7':''}">${x.grade} (${x.overall})${isBest(x.overall,best.overall)?' 🏆':''}</td>
+      ${hasSpeed?spCell2(x.mob,isBest(x.mob,best.mob))+spCell2(x.dsk,isBest(x.dsk,best.dsk)):''}
+      ${pctCell(x.local,isBest(x.local,best.local))}${pctCell(x.ai,isBest(x.ai,best.ai))}${pctCell(x.onpage,isBest(x.onpage,best.onpage))}${pctCell(x.tech,isBest(x.tech,best.tech))}
+      <td style="text-align:center;font-weight:700;color:${x.crit===0?'#16a34a':'#dc2626'}${x.crit!=null&&x.crit===best.crit?';background:#dcfce7':''}">${x.crit==null?'—':x.crit}</td>
+    </tr>`;
+  }).join('');
+  // Gap analysis for the first (primary) site vs. the field
+  let gap='';
+  const you=cRows[0];
+  if(multi&&you&&!you.err){
+    const yrank=ranked.find(x=>x.primary).rank;
+    const others=cRows.filter(x=>!x.primary&&!x.err);
+    const bestOther=k=>{ const v=others.map(x=>x[k]).filter(n=>n!=null); return v.length?(k==='crit'?Math.min(...v):Math.max(...v)):null; };
+    const leads=[],trails=[];
+    const unit=k=>(k==='mob'||k==='dsk'||k==='overall'||k==='crit')?'':'%';
+    const chk=(k,lbl)=>{ const yv=you[k]; if(yv==null) return; const bo=bestOther(k); if(bo==null) return; if(yv>=bo) leads.push(lbl); else trails.push(`${lbl} (${yv}${unit(k)} vs ${bo}${unit(k)})`); };
+    chk('overall','overall score'); chk('mob','mobile speed'); chk('dsk','desktop speed'); chk('local','Local SEO'); chk('ai','AI Search readiness'); chk('onpage','On-Page content'); chk('tech','Technical');
+    gap=`<div class="aiBox" style="margin-top:10px">
+      <p style="margin:0 0 6px"><strong>${esc(you.domain)}</strong> ranks <strong>#${yrank} of ${cRows.length}</strong> overall against the field.</p>
+      ${leads.length?`<p style="margin:0 0 6px;color:#166534">✅ Leading or tied on: ${leads.map(esc).join(', ')}.</p>`:''}
+      ${trails.length?`<p style="margin:0;color:#b91c1c">🎯 Biggest opportunities (behind the leader): ${trails.map(esc).join(', ')}.</p>`:'<p style="margin:0;color:#166534">Ahead of or tied with every competitor on all tracked metrics — dominant position.</p>'}
+    </div>`;
+  }
   const summaryTable= multi?`
-    <div class="rH2">Audit Summary — ${reports.length} Sites</div>
-    ${hasSpeed?'<p style="font-size:12px;color:#64748b;margin:-6px 0 12px">Sorted by mobile page speed — fastest first.</p>':''}
-    <table class="doc"><thead><tr><th>Website</th>${hasSpeed?'<th>📱 Mobile</th><th>💻 Desktop</th>':''}<th>SEO Score</th><th>Critical</th><th>To Improve</th><th>Passing</th></tr></thead><tbody>
-    ${rankRows.map(r=>{const sc=score(r);return `<tr><td>${esc(r.domain)}</td>
-      ${hasSpeed?(r.error?'<td>—</td><td>—</td>':(spCell(mob(r))+spCell(dsk(r)))):''}
-      <td style="font-weight:700;color:${sc.color}">${sc.score==null?'—':sc.grade+' ('+sc.score+')'}</td>
-      <td>${r.error?'—':sc.counts.fail}</td><td>${r.error?'—':sc.counts.warn}</td><td>${r.error?'—':sc.counts.pass}</td></tr>`;}).join('')}
-    </tbody></table>`:'';
+    <div class="rH2">Competitor Comparison — ${reports.length} Sites</div>
+    <p style="font-size:12px;color:#64748b;margin:-6px 0 10px">Ranked by overall score. <span style="background:#dcfce7;padding:1px 6px;border-radius:4px">🏆 green</span> = best in column. First site entered is marked <span style="background:#2563eb;color:#fff;padding:1px 6px;border-radius:4px;font-size:11px">CLIENT</span>.</p>
+    <div style="overflow-x:auto">
+    <table class="doc"><thead><tr>
+      <th style="text-align:center">#</th><th>Website</th><th style="text-align:center">Overall</th>
+      ${hasSpeed?'<th style="text-align:center">📱 Mobile</th><th style="text-align:center">💻 Desktop</th>':''}
+      <th style="text-align:center">Local SEO</th><th style="text-align:center">AI Search</th><th style="text-align:center">On-Page</th><th style="text-align:center">Technical</th><th style="text-align:center">Critical</th>
+    </tr></thead><tbody>${compRows}</tbody></table></div>
+    ${gap}`:'';
 
   const sites=reports.map((r,i)=>`<div class="${(multi||i>0)?'page-break':''}" style="margin-top:${i>0?'34px':'0'}">
     <div style="display:flex;justify-content:space-between;align-items:center;gap:14px;border-bottom:1px solid #e2e8f0;padding-bottom:12px;margin-bottom:18px">
