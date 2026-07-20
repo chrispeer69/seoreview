@@ -388,8 +388,11 @@ async function auditOne(raw){
   if(html.length<500||bodyText.length<30) throw {blocked:true,reason:'Empty or near-empty response — the real page could not be retrieved (proxy or site issue). Try again.'};
   const tLow=(doc.querySelector('title')?.textContent||'').trim().toLowerCase();
   const cTitles=['just a moment','one moment','attention required','checking your browser','please wait','verifying you are human','ddos-guard'];
-  const cSigs=['challenges.cloudflare.com','cf-browser-verification','__cf_chl','cf_chl_opt','/cdn-cgi/challenge','ddos-guard','_imperva_','distil_r_captcha'];
-  if(cTitles.some(t=>tLow.includes(t))||cSigs.some(s=>html.includes(s))) throw {blocked:true,reason:'Blocked by bot protection (a Cloudflare / DDoS-Guard style challenge page was returned, not the site).'};
+  // Cloudflare injects "/cdn-cgi/challenge-platform/" into NORMAL 200 pages, so that substring is NOT a block signal.
+  // Gate strong markers behind an interstitial-sized body so real pages embedding a Turnstile widget aren't flagged.
+  const cSigs=['cf-browser-verification','__cf_chl','cf_chl_opt','_imperva_','distil_r_captcha','challenges.cloudflare.com/turnstile'];
+  const interstitial = bodyText.length < 1500;
+  if(cTitles.some(t=>tLow.includes(t)) || (interstitial && cSigs.some(s=>html.includes(s)))) throw {blocked:true,reason:'Blocked by bot protection (a Cloudflare / DDoS-Guard style challenge page was returned, not the site).'};
 
   const checks=[];
   const add=(cat,label,points,status,detail,why,fix)=>checks.push({cat,label,points,status,detail,why,fix});
