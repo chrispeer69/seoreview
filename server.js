@@ -487,6 +487,23 @@ app.get('/api/crm/businesses', requireAuth, async (req, res) => {
   } catch (e) { console.error('crm list', e.message); res.status(500).json({ error: 'list_failed' }); }
 });
 
+app.post('/api/crm/geocode-missing', requireAuth, async (req, res) => {
+  if (!cfg.geocode) return res.status(503).json({ error: 'geocode_not_configured' });
+  let done = 0, failed = 0;
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, address, city, state, zip FROM crm_businesses
+        WHERE (lat IS NULL OR lng IS NULL) AND (city IS NOT NULL OR address IS NOT NULL OR zip IS NOT NULL) LIMIT 500`);
+    for (const b of rows) {
+      const q = [b.address, b.city, b.state, b.zip].filter(Boolean).join(', ');
+      const g = q ? await geocode(q) : null;
+      if (g) { await pool.query('UPDATE crm_businesses SET lat=$1, lng=$2, updated_at=now() WHERE id=$3', [g.lat, g.lng, b.id]); done++; }
+      else failed++;
+    }
+    res.json({ ok: true, geocoded: done, failed });
+  } catch (e) { console.error('geocode-missing', e.message); res.status(500).json({ error: 'backfill_failed' }); }
+});
+
 app.get('/api/crm/facets', requireAuth, async (req, res) => {
   try {
     const states = (await pool.query(`SELECT DISTINCT state FROM crm_businesses WHERE state IS NOT NULL AND state<>'' ORDER BY state`)).rows.map(r => r.state);

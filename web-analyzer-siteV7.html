@@ -243,6 +243,7 @@
         <button class="primaryDark" onclick="runCrmQuery()">Run query</button>
         <button class="primaryDark" onclick="addBusiness()">+ Add business</button>
         <button class="btnGhost" onclick="exportCrmCsv()">Export results (CSV)</button>
+        <button class="btnGhost" onclick="geocodeMissing()">Fix locations</button>
         <button class="btnGhost" onclick="document.getElementById('crmImportFile').click()">Import businesses (CSV)</button>
         <input type="file" id="crmImportFile" accept=".csv,text/csv" style="display:none" onchange="importCrmCsv(this)">
         <button class="btnGhost" onclick="document.getElementById('memImportFile').click()">Import member list (CSV)</button>
@@ -1073,17 +1074,26 @@ async function importMemberCsv(input){
 }
 async function runCrmQuery(){
   const p=new URLSearchParams();
-  const add=(k,id)=>{ const el=document.getElementById(id); const v=el?el.value.trim():''; if(v) p.set(k,v); };
-  add('state','fState'); add('city','fCity'); add('industry','fIndustry'); add('status','fStatus'); add('q','fQ');
+  const val=id=>{ const el=document.getElementById(id); return el?el.value.trim():''; };
+  const set=(k,v)=>{ if(v) p.set(k,v); };
+  const radius=val('fRadius'), city=val('fCity'), state=val('fState');
+  const useRadius = radius && (city||state);
+  set('industry',val('fIndustry')); set('status',val('fStatus')); set('q',val('fQ'));
+  if(useRadius){ p.set('center',[city,state].filter(Boolean).join(', ')); p.set('radiusMi',radius); }
+  else { set('state',state); set('city',city); }
   const assoc=document.getElementById('fAssoc').value, mem=document.getElementById('fMember').value;
   if(assoc&&mem){ p.set('association',assoc); p.set('member',mem); }
-  const radius=document.getElementById('fRadius').value.trim(), city=document.getElementById('fCity').value.trim(), state=document.getElementById('fState').value.trim();
-  if(radius&&(city||state)){ p.set('center',[city,state].filter(Boolean).join(', ')); p.set('radiusMi',radius); }
   const grades=[...document.querySelectorAll('.fGrade:checked')].map(c=>c.value);
   if(grades.length&&grades.length<5) p.set('grades',grades.join(','));
   crmMsg('Running query…');
   try{ crmRows=await fetch('/api/crm/businesses?'+p.toString()).then(r=>r.ok?r.json():[]); renderCrmResults(); crmMsg(crmRows.length+' result'+(crmRows.length===1?'':'s')+'.'); }
   catch(e){ crmMsg('Query failed.'); }
+}
+async function geocodeMissing(){
+  crmMsg('Geocoding businesses that are missing map coordinates…');
+  try{ const res=await fetch('/api/crm/geocode-missing',{method:'POST'}); const d=await res.json().catch(()=>({}));
+    crmMsg(res.ok?('Geocoded '+d.geocoded+(d.failed?(' · '+d.failed+' had no usable address'):'')+'. Re-run your radius query now.'):'Could not geocode'+(d.error?': '+d.error:'')+'.'); }
+  catch(e){ crmMsg('Geocoding failed — network error.'); }
 }
 function renderCrmResults(){
   const el=document.getElementById('crmResults');
