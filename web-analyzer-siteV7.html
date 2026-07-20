@@ -1018,6 +1018,18 @@ function speedPanel(r){
      When a page takes more than about 3 seconds to load, <strong>over half of mobile visitors give up and leave</strong> — and they almost always go straight to a competitor's site instead. A slow page silently bounces the very customers your marketing worked to bring in, costing you calls, bookings, and sales you never even see. On top of that, <strong>Google ranks slower sites lower</strong>, so a slow site is found less <em>and</em> converts less. Speeding it up keeps visitors on the page, turns more of them into customers, and lifts your rankings at the same time.
    </div>`;
 }
+function comparisonMetrics(){
+  return `<div class="rH2">What We Measured — and Why It Matters</div>
+  <div class="aiBox" style="font-size:13.5px;line-height:1.6">
+    <p style="margin:0 0 8px"><strong>Overall Score (0–100)</strong> — a single grade from a multi-point inspection of the homepage across Google SEO, local visibility, page speed, and AI-search readiness. It's the clearest snapshot of how well a site is built to be <em>found</em> and to <em>convert</em>.</p>
+    <p style="margin:0 0 8px"><strong>📱 Mobile &amp; 💻 Desktop Speed</strong> — real Google PageSpeed scores. Most local searches happen on phones, and when a page takes more than ~3 seconds to load, over half of visitors give up and leave for a competitor. Google also ranks slow sites lower — so a slow site is found less <em>and</em> converts less.</p>
+    <p style="margin:0 0 8px"><strong>Local SEO</strong> — LocalBusiness schema, click-to-call, map/address, and review stars. This is what lands a business in the Google Map Pack and in "near me" results — the highest-intent local traffic there is.</p>
+    <p style="margin:0 0 8px"><strong>AI Search</strong> — whether ChatGPT, Google AI Overviews, and Perplexity can read and recommend the business (crawler access, FAQ/entity data, llms.txt). It's the fastest-growing way people find local services, and most sites aren't set up for it at all — an easy way to get ahead.</p>
+    <p style="margin:0 0 8px"><strong>On-Page</strong> — titles, headings, descriptions, and content. The foundation search engines and AI use to understand what a page is about and when to show it.</p>
+    <p style="margin:0 0 8px"><strong>Technical</strong> — HTTPS, mobile viewport, and crawlability. If these are broken, nothing else can rank.</p>
+    <p style="margin:0"><strong>Critical</strong> — the count of high-impact problems actively costing the business search visibility right now.</p>
+  </div>`;
+}
 function aiExplainer(){
   return `<div class="rH2">Why AI Search Matters</div>
   <div class="aiBox">
@@ -1075,10 +1087,9 @@ function renderReport(){
   const pctCell=(v,win)=>{ if(v==null) return '<td style="text-align:center;color:#cbd5e1">—</td>'; const col=v>=80?'#16a34a':v>=60?'#f59e0b':'#dc2626'; return `<td style="text-align:center;font-weight:700;color:${col}${win?';background:#dcfce7':''}">${v}%</td>`; };
   const spCell2=(v,win)=>{ if(v==null) return '<td style="text-align:center;color:#cbd5e1">—</td>'; const col=v>=90?'#16a34a':v>=50?'#f59e0b':'#dc2626'; return `<td style="text-align:center;font-weight:700;color:${col}${win?';background:#dcfce7':''}">${v}</td>`; };
   const compRows=ranked.map(x=>{
-    const rowBg=x.primary?'background:#eff6ff;':'';
-    const nameCell=`<td style="${x.primary?'border-left:3px solid #2563eb;':''}">${x.primary?`<strong>${esc(x.domain)}</strong> <span style="background:#2563eb;color:#fff;font-size:10px;font-weight:700;padding:1px 6px;border-radius:6px">CLIENT</span>`:esc(x.domain)}</td>`;
-    if(x.err) return `<tr style="${rowBg}"><td style="text-align:center;color:#94a3b8">${x.rank}</td>${nameCell}<td colspan="${(hasSpeed?2:0)+6}" style="color:#dc2626">⚠ Could not audit</td></tr>`;
-    return `<tr style="${rowBg}">
+    const nameCell=`<td>${esc(x.domain)}</td>`;
+    if(x.err) return `<tr><td style="text-align:center;color:#94a3b8">${x.rank}</td>${nameCell}<td colspan="${(hasSpeed?2:0)+6}" style="color:#dc2626">⚠ Could not audit</td></tr>`;
+    return `<tr>
       <td style="text-align:center;font-weight:700">${x.rank}</td>${nameCell}
       <td style="text-align:center;font-weight:800;color:${x.color}${isBest(x.overall,best.overall)?';background:#dcfce7':''}">${x.grade} (${x.overall})</td>
       ${hasSpeed?spCell2(x.mob,isBest(x.mob,best.mob))+spCell2(x.dsk,isBest(x.dsk,best.dsk)):''}
@@ -1086,34 +1097,50 @@ function renderReport(){
       <td style="text-align:center;font-weight:700;color:${x.crit===0?'#16a34a':'#dc2626'}${x.crit!=null&&x.crit===best.crit?';background:#dcfce7':''}">${x.crit==null?'—':x.crit}</td>
     </tr>`;
   }).join('');
-  // Gap analysis for the first (primary) site vs. the field
-  let gap='';
-  const you=cRows[0];
-  if(multi&&you&&!you.err){
-    const yrank=ranked.find(x=>x.primary).rank;
-    const others=cRows.filter(x=>!x.primary&&!x.err);
-    const bestOther=k=>{ const v=others.map(x=>x[k]).filter(n=>n!=null); return v.length?(k==='crit'?Math.min(...v):Math.max(...v)):null; };
-    const leads=[],trails=[];
-    const unit=k=>(k==='mob'||k==='dsk'||k==='overall'||k==='crit')?'':'%';
-    const chk=(k,lbl)=>{ const yv=you[k]; if(yv==null) return; const bo=bestOther(k); if(bo==null) return; if(yv>=bo) leads.push(lbl); else trails.push(`${lbl} (${yv}${unit(k)} vs ${bo}${unit(k)})`); };
-    chk('overall','overall score'); chk('mob','mobile speed'); chk('dsk','desktop speed'); chk('local','Local SEO'); chk('ai','AI Search readiness'); chk('onpage','On-Page content'); chk('tech','Technical');
-    gap=`<div class="aiBox" style="margin-top:10px">
-      <p style="margin:0 0 6px"><strong>${esc(you.domain)}</strong> ranks <strong>#${yrank} of ${cRows.length}</strong> overall against the field.</p>
-      ${leads.length?`<p style="margin:0 0 6px;color:#166534">✅ Leading or tied on: ${leads.map(esc).join(', ')}.</p>`:''}
-      ${trails.length?`<p style="margin:0;color:#b91c1c">🎯 Biggest opportunities (behind the leader): ${trails.map(esc).join(', ')}.</p>`:'<p style="margin:0;color:#166534">Ahead of or tied with every competitor on all tracked metrics — dominant position.</p>'}
-    </div>`;
-  }
+
+  // Field-wide insights across all audited sites
+  const N=reports.length;
+  const scoredRows=cRows.filter(x=>!x.err);
+  const avg=scoredRows.length?Math.round(scoredRows.reduce((a,x)=>a+x.overall,0)/scoredRows.length):null;
+  const nPass=scoredRows.filter(x=>x.overall>=90).length;
+  const nCrit=scoredRows.filter(x=>x.overall<70).length;
+  const issueTally={};
+  reports.forEach(r=>{ if(r.error) return; r.checks.forEach(c=>{ if(c.status==='fail'||c.status==='warn'){ (issueTally[c.label]=issueTally[c.label]||{n:0,why:c.why}).n++; } }); });
+  const commonIssues=Object.entries(issueTally).sort((a,b)=>b[1].n-a[1].n).slice(0,6);
+  const fieldInsights=`
+    <div class="rH2">The Landscape — How These ${N} Sites Stack Up</div>
+    <p style="font-size:14px;color:#334155;line-height:1.6">We ran the same multi-point SEO &amp; AI-search audit on <strong>${N} websites</strong>. The average score is <strong>${avg==null?'n/a':avg+'/100'}</strong>. ${nPass} scored 90 or above (well-optimized)${nCrit?`, and <strong>${nCrit}</strong> ${nCrit===1?'site is':'sites are'} in critical territory (below 70) — actively losing customers to search right now`:''}.</p>
+    ${commonIssues.length?`<div class="rH2">Most Common Problems Across the Field</div>
+    <div style="font-size:13.5px;color:#334155">${commonIssues.map(([label,info])=>`<div style="padding:8px 0;border-bottom:1px solid #f1f5f9"><strong>${esc(label)}</strong> — found on <strong>${info.n} of ${N}</strong> sites. <span style="color:#64748b">${esc(firstSentence(info.why))}</span></div>`).join('')}</div>`:''}`;
+
+  const perCompany=`
+    <div class="rH2">Site-by-Site — Where Each Business Stands</div>
+    ${ranked.map(x=>{
+      const q=qualityColor(x.overall);
+      if(x.err) return `<div style="border:1px solid #e2e8f0;border-left:5px solid #94a3b8;border-radius:10px;padding:12px 14px;margin:0 0 10px">#${x.rank} · <strong>${esc(x.domain)}</strong> — <span style="color:#dc2626">could not be audited</span></div>`;
+      const r=reports[x.i];
+      const issues=r.checks.filter(c=>c.status==='fail'||c.status==='warn').sort((a,b)=>(a.status===b.status?b.points-a.points:(a.status==='fail'?-1:1))).slice(0,4);
+      return `<div style="border:1px solid #e2e8f0;border-left:5px solid ${q.c};border-radius:10px;padding:12px 14px;margin:0 0 10px;break-inside:avoid">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:10px">
+          <strong style="font-size:15px">#${x.rank} · ${esc(x.domain)}</strong>
+          <span style="font-weight:800;color:${x.color}">${x.grade} · ${x.overall}/100</span>
+        </div>
+        <div class="muted" style="font-size:12px;margin:3px 0 6px">📱 ${x.mob==null?'—':x.mob} · 💻 ${x.dsk==null?'—':x.dsk} · Local SEO ${x.local==null?'—':x.local+'%'} · AI Search ${x.ai==null?'—':x.ai+'%'} · ${x.crit} critical</div>
+        ${issues.length?`<div style="font-size:13px;color:#0f172a"><strong>Top fixes:</strong> ${issues.map(c=>esc(c.label)).join(' · ')}</div>`:'<div style="font-size:13px;color:#16a34a">No major issues found.</div>'}
+      </div>`;
+    }).join('')}`;
+
   const compareOn = multi && document.getElementById('compareOn') && document.getElementById('compareOn').checked;
-  const summaryTable= compareOn?`
-    <div class="rH2">Competitor Comparison — ${reports.length} Sites</div>
-    <p style="font-size:12px;color:#64748b;margin:-6px 0 10px">Ranked by overall score. <span style="background:#dcfce7;padding:1px 6px;border-radius:4px">Green</span> = best in column. First site entered is marked <span style="background:#2563eb;color:#fff;padding:1px 6px;border-radius:4px;font-size:11px">CLIENT</span>.</p>
+  const rankingsTable=`
+    <div class="rH2">The Rankings — ${reports.length} Sites Compared</div>
+    <p style="font-size:12px;color:#64748b;margin:-6px 0 10px">Ranked by overall score. <span style="background:#dcfce7;padding:1px 6px;border-radius:4px">Green</span> = best in column.</p>
     <div style="overflow-x:auto">
     <table class="doc"><thead><tr>
       <th style="text-align:center">#</th><th>Website</th><th style="text-align:center">Overall</th>
       ${hasSpeed?'<th style="text-align:center">📱 Mobile</th><th style="text-align:center">💻 Desktop</th>':''}
       <th style="text-align:center">Local SEO</th><th style="text-align:center">AI Search</th><th style="text-align:center">On-Page</th><th style="text-align:center">Technical</th><th style="text-align:center">Critical</th>
-    </tr></thead><tbody>${compRows}</tbody></table></div>
-    ${gap}`:'';
+    </tr></thead><tbody>${compRows}</tbody></table></div>`;
+  const comparisonMeat = fieldInsights + rankingsTable + comparisonMetrics() + perCompany;
 
   const sites=reports.map((r,i)=>`<div class="${(multi||i>0)?'page-break':''}" style="margin-top:${i>0?'34px':'0'}">
     <div style="display:flex;justify-content:space-between;align-items:center;gap:14px;border-bottom:1px solid #e2e8f0;padding-bottom:12px;margin-bottom:18px">
@@ -1123,11 +1150,11 @@ function renderReport(){
 
   document.getElementById('printArea').innerHTML=`
     <div class="rHeader">
-      <div><h1 style="margin:0;font-size:30px;font-weight:800;color:#0f172a">SEO &amp; AI Search Audit</h1>
-      <p style="margin:6px 0 0;font-size:15px;color:#64748b">${multi?reports.length+' websites':esc(reports[0].domain)}</p></div>
+      <div><h1 style="margin:0;font-size:30px;font-weight:800;color:#0f172a">${compareOn?'SEO &amp; AI Search Comparison':'SEO &amp; AI Search Audit'}</h1>
+      <p style="margin:6px 0 0;font-size:15px;color:#64748b">${compareOn?reports.length+' websites compared':(multi?reports.length+' websites':esc(reports[0].domain))}</p></div>
       ${brand}
     </div>
-    ${summaryTable}${sites}
+    ${compareOn?comparisonMeat:sites}
     ${aiExplainer()}
     ${ctaBlock()}
     <div class="footerNote">
