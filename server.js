@@ -305,6 +305,16 @@ app.delete('/api/reports/:id', requireAuth, async (req, res) => {
   catch (e) { res.status(500).json({ error: 'delete_failed' }); }
 });
 
+// Send a finished report to a client (team-only — protects sending reputation)
+app.post('/api/send-report', requireAuth, async (req, res) => {
+  const { to, subject, html } = req.body || {};
+  if (!to || !/.+@.+\..+/.test(to) || !html) return res.status(400).json({ error: 'to_and_html_required' });
+  if (!process.env.RESEND_API_KEY) return res.status(503).json({ error: 'email_not_configured' });
+  const r = await sendEmail({ to, subject: subject || 'Your SEO Audit', html, replyTo: req.user.email });
+  if (r && r.ok) return res.json({ ok: true });
+  return res.status(502).json({ error: 'send_failed' });
+});
+
 app.get('/healthz', (req, res) => res.type('text/plain').send('ok'));
 
 // ---------- Static public tool ----------

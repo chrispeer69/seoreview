@@ -149,6 +149,7 @@
       <button id="stopBtn" onclick="stopScan()" style="display:none;background:#dc2626;color:#fff;border:none;padding:12px 18px;border-radius:10px;font-weight:700;cursor:pointer">⏹ Stop</button>
       <button id="resetBtn" class="btnGhost" onclick="resetScan()" style="display:none">↺ Start over</button>
     </div>
+    <p style="color:rgba(255,255,255,.72);font-size:.82em;margin:2px 0 18px">💡 Comparing competitors? Enter your client first, then each competitor on its own line — the report opens with a ranked side-by-side comparison.</p>
 
     <div id="errorBox" style="display:none"></div>
     <div id="actionRow" class="actionRow" style="display:none">
@@ -176,6 +177,7 @@
 <div id="reportView">
   <div class="toolbar no-print">
     <button class="btnGhost" onclick="closeReport()">← Back</button>
+    <button class="btnGhost" id="emailClientBtn" onclick="emailToClient()" style="display:none">📧 Email to client</button>
     <button class="btnPrint" onclick="window.print()">🖨 Print / Save as PDF</button>
   </div>
   <div class="docPad"><div class="printArea" id="printArea"></div></div>
@@ -702,7 +704,7 @@ function cardHtml(r){
 function renderResults(){
   document.getElementById('results').innerHTML=reports.map(cardHtml).join('');
   const row=document.getElementById('actionRow');
-  if(reports.length){row.style.display='flex';document.getElementById('openReportBtn').textContent='📄 Open Branded Report'+(reports.length>1?` (${reports.length} sites)`:'');}
+  if(reports.length){row.style.display='flex';document.getElementById('openReportBtn').textContent=reports.length>1?`📊 Open Comparison Report (${reports.length} sites)`:'📄 Open Branded Report';}
   else row.style.display='none';
   // Lead-capture prompt for public (non-team) visitors after a report
   const lb=document.getElementById('leadBox');
@@ -745,7 +747,63 @@ async function initTeam(){
     teamPanel.style.display='block';
     teamPanel.innerHTML='<div class="sectionTitle" style="margin-top:20px">🔒 Team reports</div><p class="muted">Sign in with your team Google account to save, search, and re-run customer reports.</p>';
   }
+  const ecb=document.getElementById('emailClientBtn'); if(ecb) ecb.style.display=(TEAM.enabled&&TEAM.user)?'inline-block':'none';
   if(/[?&]login=denied/.test(location.search)){ const eb=document.getElementById('errorBox'); eb.textContent='Sign-in denied — that Google account is not on the team whitelist.'; eb.style.display='block'; }
+}
+
+// Build an email-friendly (inline-styled) HTML version of the current report
+function buildReportEmail(clientName){
+  const F='font-family:system-ui,Arial,sans-serif';
+  const siteBlock=(r)=>{
+    if(r.error) return `<div style="border:1px solid #e5e7eb;border-radius:10px;padding:14px;margin:0 0 12px"><b>${esc(r.domain)}</b><div style="color:#b91c1c">⚠ ${esc(r.error)}</div></div>`;
+    const sc=score(r);
+    const issues=r.checks.filter(c=>c.status==='fail'||c.status==='warn').sort((a,b)=>(a.status===b.status?b.points-a.points:(a.status==='fail'?-1:1))).slice(0,5);
+    const li=issues.map(c=>`<li style="margin:4px 0"><b>${esc(c.label)}</b>${c.fix?` — <span style="color:#475569">${esc(c.fix)}</span>`:''}</li>`).join('');
+    return `<div style="border:1px solid #e5e7eb;border-radius:10px;padding:16px;margin:0 0 14px">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px">
+        <b style="font-size:16px">${esc(r.domain)}</b>
+        <span style="font-weight:800;color:${sc.color}">${sc.grade} · ${sc.score}/100</span>
+      </div>
+      <div style="color:#475569;font-size:13px;margin:4px 0 8px">${sc.counts.pass} passing · ${sc.counts.warn} to improve · ${sc.counts.fail} critical</div>
+      ${li?`<div style="font-size:13px;color:#0f172a"><b>Top priorities:</b><ul style="margin:6px 0 0;padding-left:18px">${li}</ul></div>`:''}
+    </div>`;
+  };
+  let comp='';
+  if(reports.length>1){
+    const ranked=reports.map(r=>({r,sc:score(r)})).sort((a,b)=>((b.sc.score==null?-1:b.sc.score)-(a.sc.score==null?-1:a.sc.score)));
+    comp=`<h3 style="margin:18px 0 8px">Competitor Comparison</h3>
+      <table style="border-collapse:collapse;width:100%;font-size:13px">
+        <tr style="background:#f1f5f9"><th style="text-align:left;padding:6px 8px;border:1px solid #e5e7eb">#</th><th style="text-align:left;padding:6px 8px;border:1px solid #e5e7eb">Website</th><th style="padding:6px 8px;border:1px solid #e5e7eb">Score</th><th style="padding:6px 8px;border:1px solid #e5e7eb">Critical</th></tr>
+        ${ranked.map((x,i)=>`<tr><td style="padding:6px 8px;border:1px solid #e5e7eb">${i+1}</td><td style="padding:6px 8px;border:1px solid #e5e7eb">${esc(x.r.domain)}</td><td style="text-align:center;padding:6px 8px;border:1px solid #e5e7eb;font-weight:700;color:${x.sc.color}">${x.sc.score==null?'—':x.sc.grade+' ('+x.sc.score+')'}</td><td style="text-align:center;padding:6px 8px;border:1px solid #e5e7eb">${x.r.error?'—':x.sc.counts.fail}</td></tr>`).join('')}
+      </table>`;
+  }
+  return `<div style="${F};max-width:640px;color:#0f172a">
+    <div style="border-bottom:3px solid #0f172a;padding-bottom:10px;margin-bottom:16px">
+      <div style="font-size:20px;font-weight:800">SEO &amp; AI Search Audit</div>
+      <div style="color:#64748b;font-size:13px">${esc(BRAND.name)} · ${esc(BRAND.tagline)}</div>
+    </div>
+    ${clientName?`<p>Hi ${esc(clientName)},</p>`:''}
+    <p>Here is your website audit summary. Every item below is fixable — we can handle the heavy lifting.</p>
+    ${comp}
+    ${reports.map(siteBlock).join('')}
+    <p style="margin-top:16px">Just reply to this email and we'll walk you through the results and a plan.</p>
+    <p style="color:#64748b;font-size:12px">${esc(BRAND.name)} · ${esc(BRAND.web)}</p>
+  </div>`;
+}
+
+async function emailToClient(){
+  if(!reports.length){ alert('Open a report first.'); return; }
+  if(!(TEAM&&TEAM.user)){ alert('Sign in with your team Google account to email reports to clients.'); return; }
+  const to=(prompt('Client email address:')||'').trim();
+  if(!to) return;
+  if(!/.+@.+\..+/.test(to)){ alert('Please enter a valid email address.'); return; }
+  const name=(prompt('Client name (optional — used in the greeting):','')||'').trim();
+  const html=buildReportEmail(name);
+  try{
+    const res=await fetch('/api/send-report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({to,subject:`Your SEO & AI Search Audit — ${BRAND.name}`,html})});
+    if(res.ok){ alert('Report emailed to '+to+'.'); }
+    else { const d=await res.json().catch(()=>({})); alert('Could not send'+(d.error?' ('+d.error+')':'')+'. Check that team email is configured.'); }
+  }catch(e){ alert('Could not send — network error.'); }
 }
 
 async function loadTeamReports(q){
