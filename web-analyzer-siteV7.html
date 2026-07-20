@@ -862,46 +862,73 @@ async function initTeam(){
   if(/[?&]login=denied/.test(location.search)){ const eb=document.getElementById('errorBox'); eb.textContent='Sign-in denied — that Google account is not on the team whitelist.'; eb.style.display='block'; }
 }
 
-// Build an email-friendly (inline-styled) HTML version of the current report
+// Build a persuasive, sales-driven, inline-styled email of the report
 function buildReportEmail(clientName, arr){
   const R = (arr && arr.length) ? arr : reports;
-  const F='font-family:system-ui,Arial,sans-serif';
-  const siteBlock=(r)=>{
-    if(r.error) return `<div style="border:1px solid #e5e7eb;border-radius:10px;padding:14px;margin:0 0 12px"><b>${esc(r.domain)}</b><div style="color:#b91c1c">⚠ ${esc(r.error)}</div></div>`;
+  const F="font-family:'Helvetica Neue',Arial,sans-serif;color:#0f172a";
+  const contacts=(BRAND.contacts||[]).map(c=>esc(c.name)+' &nbsp;·&nbsp; '+esc(c.phone)+' &nbsp;·&nbsp; '+esc(c.email)).join('<br>');
+  const site=(r)=>{
+    if(r.error) return `<div style="border:1px solid #e5e7eb;border-radius:8px;padding:16px;margin:0 0 16px"><b>${esc(r.domain)}</b><div style="color:#b91c1c">We couldn't reach this site to audit it.</div></div>`;
     const sc=score(r);
-    const issues=r.checks.filter(c=>c.status==='fail'||c.status==='warn').sort((a,b)=>(a.status===b.status?b.points-a.points:(a.status==='fail'?-1:1))).slice(0,5);
-    const li=issues.map(c=>`<li style="margin:4px 0"><b>${esc(c.label)}</b>${c.fix?` — <span style="color:#475569">${esc(c.fix)}</span>`:''}</li>`).join('');
-    return `<div style="border:1px solid #e5e7eb;border-radius:10px;padding:16px;margin:0 0 14px">
-      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px">
-        <b style="font-size:16px">${esc(r.domain)}</b>
-        <span style="font-weight:800;color:${sc.color}">${sc.grade} · ${sc.score}/100</span>
+    const col=sc.score>=91?'#16a34a':sc.score>=80?'#ea580c':'#dc2626';
+    const issues=r.checks.filter(c=>c.status==='fail'||c.status==='warn').sort((a,b)=>(a.status===b.status?b.points-a.points:(a.status==='fail'?-1:1)));
+    const quick=issues.filter(c=>isQuick(c.label)).slice(0,8);
+    const proj=issues.filter(c=>!isQuick(c.label)).slice(0,6);
+    const verdict = sc.score>=91
+      ? `Good news — ${esc(r.domain)} is in solid shape. A few refinements below will keep you ahead of the competitors chasing you.`
+      : sc.score>=80
+      ? `${esc(r.domain)} is leaving money on the table. The fixable issues below are keeping you off the top of Google and out of AI search results — right where your competitors are showing up instead.`
+      : `This is costing you customers right now. When people search Google — or ask ChatGPT and Google's AI who to call — ${esc(r.domain)} is being passed over for competitors. The good news: every issue below is fixable.`;
+    const speedLine=(r.speed&&r.speed.mobile&&!r.speed.mobile.error&&r.speed.mobile.score!=null)
+      ? `<div style="font-size:13px;color:#475569;margin:0 0 12px">📱 Mobile speed: <b style="color:${r.speed.mobile.score>=90?'#16a34a':r.speed.mobile.score>=50?'#ea580c':'#dc2626'}">${r.speed.mobile.score}/100</b> — slow pages bounce customers straight to a competitor.</div>` : '';
+    const li=list=>list.map(c=>`<li style="margin:7px 0"><b>${esc(c.label)}</b>${c.fix?`<br><span style="color:#475569">${esc(c.fix)}</span>`:''}</li>`).join('');
+    return `<div style="border:1px solid #e5e7eb;border-radius:10px;margin:0 0 20px;overflow:hidden">
+      <div style="background:${col};color:#fff;padding:16px 20px">
+        <div style="font-size:12px;letter-spacing:.1em;text-transform:uppercase;opacity:.85">Audit result</div>
+        <div style="font-size:21px;font-weight:800;margin-top:2px">${esc(r.domain)} — Grade ${sc.grade} · ${sc.score}/100</div>
       </div>
-      <div style="color:#475569;font-size:13px;margin:4px 0 8px">${sc.counts.pass} passing · ${sc.counts.warn} to improve · ${sc.counts.fail} critical</div>
-      ${li?`<div style="font-size:13px;color:#0f172a"><b>Top priorities:</b><ul style="margin:6px 0 0;padding-left:18px">${li}</ul></div>`:''}
+      <div style="padding:18px 20px">
+        <p style="margin:0 0 12px;font-size:15px;line-height:1.6">${verdict}</p>
+        <div style="font-size:13px;color:#475569;margin:0 0 12px"><b style="color:#b91c1c">${sc.counts.fail} critical</b> &nbsp;·&nbsp; <b style="color:#b45309">${sc.counts.warn} to improve</b> &nbsp;·&nbsp; ${sc.counts.pass} passing</div>
+        ${speedLine}
+        ${quick.length?`<div style="font-weight:800;font-size:12px;text-transform:uppercase;letter-spacing:.06em;margin:0 0 4px">Quick wins</div><ul style="margin:0 0 14px;padding-left:18px;font-size:14px;line-height:1.5">${li(quick)}</ul>`:''}
+        ${proj.length?`<div style="font-weight:800;font-size:12px;text-transform:uppercase;letter-spacing:.06em;margin:0 0 4px">Bigger opportunities</div><ul style="margin:0;padding-left:18px;font-size:14px;line-height:1.5">${li(proj)}</ul>`:''}
+      </div>
     </div>`;
   };
-  let comp='';
-  const _cmpEl=document.getElementById('compareOn');
-  if(R.length>1 && _cmpEl && _cmpEl.checked){
-    const ranked=R.map(r=>({r,sc:score(r)})).sort((a,b)=>((b.sc.score==null?-1:b.sc.score)-(a.sc.score==null?-1:a.sc.score)));
-    comp=`<h3 style="margin:18px 0 8px">Competitor Comparison</h3>
-      <table style="border-collapse:collapse;width:100%;font-size:13px">
-        <tr style="background:#f1f5f9"><th style="text-align:left;padding:6px 8px;border:1px solid #e5e7eb">#</th><th style="text-align:left;padding:6px 8px;border:1px solid #e5e7eb">Website</th><th style="padding:6px 8px;border:1px solid #e5e7eb">Score</th><th style="padding:6px 8px;border:1px solid #e5e7eb">Critical</th></tr>
-        ${ranked.map((x,i)=>`<tr><td style="padding:6px 8px;border:1px solid #e5e7eb">${i+1}</td><td style="padding:6px 8px;border:1px solid #e5e7eb">${esc(x.r.domain)}</td><td style="text-align:center;padding:6px 8px;border:1px solid #e5e7eb;font-weight:700;color:${x.sc.color}">${x.sc.score==null?'—':x.sc.grade+' ('+x.sc.score+')'}</td><td style="text-align:center;padding:6px 8px;border:1px solid #e5e7eb">${x.r.error?'—':x.sc.counts.fail}</td></tr>`).join('')}
-      </table>`;
-  }
-  return `<div style="${F};max-width:640px;color:#0f172a">
-    <div style="border-bottom:3px solid #0f172a;padding-bottom:10px;margin-bottom:16px">
-      <div style="font-size:20px;font-weight:800">SEO &amp; AI Search Audit</div>
+  return `<div style="${F};max-width:640px;margin:0 auto;padding:8px">
+    <div style="border-bottom:3px solid #0f172a;padding-bottom:12px;margin-bottom:18px">
+      <div style="font-size:22px;font-weight:800">SEO &amp; AI Search Audit</div>
       <div style="color:#64748b;font-size:13px">${esc(BRAND.name)} · ${esc(BRAND.tagline)}</div>
     </div>
-    ${clientName?`<p>Hi ${esc(clientName)},</p>`:''}
-    <p>Here is your website audit summary. Every item below is fixable — we can handle the heavy lifting.</p>
-    ${comp}
-    ${R.map(siteBlock).join('')}
-    <p style="margin-top:16px">Just reply to this email and we'll walk you through the results and a plan.</p>
-    <p style="color:#64748b;font-size:12px">${esc(BRAND.name)} · ${esc(BRAND.web)}</p>
+    <p style="font-size:15px;line-height:1.6;margin:0 0 14px">${clientName?('Hi '+esc(clientName)+','):'Hi,'}</p>
+    <p style="font-size:15px;line-height:1.6;margin:0 0 18px">We audited your website across <b>Google SEO</b> and <b>AI search</b> — ChatGPT, Google AI Overviews and Perplexity — the two places customers now decide who to call. Here is exactly where you stand and what it's costing you.</p>
+    ${R.map(site).join('')}
+    <div style="background:#0f172a;color:#fff;border-radius:10px;padding:24px;margin:6px 0 18px">
+      <div style="font-size:19px;font-weight:800;margin-bottom:8px">Let's turn this into more calls — starting this week.</div>
+      <p style="margin:0 0 14px;color:#e2e8f0;font-size:14px;line-height:1.6">Every issue above is fixable, and usually faster than you'd think. ${esc(BRAND.name)} handles all of it — the Google SEO <i>and</i> the AI-search work most agencies aren't even doing yet — so you show up first and win the customer.</p>
+      <a href="mailto:${esc((BRAND.contacts&&BRAND.contacts[0]&&BRAND.contacts[0].email)||'')}?subject=Fix%20my%20website%20audit" style="display:inline-block;background:#2563eb;color:#fff;text-decoration:none;font-weight:800;padding:12px 22px;border-radius:6px;font-size:15px">Book my free 15-minute walkthrough →</a>
+      <div style="margin-top:14px;font-size:14px;color:#cbd5e1;line-height:1.7">${contacts}</div>
+    </div>
+    <p style="font-size:13px;color:#64748b;line-height:1.6;margin:0">P.S. Your competitors' sites were built the same era yours was — the ones winning today are simply the ones that fixed these exact items first. Let's make that you.</p>
+    <p style="color:#94a3b8;font-size:12px;margin-top:16px">${esc(BRAND.name)} · ${esc(BRAND.web)}</p>
   </div>`;
+}
+function buildReportText(clientName, arr){
+  const R=(arr&&arr.length)?arr:reports;
+  let t=(clientName?('Hi '+clientName+',\n\n'):'Hi,\n\n');
+  t+="We audited your website across Google SEO and AI search (ChatGPT, Google AI Overviews, Perplexity) — where customers now decide who to call. Here's where you stand and what it's costing you.\n\n";
+  R.forEach(r=>{
+    if(r.error){ t+=r.domain+': could not audit.\n\n'; return; }
+    const sc=score(r);
+    t+=r.domain+' — Grade '+sc.grade+' ('+sc.score+'/100): '+sc.counts.fail+' critical, '+sc.counts.warn+' to improve, '+sc.counts.pass+' passing.\n';
+    r.checks.filter(c=>c.status==='fail'||c.status==='warn').slice(0,10).forEach(c=>{ t+='  - '+c.label+(c.fix?': '+c.fix:'')+'\n'; });
+    t+='\n';
+  });
+  t+="Every issue is fixable — usually faster than you'd think. Blue Collar AI handles the Google SEO and the AI-search work so you show up first and win the customer.\n\n";
+  t+="Book a free 15-minute walkthrough — just reply or call:\n";
+  t+=(BRAND.contacts||[]).map(c=>c.name+' · '+c.phone+' · '+c.email).join('\n')+'\n'+BRAND.web+'\n';
+  return t;
 }
 
 async function emailToClient(){
@@ -911,9 +938,10 @@ async function emailToClient(){
   if(!to) return;
   if(!/.+@.+\..+/.test(to)){ alert('Please enter a valid email address.'); return; }
   const name=(prompt('Client name (optional — used in the greeting):','')||'').trim();
-  const html=buildReportEmail(name);
+  const html=buildReportEmail(name); const text=buildReportText(name);
+  const subj = reports.length===1 ? `Website audit for ${reports[0].domain} — Grade ${score(reports[0]).grade}` : `Website audit — ${reports.length} sites reviewed`;
   try{
-    const res=await fetch('/api/send-report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({to,subject:`Your SEO & AI Search Audit — ${BRAND.name}`,html})});
+    const res=await fetch('/api/send-report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({to,subject:subj,html,text})});
     if(res.ok){ alert('Report emailed to '+to+'.'); }
     else { const d=await res.json().catch(()=>({})); alert(emailErr(d.error)+(d.detail?('\n\nResend says: '+(typeof d.detail==='string'?d.detail:JSON.stringify(d.detail))):'')); }
   }catch(e){ alert('Could not send — network error.'); }
@@ -1252,8 +1280,10 @@ async function emailCrmReport(id){
   const to=(prompt('Email the report to:', b.owner_email||b.manager_email||b.email||'')||'').trim();
   if(!to) return;
   const arr=Array.isArray(b.last_report)?b.last_report:[b.last_report];
-  const html=buildReportEmail(b.owner_name||b.manager_name||b.name||'', arr);
-  try{ const res=await fetch('/api/send-report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({to,subject:'Your SEO & AI Search Audit — '+BRAND.name,html})});
+  const nm=b.owner_name||b.manager_name||b.name||'';
+  const html=buildReportEmail(nm, arr); const text=buildReportText(nm, arr);
+  const subj='Website audit for '+(b.name||b.domain||(arr[0]&&arr[0].domain)||'your site')+((arr[0]&&!arr[0].error)?(' — Grade '+score(arr[0]).grade):'');
+  try{ const res=await fetch('/api/send-report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({to,subject:subj,html,text})});
     if(res.ok){ alert('Report emailed to '+to+'.'); return; }
     const d=await res.json().catch(()=>({}));
     alert(emailErr(d.error)+(d.detail?('\n\nResend says: '+(typeof d.detail==='string'?d.detail:JSON.stringify(d.detail))):'')); }

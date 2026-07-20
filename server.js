@@ -249,15 +249,17 @@ app.get('/api/proxy', async (req, res) => {
 function escapeHtml(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
-async function sendEmail({ to, subject, html, replyTo }) {
+async function sendEmail({ to, subject, html, text, replyTo }) {
   const key = process.env.RESEND_API_KEY;
   if (!key) return { skipped: true };
   const from = process.env.MAIL_FROM || 'Blue Collar AI <onboarding@resend.dev>';
   try {
+    const body = { from, to: Array.isArray(to) ? to : [to], subject, html, reply_to: replyTo };
+    if (text) body.text = text;
     const r = await fetch('https://api.resend.com/emails', {
       method: 'POST',
       headers: { 'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ from, to: Array.isArray(to) ? to : [to], subject, html, reply_to: replyTo }),
+      body: JSON.stringify(body),
     });
     if (!r.ok) { const t = await r.text().catch(() => ''); console.error('email send failed', r.status, t); return { ok: false, status: r.status, body: t }; }
     return { ok: true };
@@ -400,10 +402,10 @@ app.delete('/api/reports/:id', requireAuth, async (req, res) => {
 
 // Send a finished report to a client (team-only — protects sending reputation)
 app.post('/api/send-report', requireAuth, async (req, res) => {
-  const { to, subject, html } = req.body || {};
+  const { to, subject, html, text } = req.body || {};
   if (!to || !/.+@.+\..+/.test(to) || !html) return res.status(400).json({ error: 'to_and_html_required' });
   if (!process.env.RESEND_API_KEY) return res.status(503).json({ error: 'email_not_configured' });
-  const r = await sendEmail({ to, subject: subject || 'Your SEO Audit', html, replyTo: req.user.email });
+  const r = await sendEmail({ to, subject: subject || 'Your SEO Audit', html, text, replyTo: req.user.email });
   if (r && r.ok) return res.json({ ok: true });
   return res.status(502).json({ error: 'send_failed', detail: (r && (r.body || r.error)) || null });
 });
