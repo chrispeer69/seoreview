@@ -12,36 +12,58 @@
   *{box-sizing:border-box}
   body{margin:0;font-family:'Inter',system-ui,-apple-system,'Segoe UI',Arial,sans-serif;color:#0f172a;-webkit-font-smoothing:antialiased}
 
-  /* Scanner screen — corporate dark surface */
-  #scanView{background:linear-gradient(165deg,#111827 0%,#0f172a 55%,#0b1220 100%);min-height:100vh;padding:48px 20px}
+  /* ===== Corporate app shell ===== */
+  body{background:#f1f5f9}
+  .appbar{position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:18px;background:#fff;border-bottom:1px solid #e2e8f0;padding:0 22px;height:62px;box-shadow:0 1px 3px rgba(15,23,42,.06)}
+  .brand{font-weight:800;font-size:17px;color:#0f172a;letter-spacing:-.01em;line-height:1.1}
+  .brand small{display:block;font-size:9.5px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:#2563eb;margin-top:2px}
+  .tabs{display:flex;gap:4px;margin-left:12px}
+  .tab{background:none;border:none;padding:8px 14px;font:inherit;font-size:14px;font-weight:600;color:#64748b;cursor:pointer;border-radius:6px}
+  .tab:hover{color:#0f172a}
+  .tab.active{color:#1d4ed8;background:#eff6ff}
+  .appbar-right{margin-left:auto;display:flex;align-items:center;gap:12px;font-size:13px;color:#334155}
+  .btnBlue{background:var(--blue);color:#fff;padding:8px 14px;border-radius:6px;text-decoration:none;font-weight:700;font-size:13px}
+  .btnBlue:hover{background:var(--blue-dark)}
+  .linkMuted{color:#64748b;text-decoration:none}
+  .page{min-height:calc(100vh - 62px)}
+  .hero{background:linear-gradient(165deg,#111827 0%,#0f172a 60%,#0b1220 100%);color:#fff;padding:46px 22px;text-align:center}
+  .hero h1{margin:0 0 8px;font-size:2em;font-weight:800;letter-spacing:-.02em}
+  .hero p{margin:0 auto;max-width:660px;color:rgba(255,255,255,.78);font-size:1.02em;line-height:1.5}
+  .container{max-width:1040px;margin:0 auto;padding:26px 22px 48px}
   .wrap{max-width:1040px;margin:0 auto}
-  h1.title{color:#fff;text-align:center;font-size:2.3em;margin:0 0 8px;font-weight:800;letter-spacing:-.02em}
-  p.sub{color:rgba(255,255,255,.78);text-align:center;margin:0 0 6px;font-size:1.02em}
-  p.byline{color:rgba(255,255,255,.5);text-align:center;margin:0 0 32px;font-size:.72em;font-weight:700;letter-spacing:.16em;text-transform:uppercase}
+  .panel{background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:26px;box-shadow:0 4px 18px rgba(15,23,42,.06);margin-bottom:22px}
+  .panelTitle{font-size:13px;font-weight:800;text-transform:uppercase;letter-spacing:.08em;color:#0f172a;margin:0 0 14px}
+  .appfoot{background:#0f172a;color:#cbd5e1;padding:24px 22px;text-align:center;font-size:13px;line-height:1.7}
+  .appfoot a{color:#93c5fd;text-decoration:none}
+  #scanView,#crmView{background:transparent}
+
+  /* form controls (now on white cards) */
   #urls{width:100%;padding:14px 16px;font-size:1em;border:1px solid #cbd5e1;border-radius:6px;outline:none;resize:vertical;margin-bottom:12px;font-family:inherit;background:#fff}
   #urls:focus{border-color:var(--blue);box-shadow:0 0 0 3px rgba(37,99,235,.25)}
-  .opts{background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.12);border-radius:6px;padding:13px 15px;margin-bottom:12px;display:flex;gap:16px;flex-wrap:wrap;align-items:center;color:#e2e8f0;font-size:.88em}
+  .opts{background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;padding:13px 15px;margin-bottom:12px;display:flex;gap:16px;flex-wrap:wrap;align-items:center;color:#334155;font-size:.9em}
   .opts label{display:flex;align-items:center;gap:8px;cursor:pointer}
-  .opts input[type=text]{flex:1 1 220px;padding:9px 11px;border:1px solid #cbd5e1;border-radius:6px;font-size:.9em}
-  #scanBtn{width:100%;padding:15px 30px;font-size:1.02em;font-weight:700;letter-spacing:.01em;background:var(--blue);color:#fff;border:none;border-radius:6px;cursor:pointer;margin-bottom:24px;transition:background .15s}
+  .opts input[type=text],.opts input[type=email]{flex:1 1 220px;padding:9px 11px;border:1px solid #cbd5e1;border-radius:6px;font-size:.9em}
+  #scanBtn{width:100%;padding:15px 30px;font-size:1.02em;font-weight:700;letter-spacing:.01em;background:var(--blue);color:#fff;border:none;border-radius:6px;cursor:pointer;margin-bottom:22px;transition:background .15s}
   #scanBtn:hover{background:var(--blue-dark)}
   #scanBtn:disabled{opacity:.7;cursor:default}
   #errorBox{background:#fef2f2;color:#991b1b;border:1px solid #fecaca;border-left:4px solid #dc2626;padding:14px 16px;border-radius:6px;margin-bottom:20px;font-weight:500;line-height:1.5}
   .actionRow{margin-bottom:20px;display:flex;justify-content:flex-end;gap:10px;flex-wrap:wrap}
   .primaryDark{padding:12px 22px;background:var(--blue);color:#fff;border:none;border-radius:6px;font-weight:700;cursor:pointer;font-size:.98em;transition:background .15s}
   .primaryDark:hover{background:var(--blue-dark)}
+  .hint{color:#64748b;font-size:.85em;margin:2px 0 4px}
 
-  /* Scan-screen controls sit on the dark gradient — keep them readable (white text).
-     Scoped to #scanView so btnGhost on the light report screen is unaffected. */
-  #scanView .btnGhost{color:#fff;border-color:rgba(255,255,255,.55);background:rgba(255,255,255,.12)}
-  #scanView .btnGhost:hover{background:rgba(255,255,255,.22)}
-  #scanView #saveTeamBtn{border-color:#93c5fd;background:rgba(59,130,246,.28)}
-  #scanView .sectionTitle{color:rgba(255,255,255,.82)}
-  #savedPanel,#teamPanel{color:#e2e8f0}
-  #savedPanel strong,#teamPanel strong{color:#fff}
-  #savedPanel .muted,#teamPanel .muted{color:rgba(255,255,255,.72)}
-  #teamBar{color:#fff}
-  #teamBar a{color:#bfdbfe}
+  /* ===== CRM ===== */
+  .crmGrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:14px}
+  .crmField{display:flex;flex-direction:column;gap:4px;font-size:12px;font-weight:700;color:#475569}
+  .crmField input,.crmField select{padding:8px 10px;border:1px solid #cbd5e1;border-radius:6px;font-size:13px;font-weight:400;color:#0f172a;background:#fff}
+  .crmChks{display:flex;gap:12px;flex-wrap:wrap;font-size:13px;color:#334155;align-items:center}
+  .crmActions{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:6px}
+  table.leads{width:100%;border-collapse:collapse;font-size:13px}
+  table.leads th{text-align:left;padding:8px 10px;border-bottom:2px solid #cbd5e1;color:#334155;font-weight:700;white-space:nowrap}
+  table.leads td{padding:8px 10px;border-bottom:1px solid #eef2f7;vertical-align:middle}
+  table.leads tr:hover td{background:#f8fafc}
+  .gpill{display:inline-block;padding:2px 8px;border-radius:4px;font-weight:800;font-size:12px}
+  .stpill{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:700;background:#e2e8f0;color:#334155}
 
   .card{background:#fff;border-radius:8px;padding:28px;border:1px solid #e2e8f0;box-shadow:0 4px 18px rgba(15,23,42,.12);margin-bottom:20px}
   .cardHead{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;border-bottom:2px solid #e2e8f0;padding-bottom:18px;margin-bottom:20px}
@@ -136,52 +158,100 @@
 </head>
 <body>
 
-<div id="scanView">
-  <div class="wrap">
-    <div id="teamBar" style="display:none;justify-content:flex-end;align-items:center;gap:12px;font-size:13px;margin-bottom:6px">
-      <span id="teamUser" class="muted"></span>
-      <a id="teamLoginBtn" href="/auth/google" style="display:none;text-decoration:none;font-weight:700;color:#2563eb">Team sign in</a>
-      <a id="teamLogoutBtn" href="/auth/logout" style="display:none;text-decoration:none;color:#64748b">Sign out</a>
-    </div>
-    <h1 class="title">SEO &amp; AI Search Audit</h1>
-    <p class="sub">Scan a site for Google SEO <em>and</em> AI-search readiness, then hand over a branded report.</p>
-    <p class="byline">by Blue Collar AI, Inc.</p>
+<header class="appbar no-print">
+  <div class="brand">Blue Collar AI<small>SEO Intelligence</small></div>
+  <nav class="tabs">
+    <button class="tab active" id="tabScan" onclick="showView('scanView')">Audit</button>
+    <button class="tab" id="tabCrm" onclick="showView('crmView')" style="display:none">Leads (CRM)</button>
+  </nav>
+  <div class="appbar-right">
+    <span id="teamBar" style="display:none"><span id="teamUser"></span></span>
+    <a id="teamLoginBtn" href="/auth/google" class="btnBlue" style="display:none">Team sign in</a>
+    <a id="teamLogoutBtn" href="/auth/logout" class="linkMuted" style="display:none">Sign out</a>
+  </div>
+</header>
 
-    <textarea id="urls" rows="3" placeholder="Enter one or more sites, one per line:&#10;example.com&#10;anothershop.com"></textarea>
-    <div class="opts">
-      <label><input type="checkbox" id="psiOn" checked /> Include Google PageSpeed (mobile + desktop) — adds ~20–40s per site</label>
-      <label><input type="checkbox" id="compareOn" onchange="if(typeof reports!=='undefined'&&reports.length)renderResults()" /> Compare sites side-by-side (competitor view)</label>
-      <!-- Key is supplied by config.js (baked in) or localStorage; not shown to visitors -->
-      <input type="hidden" id="psiKey" />
-    </div>
-    <div class="runRow" style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
-      <button id="scanBtn" onclick="runScan()">Run Audit</button>
-      <button id="stopBtn" onclick="stopScan()" style="display:none;background:#dc2626;color:#fff;border:none;padding:12px 18px;border-radius:6px;font-weight:700;cursor:pointer">Stop</button>
-      <button id="resetBtn" class="btnGhost" onclick="resetScan()" style="display:none">Start over</button>
-    </div>
-    <p style="color:rgba(255,255,255,.72);font-size:.82em;margin:2px 0 18px">Comparing competitors? Tick <strong>Compare</strong> above, then enter your client first and each competitor on its own line — the report opens with a ranked side-by-side comparison. Leave it unchecked to get separate reports for each site.</p>
-
-    <div id="errorBox" style="display:none"></div>
-    <div id="actionRow" class="actionRow" style="display:none">
-      <button class="primaryDark" id="openReportBtn" onclick="openReport()">Open Branded Report</button>
-      <button class="btnGhost" id="saveBtn" onclick="saveCurrent()">Save to this browser</button>
-      <button class="btnGhost" id="saveTeamBtn" onclick="saveToTeam()" style="display:none">Save to team</button>
-    </div>
-
-    <div id="leadBox" style="display:none;margin-top:14px;padding:14px;border:1px solid #e2e8f0;border-radius:12px;background:#f8fafc">
-      <div style="font-weight:700;margin-bottom:6px">Want the full report + a free consult?</div>
-      <div class="muted" style="margin-bottom:8px">Leave your email and Blue Collar AI will follow up.</div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <input type="email" id="leadEmail" placeholder="you@business.com" style="flex:1;min-width:200px" />
-        <button class="primaryDark" onclick="submitLead()">Send me the report</button>
+<div id="scanView" class="page">
+  <section class="hero">
+    <h1>SEO &amp; AI Search Audit</h1>
+    <p>Scan any site for Google SEO <em>and</em> AI-search readiness, then hand over a branded, executive report.</p>
+  </section>
+  <main class="container">
+    <div class="panel">
+      <textarea id="urls" rows="3" placeholder="Enter one or more sites, one per line:&#10;example.com&#10;anothershop.com"></textarea>
+      <div class="opts">
+        <label><input type="checkbox" id="psiOn" checked /> Include Google PageSpeed (mobile + desktop) — adds ~20–40s per site</label>
+        <label><input type="checkbox" id="compareOn" onchange="if(typeof reports!=='undefined'&&reports.length)renderResults()" /> Compare sites side-by-side (competitor view)</label>
+        <input type="hidden" id="psiKey" />
       </div>
-      <div id="leadMsg" class="muted" style="margin-top:8px"></div>
+      <div class="runRow" style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+        <button id="scanBtn" onclick="runScan()">Run Audit</button>
+        <button id="stopBtn" onclick="stopScan()" style="display:none;background:#dc2626;color:#fff;border:none;padding:12px 18px;border-radius:6px;font-weight:700;cursor:pointer">Stop</button>
+        <button id="resetBtn" class="btnGhost" onclick="resetScan()" style="display:none">Start over</button>
+      </div>
+      <p class="hint">Comparing competitors? Tick <strong>Compare</strong> above, then enter your client first and each competitor on its own line — the report opens with a ranked side-by-side comparison. Leave it unchecked to get separate reports for each site.</p>
+
+      <div id="errorBox" style="display:none"></div>
+      <div id="actionRow" class="actionRow" style="display:none">
+        <button class="primaryDark" id="openReportBtn" onclick="openReport()">Open Branded Report</button>
+        <button class="btnGhost" id="saveBtn" onclick="saveCurrent()">Save to this browser</button>
+        <button class="btnGhost" id="saveTeamBtn" onclick="saveToTeam()" style="display:none">Save to team</button>
+      </div>
+
+      <div id="leadBox" style="display:none;margin-top:14px;padding:14px;border:1px solid #e2e8f0;border-radius:8px;background:#f8fafc">
+        <div style="font-weight:700;margin-bottom:6px">Want the full report + a free consult?</div>
+        <div class="muted" style="margin-bottom:8px">Leave your email and Blue Collar AI will follow up.</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <input type="email" id="leadEmail" placeholder="you@business.com" style="flex:1;min-width:200px;padding:9px 11px;border:1px solid #cbd5e1;border-radius:6px" />
+          <button class="primaryDark" onclick="submitLead()">Send me the report</button>
+        </div>
+        <div id="leadMsg" class="muted" style="margin-top:8px"></div>
+      </div>
     </div>
 
     <div id="teamPanel" style="display:none"></div>
     <div id="savedPanel"></div>
     <div id="results"></div>
-  </div>
+  </main>
+</div>
+
+<div id="crmView" class="page" style="display:none">
+  <section class="hero">
+    <h1>Lead CRM</h1>
+    <p>Build a worklist — filter by location, radius, grade, industry and association — then work each lead.</p>
+  </section>
+  <main class="container">
+    <div class="panel">
+      <div class="panelTitle">Build a worklist</div>
+      <div class="crmGrid">
+        <label class="crmField">State<input id="fState" placeholder="OH"></label>
+        <label class="crmField">City<input id="fCity" placeholder="Columbus"></label>
+        <label class="crmField">Radius (miles)<input id="fRadius" type="number" min="1" placeholder="30"></label>
+        <label class="crmField">Industry<select id="fIndustry"><option value="">Any</option></select></label>
+        <label class="crmField">Status<select id="fStatus"><option value="">Any</option><option>new</option><option>working</option><option>contacted</option><option>client</option><option>lost</option></select></label>
+        <label class="crmField">Association<select id="fAssoc"><option value="">Any</option></select></label>
+        <label class="crmField">Membership<select id="fMember"><option value="">Any</option><option value="no">NOT a member</option><option value="yes">Is a member</option></select></label>
+        <label class="crmField">Keyword<input id="fQ" placeholder="name or domain"></label>
+      </div>
+      <div class="crmChks">Grades:
+        <label><input type="checkbox" class="fGrade" value="A" checked> A</label>
+        <label><input type="checkbox" class="fGrade" value="B" checked> B</label>
+        <label><input type="checkbox" class="fGrade" value="C" checked> C</label>
+        <label><input type="checkbox" class="fGrade" value="D" checked> D</label>
+        <label><input type="checkbox" class="fGrade" value="F" checked> F</label>
+      </div>
+      <div class="crmActions">
+        <button class="primaryDark" onclick="runCrmQuery()">Run query</button>
+        <button class="btnGhost" onclick="exportCrmCsv()">Export results (CSV)</button>
+        <button class="btnGhost" onclick="document.getElementById('crmImportFile').click()">Import businesses (CSV)</button>
+        <input type="file" id="crmImportFile" accept=".csv,text/csv" style="display:none" onchange="importCrmCsv(this)">
+        <button class="btnGhost" onclick="document.getElementById('memImportFile').click()">Import member list (CSV)</button>
+        <input type="file" id="memImportFile" accept=".csv,text/csv" style="display:none" onchange="importMemberCsv(this)">
+      </div>
+      <div id="crmMsg" class="hint" style="margin-top:10px"></div>
+    </div>
+    <div id="crmResults"></div>
+  </main>
 </div>
 
 <div id="reportView">
@@ -192,6 +262,11 @@
   </div>
   <div class="docPad"><div class="printArea" id="printArea"></div></div>
 </div>
+
+<footer class="appfoot no-print">
+  <div><strong>Blue Collar AI, Inc.</strong> &nbsp;·&nbsp; AI-Powered Local SEO</div>
+  <div><a href="https://www.bluecollarai.online">www.bluecollarai.online</a></div>
+</footer>
 
 <script src="config.js" onerror="/* committed default key file not present */"></script>
 <script src="config.local.js" onerror="/* optional local key file not present */"></script>
@@ -779,6 +854,7 @@ async function initTeam(){
     teamPanel.innerHTML='<div class="sectionTitle" style="margin-top:20px">Team reports</div><p class="muted">Sign in with your team Google account to save, search, and re-run customer reports.</p>';
   }
   const ecb=document.getElementById('emailClientBtn'); if(ecb) ecb.style.display=(TEAM.enabled&&TEAM.user)?'inline-block':'none';
+  const crmTab=document.getElementById('tabCrm'); if(crmTab) crmTab.style.display=(TEAM.enabled&&TEAM.user)?'':'none';
   if(/[?&]login=denied/.test(location.search)){ const eb=document.getElementById('errorBox'); eb.textContent='Sign-in denied — that Google account is not on the team whitelist.'; eb.style.display='block'; }
 }
 
@@ -922,6 +998,158 @@ async function submitLead(){
     msg.textContent = res.ok ? (data&&data.emailed ? 'Thanks! Check your inbox — we’ll be in touch shortly.' : 'Thanks! We’ll be in touch shortly.') : 'Could not submit — please try again.';
     if(res.ok) document.getElementById('leadEmail').value='';
   }catch(e){ msg.textContent='Could not submit — please try again.'; }
+}
+
+// ---------- VIEW SWITCHING ----------
+let lastView='scanView';
+function showView(id){
+  ['scanView','crmView','reportView'].forEach(v=>{ const el=document.getElementById(v); if(el) el.style.display=(v===id?'':'none'); });
+  if(id==='scanView'||id==='crmView'){
+    lastView=id;
+    const ts=document.getElementById('tabScan'), tc=document.getElementById('tabCrm');
+    if(ts) ts.classList.toggle('active',id==='scanView');
+    if(tc) tc.classList.toggle('active',id==='crmView');
+    if(id==='crmView'){ loadCrmFacets(); if(!crmRows.length) runCrmQuery(); }
+  }
+  window.scrollTo(0,0);
+}
+
+// ---------- CRM ----------
+let crmRows=[];
+function crmMsg(t){ const el=document.getElementById('crmMsg'); if(el) el.textContent=t||''; }
+function fillSelect(id,items,anyLabel){ const el=document.getElementById(id); if(!el) return; const cur=el.value; el.innerHTML='<option value="">'+anyLabel+'</option>'+(items||[]).map(x=>`<option>${esc(x)}</option>`).join(''); el.value=cur; }
+async function loadCrmFacets(){
+  try{ const f=await fetch('/api/crm/facets').then(r=>r.ok?r.json():null); if(f){ fillSelect('fIndustry',f.industries,'Any'); fillSelect('fAssoc',f.associations,'Any'); } }catch(e){}
+}
+function parseCsv(text){
+  const rows=[]; let i=0,field='',row=[],inQ=false;
+  while(i<text.length){ const c=text[i];
+    if(inQ){ if(c==='"'){ if(text[i+1]==='"'){field+='"';i++;} else inQ=false; } else field+=c; }
+    else { if(c==='"') inQ=true; else if(c===','){ row.push(field); field=''; } else if(c==='\r'){} else if(c==='\n'){ row.push(field); rows.push(row); row=[]; field=''; } else field+=c; }
+    i++;
+  }
+  if(field.length||row.length){ row.push(field); rows.push(row); }
+  return rows.filter(r=>r.some(x=>String(x).trim()!==''));
+}
+function csvToObjects(text){ const rows=parseCsv(text); if(rows.length<2) return []; const h=rows[0].map(x=>x.trim().toLowerCase()); return rows.slice(1).map(r=>{ const o={}; h.forEach((k,idx)=>o[k]=(r[idx]||'').trim()); return o; }); }
+function mapBiz(o){ return {
+  name:o.name||o.business||o.company||'', website:o.website||o.url||o.domain||o.site||'',
+  industry:o.industry||o.category||'', address:o.address||o.street||'', city:o.city||'',
+  state:o.state||o.st||'', zip:o.zip||o.zipcode||o.postal||'', phone:o.phone||o.telephone||'',
+  email:o.email||'', lat:o.lat||o.latitude||'', lng:o.lng||o.longitude||o.long||'' }; }
+
+async function importCrmCsv(input){
+  const f=input.files&&input.files[0]; if(!f) return;
+  const text=await f.text(); input.value='';
+  const businesses=csvToObjects(text).map(mapBiz).filter(b=>b.website);
+  if(!businesses.length){ crmMsg('No rows with a website/url/domain column found. Include a header row.'); return; }
+  crmMsg('Importing '+businesses.length+' businesses… geocoding may take a moment.');
+  try{ const res=await fetch('/api/crm/businesses/bulk',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({businesses})});
+    const d=await res.json().catch(()=>({}));
+    if(res.ok){ crmMsg('Imported '+d.imported+(d.skipped?(' · skipped '+d.skipped):'')+'.'); loadCrmFacets(); runCrmQuery(); }
+    else crmMsg('Import failed'+(d.error?': '+d.error:'')+'.');
+  }catch(e){ crmMsg('Import failed — network error.'); }
+}
+async function importMemberCsv(input){
+  const f=input.files&&input.files[0]; if(!f) return;
+  const association=(prompt('Association name (e.g., US Tow Alliance):','')||'').trim();
+  const text=await f.text(); input.value='';
+  if(!association){ crmMsg('Cancelled — an association name is required.'); return; }
+  const members=csvToObjects(text).map(o=>({name:o.name||o.business||o.company||'',website:o.website||o.url||o.domain||''})).filter(m=>m.website||m.name);
+  if(!members.length){ crmMsg('No members found (need a website or name column).'); return; }
+  try{ const res=await fetch('/api/crm/members/import',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({association,members})});
+    const d=await res.json().catch(()=>({}));
+    crmMsg(res.ok?('Imported '+d.imported+' members for “'+association+'” and tagged matches.'):'Member import failed.');
+    loadCrmFacets();
+  }catch(e){ crmMsg('Member import failed — network error.'); }
+}
+async function runCrmQuery(){
+  const p=new URLSearchParams();
+  const add=(k,id)=>{ const el=document.getElementById(id); const v=el?el.value.trim():''; if(v) p.set(k,v); };
+  add('state','fState'); add('city','fCity'); add('industry','fIndustry'); add('status','fStatus'); add('q','fQ');
+  const assoc=document.getElementById('fAssoc').value, mem=document.getElementById('fMember').value;
+  if(assoc&&mem){ p.set('association',assoc); p.set('member',mem); }
+  const radius=document.getElementById('fRadius').value.trim(), city=document.getElementById('fCity').value.trim(), state=document.getElementById('fState').value.trim();
+  if(radius&&(city||state)){ p.set('center',[city,state].filter(Boolean).join(', ')); p.set('radiusMi',radius); }
+  const grades=[...document.querySelectorAll('.fGrade:checked')].map(c=>c.value);
+  if(grades.length&&grades.length<5) p.set('grades',grades.join(','));
+  crmMsg('Running query…');
+  try{ crmRows=await fetch('/api/crm/businesses?'+p.toString()).then(r=>r.ok?r.json():[]); renderCrmResults(); crmMsg(crmRows.length+' result'+(crmRows.length===1?'':'s')+'.'); }
+  catch(e){ crmMsg('Query failed.'); }
+}
+function renderCrmResults(){
+  const el=document.getElementById('crmResults');
+  if(!crmRows.length){ el.innerHTML='<div class="panel"><p class="muted" style="margin:0">No results yet. Set filters and click “Run query”, or import a CSV of businesses.</p></div>'; return; }
+  const rows=crmRows.map(b=>{
+    const s=b.latest_score, gc=s==null?'#94a3b8':(s>=91?'#16a34a':s>=80?'#ea580c':'#dc2626');
+    const grade=b.latest_grade||'—', sc=(s!=null?' '+s:'');
+    const mem=(b.memberships&&b.memberships.length)?b.memberships.map(esc).join(', '):'<span class="muted">—</span>';
+    return `<tr>
+      <td><strong>${esc(b.name||b.domain)}</strong><div class="muted" style="font-size:11px">${esc(b.domain||'')}</div></td>
+      <td>${esc([b.city,b.state].filter(Boolean).join(', ')||'—')}</td>
+      <td>${esc(b.industry||'—')}</td>
+      <td style="text-align:center"><span class="gpill" style="background:${gc}1a;color:${gc}">${esc(grade)}${sc}</span></td>
+      <td>${mem}</td>
+      <td><span class="stpill">${esc(b.status||'new')}</span></td>
+      <td style="text-align:right"><button class="btnGhost" onclick="openLead(${b.id})">Work</button></td>
+    </tr>`;
+  }).join('');
+  el.innerHTML=`<div class="panel"><div class="panelTitle">Worklist — ${crmRows.length} businesses</div>
+    <div style="overflow-x:auto"><table class="leads"><thead><tr>
+      <th>Business</th><th>Location</th><th>Industry</th><th>Grade</th><th>Memberships</th><th>Status</th><th></th>
+    </tr></thead><tbody>${rows}</tbody></table></div></div>`;
+}
+async function openLead(id){
+  let b; try{ b=await fetch('/api/crm/businesses/'+id).then(r=>r.ok?r.json():null); }catch(e){}
+  if(!b){ alert('Could not load lead.'); return; }
+  const comments=(Array.isArray(b.comments)?b.comments:[]).map(c=>`<div style="border-top:1px solid #eef2f7;padding:6px 0;font-size:12px"><span class="muted">${esc(new Date(c.at).toLocaleString())} · ${esc(c.by||'')}</span><br>${esc(c.text)}</div>`).join('')||'<span class="muted">No comments yet.</span>';
+  const wrap=document.createElement('div'); wrap.id='leadModal';
+  wrap.style.cssText='position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:50;display:flex;align-items:flex-start;justify-content:center;padding:40px 16px;overflow:auto';
+  wrap.onclick=e=>{ if(e.target===wrap) closeLead(); };
+  wrap.innerHTML=`<div style="background:#fff;border-radius:10px;max-width:560px;width:100%;padding:24px;box-shadow:0 20px 60px rgba(0,0,0,.3)">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px">
+      <div><h2 style="margin:0;font-size:20px">${esc(b.name||b.domain)}</h2><div class="muted">${esc(b.website||b.domain||'')}</div></div>
+      <button class="btnGhost" onclick="closeLead()">Close</button>
+    </div>
+    <div class="crmGrid" style="margin-top:16px">
+      <label class="crmField">Status<select id="edStatus"><option>new</option><option>working</option><option>contacted</option><option>client</option><option>lost</option></select></label>
+      <label class="crmField">Follow-up<input id="edFollow" type="date"></label>
+      <label class="crmField">Phone<input id="edPhone"></label>
+      <label class="crmField">Email<input id="edEmail"></label>
+      <label class="crmField">Industry<input id="edIndustry"></label>
+      <label class="crmField">City<input id="edCity"></label>
+      <label class="crmField">State<input id="edState"></label>
+    </div>
+    <label class="crmField" style="margin-bottom:10px">Notes<textarea id="edNotes" rows="3" style="padding:8px 10px;border:1px solid #cbd5e1;border-radius:6px;font:inherit"></textarea></label>
+    <label class="crmField" style="margin-bottom:10px">Add comment<textarea id="edComment" rows="2" style="padding:8px 10px;border:1px solid #cbd5e1;border-radius:6px;font:inherit"></textarea></label>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px">
+      <button class="primaryDark" onclick="saveLead(${b.id})">Save</button>
+      ${b.website?`<button class="btnGhost" onclick="auditLead('${esc(b.website)}')">Run audit</button>`:''}
+    </div>
+    <div class="panelTitle" style="margin:0 0 6px">Activity</div>
+    <div style="max-height:180px;overflow:auto">${comments}</div>
+  </div>`;
+  document.body.appendChild(wrap);
+  const set=(id,v)=>{ const e=document.getElementById(id); if(e) e.value=v||''; };
+  set('edStatus',b.status||'new'); set('edFollow',b.follow_up?String(b.follow_up).slice(0,10):''); set('edPhone',b.phone);
+  set('edEmail',b.email); set('edIndustry',b.industry); set('edCity',b.city); set('edState',b.state); set('edNotes',b.notes);
+}
+function closeLead(){ const m=document.getElementById('leadModal'); if(m) m.remove(); }
+async function saveLead(id){
+  const g=id2=>document.getElementById(id2)?document.getElementById(id2).value:'';
+  const body={ status:g('edStatus'), follow_up:g('edFollow'), phone:g('edPhone'), email:g('edEmail'), industry:g('edIndustry'), city:g('edCity'), state:g('edState'), notes:g('edNotes') };
+  const cm=(g('edComment')||'').trim(); if(cm) body.comment=cm;
+  try{ const res=await fetch('/api/crm/businesses/'+id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(res.ok){ closeLead(); runCrmQuery(); } else alert('Save failed.'); }
+  catch(e){ alert('Save failed — network error.'); }
+}
+function auditLead(website){ closeLead(); const u=document.getElementById('urls'); if(u) u.value=website; showView('scanView'); runScan(); }
+function exportCrmCsv(){
+  if(!crmRows.length){ crmMsg('Run a query first, then export.'); return; }
+  const cols=['name','domain','website','industry','address','city','state','zip','phone','email','latest_grade','latest_score','status','follow_up','memberships'];
+  const cell=v=>{ v=(v==null?'':Array.isArray(v)?v.join('; '):String(v)); return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v; };
+  const lines=[cols.join(',')].concat(crmRows.map(r=>cols.map(c=>cell(r[c])).join(',')));
+  const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([lines.join('\n')],{type:'text/csv'})); a.download='leads.csv'; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),1000);
 }
 
 // ---------- REPORT ----------
@@ -1173,8 +1401,8 @@ function renderReport(){
       Generated ${new Date().toLocaleString()}. This audit analyzes the homepage's initial HTML. Some content and tags loaded by JavaScript (e.g. via Google Tag Manager) and other pages on the site are not included. Page-speed and Core Web Vitals data, when shown, is measured live by Google PageSpeed Insights.
     </div>`;
 }
-function openReport(){renderReport();document.getElementById('scanView').style.display='none';document.getElementById('reportView').style.display='block';window.scrollTo(0,0);}
-function closeReport(){document.getElementById('reportView').style.display='none';document.getElementById('scanView').style.display='block';}
+function openReport(){renderReport();document.getElementById('scanView').style.display='none';document.getElementById('crmView').style.display='none';document.getElementById('reportView').style.display='block';window.scrollTo(0,0);}
+function closeReport(){document.getElementById('reportView').style.display='none';showView(lastView);}
 
 // Pre-fill the PageSpeed API key: saved key first, then a local config.local.js fallback
 try{ const el=document.getElementById('psiKey'); const k=localStorage.getItem('bcai_psiKey')||window.BCAI_PSI_KEY||''; if(el&&!el.value&&k) el.value=k; }catch(e){}
