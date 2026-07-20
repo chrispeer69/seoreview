@@ -582,10 +582,24 @@ app.post('/api/crm/attach', requireAuth, async (req, res) => {
          website=COALESCE(crm_businesses.website, EXCLUDED.website),
          last_report=EXCLUDED.last_report, latest_score=EXCLUDED.latest_score,
          latest_grade=EXCLUDED.latest_grade, last_audit_at=now(), updated_at=now()
-       RETURNING id`,
+       RETURNING id, (xmax = 0) AS inserted`,
       [name || domain, domain, website || ('https://' + domain), JSON.stringify(memberships),
        JSON.stringify(report), (score == null ? null : score), grade || null]);
-    res.json({ ok: true, id: rows[0].id });
+    const row = rows[0];
+    res.json({ ok: true, id: row.id, created: row.inserted });
+    // Notify admin to complete the profile for brand-new field saves
+    if (row.inserted && process.env.RESEND_API_KEY) {
+      const adminTo = process.env.LEAD_NOTIFY_TO || cfg.teamEmails[0] || req.user.email;
+      sendEmail({
+        to: adminTo, replyTo: req.user.email,
+        subject: `New field audit — ${domain} needs a CRM profile`,
+        html: `<p><b>${escapeHtml(name || domain)}</b> (${escapeHtml(domain)}) was audited in the field by ${escapeHtml(req.user.email)}.</p>
+          <p>Result: <b>Grade ${escapeHtml(grade || '—')}${score != null ? (' · ' + score + '/100') : ''}</b></p>
+          <p>Please complete the profile — owner/manager contacts, address, industry, alliance status.</p>
+          <p><a href="${BASE_URL}">Open the CRM</a> → <b>Leads</b> → search "${escapeHtml(domain)}".</p>`,
+        text: `New field audit: ${name || domain} (${domain}) by ${req.user.email}. Grade ${grade || '—'}${score != null ? (' ' + score + '/100') : ''}. Complete the CRM profile: ${BASE_URL} (Leads > search ${domain}).`,
+      }).catch(() => {});
+    }
   } catch (e) { console.error('crm attach-new', e.message); res.status(500).json({ error: 'attach_failed' }); }
 });
 
