@@ -1072,15 +1072,15 @@ function renderReport(){
   const bestOf=k=>{ const v=colVals(k); return v.length?Math.max(...v):null; };
   const best={ overall:bestOf('overall'), mob:bestOf('mob'), dsk:bestOf('dsk'), local:bestOf('local'), ai:bestOf('ai'), onpage:bestOf('onpage'), tech:bestOf('tech'), crit:(colVals('crit').length?Math.min(...colVals('crit')):null) };
   const isBest=(v,b)=>v!=null&&b!=null&&v===b;
-  const pctCell=(v,win)=>{ if(v==null) return '<td style="text-align:center;color:#cbd5e1">—</td>'; const col=v>=80?'#16a34a':v>=60?'#f59e0b':'#dc2626'; return `<td style="text-align:center;font-weight:700;color:${col}${win?';background:#dcfce7':''}">${v}%${win?' 🏆':''}</td>`; };
-  const spCell2=(v,win)=>{ if(v==null) return '<td style="text-align:center;color:#cbd5e1">—</td>'; const col=v>=90?'#16a34a':v>=50?'#f59e0b':'#dc2626'; return `<td style="text-align:center;font-weight:700;color:${col}${win?';background:#dcfce7':''}">${v}${win?' 🏆':''}</td>`; };
+  const pctCell=(v,win)=>{ if(v==null) return '<td style="text-align:center;color:#cbd5e1">—</td>'; const col=v>=80?'#16a34a':v>=60?'#f59e0b':'#dc2626'; return `<td style="text-align:center;font-weight:700;color:${col}${win?';background:#dcfce7':''}">${v}%</td>`; };
+  const spCell2=(v,win)=>{ if(v==null) return '<td style="text-align:center;color:#cbd5e1">—</td>'; const col=v>=90?'#16a34a':v>=50?'#f59e0b':'#dc2626'; return `<td style="text-align:center;font-weight:700;color:${col}${win?';background:#dcfce7':''}">${v}</td>`; };
   const compRows=ranked.map(x=>{
     const rowBg=x.primary?'background:#eff6ff;':'';
     const nameCell=`<td style="${x.primary?'border-left:3px solid #2563eb;':''}">${x.primary?`<strong>${esc(x.domain)}</strong> <span style="background:#2563eb;color:#fff;font-size:10px;font-weight:700;padding:1px 6px;border-radius:6px">CLIENT</span>`:esc(x.domain)}</td>`;
     if(x.err) return `<tr style="${rowBg}"><td style="text-align:center;color:#94a3b8">${x.rank}</td>${nameCell}<td colspan="${(hasSpeed?2:0)+6}" style="color:#dc2626">⚠ Could not audit</td></tr>`;
     return `<tr style="${rowBg}">
       <td style="text-align:center;font-weight:700">${x.rank}</td>${nameCell}
-      <td style="text-align:center;font-weight:800;color:${x.color}${isBest(x.overall,best.overall)?';background:#dcfce7':''}">${x.grade} (${x.overall})${isBest(x.overall,best.overall)?' 🏆':''}</td>
+      <td style="text-align:center;font-weight:800;color:${x.color}${isBest(x.overall,best.overall)?';background:#dcfce7':''}">${x.grade} (${x.overall})</td>
       ${hasSpeed?spCell2(x.mob,isBest(x.mob,best.mob))+spCell2(x.dsk,isBest(x.dsk,best.dsk)):''}
       ${pctCell(x.local,isBest(x.local,best.local))}${pctCell(x.ai,isBest(x.ai,best.ai))}${pctCell(x.onpage,isBest(x.onpage,best.onpage))}${pctCell(x.tech,isBest(x.tech,best.tech))}
       <td style="text-align:center;font-weight:700;color:${x.crit===0?'#16a34a':'#dc2626'}${x.crit!=null&&x.crit===best.crit?';background:#dcfce7':''}">${x.crit==null?'—':x.crit}</td>
@@ -1106,7 +1106,7 @@ function renderReport(){
   const compareOn = multi && document.getElementById('compareOn') && document.getElementById('compareOn').checked;
   const summaryTable= compareOn?`
     <div class="rH2">Competitor Comparison — ${reports.length} Sites</div>
-    <p style="font-size:12px;color:#64748b;margin:-6px 0 10px">Ranked by overall score. <span style="background:#dcfce7;padding:1px 6px;border-radius:4px">🏆 green</span> = best in column. First site entered is marked <span style="background:#2563eb;color:#fff;padding:1px 6px;border-radius:4px;font-size:11px">CLIENT</span>.</p>
+    <p style="font-size:12px;color:#64748b;margin:-6px 0 10px">Ranked by overall score. <span style="background:#dcfce7;padding:1px 6px;border-radius:4px">Green</span> = best in column. First site entered is marked <span style="background:#2563eb;color:#fff;padding:1px 6px;border-radius:4px;font-size:11px">CLIENT</span>.</p>
     <div style="overflow-x:auto">
     <table class="doc"><thead><tr>
       <th style="text-align:center">#</th><th>Website</th><th style="text-align:center">Overall</th>
