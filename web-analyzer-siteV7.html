@@ -129,7 +129,8 @@
     <textarea id="urls" rows="3" placeholder="Enter one or more sites, one per line:&#10;example.com&#10;anothershop.com"></textarea>
     <div class="opts">
       <label><input type="checkbox" id="psiOn" checked /> Include Google PageSpeed (mobile + desktop) — adds ~20–40s per site</label>
-      <input type="text" id="psiKey" placeholder="PageSpeed API key (optional — avoids rate limits)" />
+      <!-- Key is supplied by config.js (baked in) or localStorage; not shown to visitors -->
+      <input type="hidden" id="psiKey" />
     </div>
     <div class="runRow" style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
       <button id="scanBtn" onclick="runScan()">🔎 Run Audit</button>
