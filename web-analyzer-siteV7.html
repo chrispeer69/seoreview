@@ -194,6 +194,7 @@
       <div id="errorBox" style="display:none"></div>
       <div id="actionRow" class="actionRow" style="display:none">
         <button class="primaryDark" id="openReportBtn" onclick="openReport()">Open Branded Report</button>
+        <button class="btnGhost" id="saveCrmBtn" onclick="saveScanToCrm()" style="display:none">Save to CRM</button>
         <button class="btnGhost" id="saveBtn" onclick="saveCurrent()">Save to this browser</button>
         <button class="btnGhost" id="saveTeamBtn" onclick="saveToTeam()" style="display:none">Save to team</button>
       </div>
@@ -856,6 +857,7 @@ async function initTeam(){
   }
   const ecb=document.getElementById('emailClientBtn'); if(ecb) ecb.style.display=(TEAM.enabled&&TEAM.user)?'inline-block':'none';
   const crmTab=document.getElementById('tabCrm'); if(crmTab) crmTab.style.display=(TEAM.enabled&&TEAM.user)?'':'none';
+  const scb=document.getElementById('saveCrmBtn'); if(scb) scb.style.display=(TEAM.enabled&&TEAM.user)?'inline-block':'none';
   if(/[?&]login=denied/.test(location.search)){ const eb=document.getElementById('errorBox'); eb.textContent='Sign-in denied — that Google account is not on the team whitelist.'; eb.style.display='block'; }
 }
 
@@ -1193,6 +1195,7 @@ async function openLead(id){
     <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px">
       <button class="primaryDark" onclick="saveLead(${b.id})">Save</button>
       <button class="btnGhost" onclick="auditForCrm(${b.id})">Run audit</button>
+      ${b.last_report?`<button class="btnGhost" onclick="viewCrmReport(${b.id})">View report</button>`:''}
       <button class="btnGhost" onclick="emailCrmReport(${b.id})">Email report</button>
     </div>
     <div class="panelTitle" style="margin:0 0 6px">Activity</div>
@@ -1222,6 +1225,13 @@ async function auditForCrm(id){
     runCrmQuery();
   }catch(e){ if(st) st.textContent='Audit failed — the site may block automated access, or the URL is invalid.'; }
 }
+async function viewCrmReport(id){
+  let b; try{ b=await fetch('/api/crm/businesses/'+id).then(r=>r.ok?r.json():null); }catch(e){}
+  if(!b||!b.last_report){ alert('No saved report for this business yet — click Run audit.'); return; }
+  reports=Array.isArray(b.last_report)?b.last_report:[b.last_report];
+  closeLead();
+  openReport();
+}
 async function emailCrmReport(id){
   let b; try{ b=await fetch('/api/crm/businesses/'+id).then(r=>r.ok?r.json():null); }catch(e){}
   if(!b){ alert('Could not load lead.'); return; }
@@ -1231,8 +1241,28 @@ async function emailCrmReport(id){
   const arr=Array.isArray(b.last_report)?b.last_report:[b.last_report];
   const html=buildReportEmail(b.owner_name||b.manager_name||b.name||'', arr);
   try{ const res=await fetch('/api/send-report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({to,subject:'Your SEO & AI Search Audit — '+BRAND.name,html})});
-    alert(res.ok?('Report emailed to '+to+'.'):'Email failed — are you signed in?'); }
+    if(res.ok){ alert('Report emailed to '+to+'.'); return; }
+    const d=await res.json().catch(()=>({}));
+    alert(emailErr(d.error)); }
   catch(e){ alert('Email failed — network error.'); }
+}
+function emailErr(code){
+  if(code==='email_not_configured') return 'Email is not set up on the server yet. Add RESEND_API_KEY and MAIL_FROM in Railway.';
+  if(code==='auth_required') return 'You are signed out — sign in again and retry.';
+  if(code==='send_failed') return 'The email service rejected it — check MAIL_FROM uses a domain verified in Resend.';
+  return 'Email failed'+(code?' ('+code+')':'')+'.';
+}
+
+async function saveScanToCrm(){
+  if(!reports.length){ alert('Run an audit first.'); return; }
+  if(!(TEAM&&TEAM.user)){ alert('Sign in with your team account to save to the CRM.'); return; }
+  let ok=0,fail=0;
+  for(const r of reports){
+    if(r.error) continue;
+    const sc=score(r);
+    try{ const res=await fetch('/api/crm/attach',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({website:r.url||r.domain,name:r.domain,report:r,score:sc.score,grade:sc.grade})}); if(res.ok) ok++; else fail++; }catch(e){ fail++; }
+  }
+  alert(ok?('Saved '+ok+' business'+(ok===1?'':'es')+' to the CRM'+(fail?(' ('+fail+' failed)'):'')+'. Open the Leads tab to add owner/manager details.'):'Could not save to CRM'+(fail?' — check you are signed in.':'.'));
 }
 function exportCrmCsv(){
   if(!crmRows.length){ crmMsg('Run a query first, then export.'); return; }

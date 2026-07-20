@@ -187,6 +187,7 @@ app.get('/api/config', (req, res) => {
     teamEnabled,
     placesEnabled: cfg.places,
     geocodeEnabled: cfg.geocode,
+    emailEnabled: cfg.email,
     crmEnabled: teamEnabled,
     user: loggedIn(req) ? req.user : null,
   });
@@ -459,7 +460,7 @@ app.get('/api/crm/businesses', requireAuth, async (req, res) => {
     if (industry) push('industry ILIKE ?', industry);
     if (status) push('status = ?', status);
     if (q) { p.push('%' + q + '%'); const idx = '$' + p.length; cond.push(`(name ILIKE ${idx} OR domain ILIKE ${idx})`); }
-    if (grades) { const gs = String(grades).split(',').map(s => s.trim().toUpperCase()).filter(Boolean); if (gs.length) push('latest_grade = ANY(?)', gs); }
+    if (grades) { const gs = String(grades).split(',').map(s => s.trim().toUpperCase()).filter(Boolean); if (gs.length) push('(latest_grade = ANY(?) OR latest_grade IS NULL)', gs); }
     if (association) {
       if (member === 'no') push('NOT (memberships @> ?::jsonb)', JSON.stringify([association]));
       else if (member === 'yes') push('memberships @> ?::jsonb', JSON.stringify([association]));
@@ -531,6 +532,28 @@ app.post('/api/crm/businesses/:id/report', requireAuth, async (req, res) => {
       [JSON.stringify(report), (score == null ? null : score), grade || null, req.params.id]);
     res.json({ ok: true });
   } catch (e) { console.error('crm attach', e.message); res.status(500).json({ error: 'attach_failed' }); }
+});
+
+// Upsert a business by website and attach a just-run report (field workflow)
+app.post('/api/crm/attach', requireAuth, async (req, res) => {
+  const { website, name, report, score, grade } = req.body || {};
+  const domain = normDomain(website || '');
+  if (!domain || !report) return res.status(400).json({ error: 'website_and_report_required' });
+  const memberships = await membershipsFor(domain);
+  try {
+    const { rows } = await pool.query(
+      `INSERT INTO crm_businesses (name,domain,website,memberships,last_report,latest_score,latest_grade,last_audit_at,updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,now(),now())
+       ON CONFLICT (domain) DO UPDATE SET
+         name=COALESCE(crm_businesses.name, EXCLUDED.name),
+         website=COALESCE(crm_businesses.website, EXCLUDED.website),
+         last_report=EXCLUDED.last_report, latest_score=EXCLUDED.latest_score,
+         latest_grade=EXCLUDED.latest_grade, last_audit_at=now(), updated_at=now()
+       RETURNING id`,
+      [name || domain, domain, website || ('https://' + domain), JSON.stringify(memberships),
+       JSON.stringify(report), (score == null ? null : score), grade || null]);
+    res.json({ ok: true, id: rows[0].id });
+  } catch (e) { console.error('crm attach-new', e.message); res.status(500).json({ error: 'attach_failed' }); }
 });
 
 app.get('/api/crm/businesses/:id', requireAuth, async (req, res) => {
