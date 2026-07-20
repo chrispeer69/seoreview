@@ -19,6 +19,7 @@ const cfg = {
   google: !!(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET),
   places: !!process.env.PLACES_API_KEY,
   email: !!process.env.RESEND_API_KEY,
+  geocode: !!(process.env.GOOGLE_MAPS_API_KEY || process.env.PLACES_API_KEY),
   teamEmails: (process.env.TEAM_EMAILS || '').split(/[,\s]+/).map(s => s.trim().toLowerCase()).filter(Boolean),
 };
 const teamEnabled = cfg.db && cfg.google;
@@ -69,6 +70,46 @@ async function migrate() {
       email TEXT,
       url TEXT,
       meta JSONB,
+      created_at TIMESTAMPTZ DEFAULT now()
+    );`);
+  // ---- CRM ----
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS crm_businesses (
+      id SERIAL PRIMARY KEY,
+      name TEXT,
+      domain TEXT UNIQUE,
+      website TEXT,
+      industry TEXT,
+      address TEXT, city TEXT, state TEXT, zip TEXT,
+      lat DOUBLE PRECISION, lng DOUBLE PRECISION,
+      phone TEXT, email TEXT,
+      latest_score INT, latest_grade TEXT, last_audit_at TIMESTAMPTZ,
+      status TEXT DEFAULT 'new',
+      follow_up DATE,
+      notes TEXT,
+      comments JSONB DEFAULT '[]'::jsonb,
+      memberships JSONB DEFAULT '[]'::jsonb,
+      tags JSONB DEFAULT '[]'::jsonb,
+      created_at TIMESTAMPTZ DEFAULT now(),
+      updated_at TIMESTAMPTZ DEFAULT now()
+    );`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_crm_state ON crm_businesses (state);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_crm_city ON crm_businesses (city);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_crm_industry ON crm_businesses (industry);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_crm_grade ON crm_businesses (latest_grade);`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS crm_members (
+      id SERIAL PRIMARY KEY,
+      association TEXT NOT NULL,
+      domain TEXT,
+      name TEXT,
+      created_at TIMESTAMPTZ DEFAULT now()
+    );`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_crm_members_domain ON crm_members (domain);`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS geocache (
+      q TEXT PRIMARY KEY,
+      lat DOUBLE PRECISION, lng DOUBLE PRECISION,
       created_at TIMESTAMPTZ DEFAULT now()
     );`);
 }
@@ -141,6 +182,8 @@ app.get('/api/config', (req, res) => {
   res.json({
     teamEnabled,
     placesEnabled: cfg.places,
+    geocodeEnabled: cfg.geocode,
+    crmEnabled: teamEnabled,
     user: loggedIn(req) ? req.user : null,
   });
 });
@@ -214,6 +257,39 @@ async function sendEmail({ to, subject, html, replyTo }) {
     if (!r.ok) { const t = await r.text().catch(() => ''); console.error('email send failed', r.status, t); return { ok: false, status: r.status, body: t }; }
     return { ok: true };
   } catch (e) { console.error('email error', e.message); return { ok: false, error: e.message }; }
+}
+
+// ---------- CRM helpers ----------
+function normDomain(u) {
+  if (!u) return '';
+  let s = String(u).trim().toLowerCase();
+  s = s.replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/.*$/, '').replace(/:\d+$/, '');
+  return s;
+}
+async function geocode(query) {
+  if (!query || !pool) return null;
+  const norm = String(query).trim().toLowerCase();
+  if (!norm) return null;
+  try {
+    const c = await pool.query('SELECT lat, lng FROM geocache WHERE q=$1', [norm]);
+    if (c.rows.length) return { lat: c.rows[0].lat, lng: c.rows[0].lng };
+  } catch (e) {}
+  const key = process.env.GOOGLE_MAPS_API_KEY || process.env.PLACES_API_KEY;
+  if (!key) return null;
+  try {
+    const j = await fetch(`https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(query)}&key=${key}`).then(r => r.json());
+    const loc = j.results && j.results[0] && j.results[0].geometry && j.results[0].geometry.location;
+    if (!loc) return null;
+    try { await pool.query('INSERT INTO geocache (q, lat, lng) VALUES ($1,$2,$3) ON CONFLICT (q) DO NOTHING', [norm, loc.lat, loc.lng]); } catch (e) {}
+    return { lat: loc.lat, lng: loc.lng };
+  } catch (e) { return null; }
+}
+async function membershipsFor(domain) {
+  if (!pool || !domain) return [];
+  try {
+    const r = await pool.query('SELECT DISTINCT association FROM crm_members WHERE domain=$1', [domain]);
+    return r.rows.map(x => x.association);
+  } catch (e) { return []; }
 }
 
 // ---------- Lead capture (public) ----------
@@ -325,6 +401,146 @@ app.post('/api/send-report', requireAuth, async (req, res) => {
   const r = await sendEmail({ to, subject: subject || 'Your SEO Audit', html, replyTo: req.user.email });
   if (r && r.ok) return res.json({ ok: true });
   return res.status(502).json({ error: 'send_failed' });
+});
+
+// ---------- CRM API (team-only) ----------
+app.post('/api/crm/businesses/bulk', requireAuth, async (req, res) => {
+  const items = Array.isArray(req.body && req.body.businesses) ? req.body.businesses : [];
+  if (!items.length) return res.status(400).json({ error: 'no_businesses' });
+  let imported = 0, skipped = 0;
+  for (const b of items) {
+    const domain = normDomain(b.website || b.domain || '');
+    if (!domain) { skipped++; continue; }
+    let lat = (b.lat != null && b.lat !== '') ? Number(b.lat) : null;
+    let lng = (b.lng != null && b.lng !== '') ? Number(b.lng) : null;
+    if (lat == null || lng == null || isNaN(lat) || isNaN(lng)) {
+      const q = [b.address, b.city, b.state, b.zip].filter(Boolean).join(', ');
+      const g = q ? await geocode(q) : null;
+      if (g) { lat = g.lat; lng = g.lng; } else { lat = lat == null || isNaN(lat) ? null : lat; lng = lng == null || isNaN(lng) ? null : lng; }
+    }
+    const memberships = await membershipsFor(domain);
+    try {
+      await pool.query(
+        `INSERT INTO crm_businesses (name,domain,website,industry,address,city,state,zip,lat,lng,phone,email,memberships,updated_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,now())
+         ON CONFLICT (domain) DO UPDATE SET
+           name=COALESCE(EXCLUDED.name,crm_businesses.name),
+           website=COALESCE(EXCLUDED.website,crm_businesses.website),
+           industry=COALESCE(EXCLUDED.industry,crm_businesses.industry),
+           address=COALESCE(EXCLUDED.address,crm_businesses.address),
+           city=COALESCE(EXCLUDED.city,crm_businesses.city),
+           state=COALESCE(EXCLUDED.state,crm_businesses.state),
+           zip=COALESCE(EXCLUDED.zip,crm_businesses.zip),
+           lat=COALESCE(EXCLUDED.lat,crm_businesses.lat),
+           lng=COALESCE(EXCLUDED.lng,crm_businesses.lng),
+           phone=COALESCE(EXCLUDED.phone,crm_businesses.phone),
+           email=COALESCE(EXCLUDED.email,crm_businesses.email),
+           memberships=EXCLUDED.memberships,
+           updated_at=now()`,
+        [b.name || null, domain, b.website || ('https://' + domain), b.industry || null, b.address || null,
+         b.city || null, b.state || null, b.zip || null, lat, lng, b.phone || null, b.email || null, JSON.stringify(memberships)]);
+      imported++;
+    } catch (e) { console.error('crm import row', e.message); skipped++; }
+  }
+  res.json({ ok: true, imported, skipped });
+});
+
+app.get('/api/crm/businesses', requireAuth, async (req, res) => {
+  try {
+    const { state, city, industry, status, q, grades, association, member, center, radiusMi } = req.query;
+    const cond = []; const p = [];
+    const push = (sql, val) => { p.push(val); cond.push(sql.replace('?', '$' + p.length)); };
+    if (state) push('state ILIKE ?', state);
+    if (city) push('city ILIKE ?', city);
+    if (industry) push('industry ILIKE ?', industry);
+    if (status) push('status = ?', status);
+    if (q) { p.push('%' + q + '%'); const idx = '$' + p.length; cond.push(`(name ILIKE ${idx} OR domain ILIKE ${idx})`); }
+    if (grades) { const gs = String(grades).split(',').map(s => s.trim().toUpperCase()).filter(Boolean); if (gs.length) push('latest_grade = ANY(?)', gs); }
+    if (association) {
+      if (member === 'no') push('NOT (memberships @> ?::jsonb)', JSON.stringify([association]));
+      else if (member === 'yes') push('memberships @> ?::jsonb', JSON.stringify([association]));
+    }
+    let distSel = '', order = 'ORDER BY updated_at DESC';
+    if (center && radiusMi) {
+      const g = await geocode(center);
+      if (g) {
+        p.push(g.lat); const la = '$' + p.length;
+        p.push(g.lng); const lo = '$' + p.length;
+        p.push(Number(radiusMi)); const rd = '$' + p.length;
+        const hav = `(3959*acos(LEAST(1, cos(radians(${la}))*cos(radians(lat))*cos(radians(lng)-radians(${lo}))+sin(radians(${la}))*sin(radians(lat)))))`;
+        distSel = `, ${hav} AS dist_mi`;
+        cond.push('lat IS NOT NULL AND lng IS NOT NULL');
+        cond.push(`${hav} <= ${rd}`);
+        order = 'ORDER BY dist_mi ASC';
+      }
+    }
+    const whereSql = cond.length ? ('WHERE ' + cond.join(' AND ')) : '';
+    const sql = `SELECT id,name,domain,website,industry,address,city,state,zip,lat,lng,phone,email,latest_score,latest_grade,last_audit_at,status,follow_up,notes,memberships${distSel}
+                 FROM crm_businesses ${whereSql} ${order} LIMIT 2000`;
+    const { rows } = await pool.query(sql, p);
+    res.json(rows);
+  } catch (e) { console.error('crm list', e.message); res.status(500).json({ error: 'list_failed' }); }
+});
+
+app.get('/api/crm/facets', requireAuth, async (req, res) => {
+  try {
+    const states = (await pool.query(`SELECT DISTINCT state FROM crm_businesses WHERE state IS NOT NULL AND state<>'' ORDER BY state`)).rows.map(r => r.state);
+    const industries = (await pool.query(`SELECT DISTINCT industry FROM crm_businesses WHERE industry IS NOT NULL AND industry<>'' ORDER BY industry`)).rows.map(r => r.industry);
+    const associations = (await pool.query(`SELECT DISTINCT association FROM crm_members ORDER BY association`)).rows.map(r => r.association);
+    res.json({ states, industries, associations });
+  } catch (e) { res.status(500).json({ error: 'facets_failed' }); }
+});
+
+app.get('/api/crm/businesses/:id', requireAuth, async (req, res) => {
+  try {
+    const { rows } = await pool.query('SELECT * FROM crm_businesses WHERE id=$1', [req.params.id]);
+    if (!rows.length) return res.status(404).json({ error: 'not_found' });
+    res.json(rows[0]);
+  } catch (e) { res.status(500).json({ error: 'get_failed' }); }
+});
+
+app.patch('/api/crm/businesses/:id', requireAuth, async (req, res) => {
+  const b = req.body || {};
+  const sets = []; const p = []; let i = 1;
+  for (const f of ['name', 'industry', 'phone', 'email', 'address', 'city', 'state', 'zip', 'status', 'notes', 'follow_up']) {
+    if (f in b) { sets.push(`${f}=$${i++}`); p.push(b[f] === '' ? null : b[f]); }
+  }
+  try {
+    if (b.comment) {
+      const c = { text: String(b.comment), by: req.user.email, at: new Date().toISOString() };
+      sets.push(`comments = COALESCE(comments,'[]'::jsonb) || $${i++}::jsonb`); p.push(JSON.stringify([c]));
+    }
+    if (!sets.length) return res.status(400).json({ error: 'nothing_to_update' });
+    sets.push('updated_at=now()');
+    p.push(req.params.id);
+    const { rows } = await pool.query(`UPDATE crm_businesses SET ${sets.join(', ')} WHERE id=$${i} RETURNING *`, p);
+    if (!rows.length) return res.status(404).json({ error: 'not_found' });
+    res.json(rows[0]);
+  } catch (e) { console.error('crm patch', e.message); res.status(500).json({ error: 'update_failed' }); }
+});
+
+app.delete('/api/crm/businesses/:id', requireAuth, async (req, res) => {
+  try { await pool.query('DELETE FROM crm_businesses WHERE id=$1', [req.params.id]); res.json({ ok: true }); }
+  catch (e) { res.status(500).json({ error: 'delete_failed' }); }
+});
+
+app.post('/api/crm/members/import', requireAuth, async (req, res) => {
+  const association = ((req.body && req.body.association) || '').trim();
+  const members = Array.isArray(req.body && req.body.members) ? req.body.members : [];
+  if (!association || !members.length) return res.status(400).json({ error: 'association_and_members_required' });
+  let n = 0;
+  for (const m of members) {
+    const domain = normDomain(m.website || m.domain || '');
+    if (!domain && !m.name) continue;
+    try { await pool.query('INSERT INTO crm_members (association, domain, name) VALUES ($1,$2,$3)', [association, domain || null, m.name || null]); n++; } catch (e) {}
+  }
+  try {
+    await pool.query(
+      `UPDATE crm_businesses b SET memberships = b.memberships || to_jsonb($1::text), updated_at=now()
+        WHERE b.domain IN (SELECT domain FROM crm_members WHERE association=$1 AND domain IS NOT NULL)
+          AND NOT (b.memberships @> to_jsonb($1::text))`, [association]);
+  } catch (e) { console.error('crm retag', e.message); }
+  res.json({ ok: true, imported: n });
 });
 
 app.get('/healthz', (req, res) => res.type('text/plain').send('ok'));
