@@ -30,10 +30,15 @@ app.use(express.json({ limit: '4mb' }));
 let pool = null;
 if (cfg.db) {
   const { Pool } = require('pg');
-  pool = new Pool({
-    connectionString: process.env.DATABASE_URL,
-    ssl: process.env.PGSSL === 'disable' ? false : { rejectUnauthorized: false },
-  });
+  const dbUrl = process.env.DATABASE_URL;
+  // Railway's internal network (…railway.internal) speaks plain TCP — forcing SSL
+  // there breaks the connection. Auto-detect; override with PGSSL=require|disable.
+  const internal = /railway\.internal|localhost|127\.0\.0\.1/.test(dbUrl || '');
+  const ssl = process.env.PGSSL === 'require' ? { rejectUnauthorized: false }
+            : process.env.PGSSL === 'disable' ? false
+            : (internal ? false : { rejectUnauthorized: false });
+  pool = new Pool({ connectionString: dbUrl, ssl });
+  pool.on('error', e => console.error('PG pool error:', e.message));
 }
 async function migrate() {
   if (!pool) return;
@@ -316,10 +321,23 @@ app.post('/api/send-report', requireAuth, async (req, res) => {
 });
 
 app.get('/healthz', (req, res) => res.type('text/plain').send('ok'));
+// DB connectivity check (no secrets) — helps diagnose login/session failures
+app.get('/healthz/db', async (req, res) => {
+  if (!pool) return res.json({ db: false });
+  try { await pool.query('SELECT 1'); res.json({ db: true, ok: true }); }
+  catch (e) { res.status(500).json({ db: true, ok: false, error: e.message }); }
+});
 
 // ---------- Static public tool ----------
 app.use(express.static(__dirname, { extensions: ['html'] }));
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
+
+// Log the real error behind any 500 (e.g. failed login/session writes)
+app.use((err, req, res, next) => {
+  console.error('Unhandled error on', req.method, req.path, '-', err && err.stack ? err.stack : err);
+  if (res.headersSent) return next(err);
+  res.status(500).send('Internal Server Error');
+});
 
 (async () => {
   try { await migrate(); if (pool) console.log('DB ready'); }
