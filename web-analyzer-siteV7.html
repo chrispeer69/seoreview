@@ -558,6 +558,19 @@ function score(r){
   return {score:s,grade,color,counts,byCat,verdict,scored};
 }
 
+// Quality indicator for saved tiles — 90+ green, 80–89 tan, 70–79 orange, ≤69 red
+function qualityColor(score){
+  if(score==null) return {c:'#94a3b8',bg:'#f1f5f9',label:'N/A'};
+  if(score>=90) return {c:'#16a34a',bg:'#dcfce7',label:'Passing'};
+  if(score>=80) return {c:'#a16207',bg:'#fef3c7',label:'Good'};
+  if(score>=70) return {c:'#ea580c',bg:'#ffedd5',label:'Needs work'};
+  return {c:'#dc2626',bg:'#fee2e2',label:'Critical'};
+}
+function qualityBadge(score,grade){
+  const q=qualityColor(score);
+  return `<span style="display:inline-block;background:${q.bg};color:${q.c};font-weight:800;font-size:12px;padding:2px 9px;border-radius:999px">${score==null?'n/a':(grade?grade+' · ':'')+score+' · '+q.label}</span>`;
+}
+
 let reports=[];
 let scanning=false;   // a scan loop is currently running
 let resetting=false;  // Start-over pressed mid-scan; suppress the "stopped" banner
@@ -659,14 +672,16 @@ function renderSaved(){
   const el=document.getElementById('savedPanel'); if(!el) return;
   const arr=getSaved();
   if(!arr.length){ el.innerHTML=''; return; }
-  el.innerHTML='<div class="sectionTitle" style="margin-top:20px">💾 Saved reports</div>'+arr.map(s=>
-    `<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 12px;border:1px solid #e2e8f0;border-radius:10px;margin-top:8px">
-      <div><strong>${esc(s.name)}</strong> <span class="muted">— ${esc(s.date)} · ${s.count} site${s.count===1?'':'s'}</span></div>
+  el.innerHTML='<div class="sectionTitle" style="margin-top:20px">💾 Saved reports</div>'+arr.map(s=>{
+    const first=s.reports&&s.reports[0]; const sc=first?score(first):{score:null,grade:''}; const q=qualityColor(sc.score);
+    return `<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 12px;border:1px solid #e2e8f0;border-left:6px solid ${q.c};border-radius:10px;margin-top:8px">
+      <div><strong>${esc(s.name)}</strong> <span class="muted">— ${esc(s.date)} · ${s.count} site${s.count===1?'':'s'}</span>
+        <div style="margin-top:5px">${qualityBadge(sc.score,sc.grade)}</div></div>
       <div style="display:flex;gap:8px;flex-shrink:0">
         <button class="btnGhost" onclick="loadSaved('${s.id}')">Open</button>
         <button class="btnGhost" onclick="deleteSaved('${s.id}')">Delete</button>
       </div>
-    </div>`).join('');
+    </div>`;}).join('');
 }
 
 function badge(r,size){
@@ -813,10 +828,14 @@ async function loadTeamReports(q){
   const search=`<div style="margin:10px 0"><input type="text" id="teamSearch" placeholder="Search saved reports (name, customer, URL)…" value="${esc(q||'')}" style="width:100%" oninput="teamSearchDebounced(this.value)" /></div>`;
   const list = rows.length ? rows.map(s=>{
     const sm=Array.isArray(s.summary)?s.summary:[];
+    const primary=sm[0]||{};
+    const pScore=primary.error?null:(primary.score==null?null:primary.score);
+    const q=qualityColor(pScore);
     const chips=sm.slice(0,4).map(x=>x.error?`<span class="muted">${esc(x.domain)}: —</span>`:`<span style="font-weight:700">${esc(x.domain)}: ${esc(x.grade||'')} ${x.score!=null?'('+x.score+')':''}</span>`).join(' · ');
-    return `<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 12px;border:1px solid #e2e8f0;border-radius:10px;margin-top:8px">
+    return `<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 12px;border:1px solid #e2e8f0;border-left:6px solid ${q.c};border-radius:10px;margin-top:8px">
       <div style="min-width:0">
         <div><strong>${esc(s.name)}</strong>${s.customer?` <span class="muted">· ${esc(s.customer)}</span>`:''} <span class="muted">· ${s.count} site${s.count===1?'':'s'}</span></div>
+        <div style="margin:5px 0">${qualityBadge(pScore,primary.grade)}</div>
         <div class="muted" style="font-size:12px">${chips||''}</div>
         <div class="muted" style="font-size:11px">saved ${esc(new Date(s.created_at).toLocaleString())}${s.created_by?' by '+esc(s.created_by):''}</div>
       </div>
