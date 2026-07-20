@@ -957,11 +957,11 @@ function reportSection(r){
 
   return `
   ${execTop}
+  ${speedPanel(r)}
   ${catBreakdown}
   ${actionPlan}
   <div class="rH2">What This Site Does Right (${passes.length})</div>
   <div class="winGrid">${passes.map(c=>`<div class="win">✓ ${esc(c.label)}</div>`).join('')}</div>
-  ${speedPanel(r)}
   ${r.tracking.length?`<div class="rH2">Analytics &amp; Tracking</div><p style="font-size:13px;color:#475569">Detected: ${r.tracking.map(esc).join(', ')}.${r.tracking.includes('Google Tag Manager')?' Google Tag Manager is present, which can load additional tags client-side beyond what this scan sees.':''}</p>`:''}
   <div class="rH2">Page Snapshot</div>
   <table class="doc"><tbody>
@@ -977,8 +977,8 @@ function speedPanel(r){
   if((!m||m.error)&&(!d||d.error)) return '';
   const chip=(lbl,s)=>{ if(s==null)return ''; const col=s>=90?'#16a34a':s>=50?'#f59e0b':'#dc2626';
     return `<div style="text-align:center;min-width:90px"><div style="font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;color:#64748b">${lbl}</div><div style="font-size:32px;font-weight:800;color:${col};line-height:1.1">${s}</div><div style="font-size:10px;color:#94a3b8">out of 100</div></div>`; };
-  return `<div class="rH2">Page Speed — Google PageSpeed Insights</div>
-   <div class="scoreWrap" style="display:flex;gap:26px;flex-wrap:wrap;align-items:center;background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:18px 22px">
+  return `<div class="rH2">⚡ Page Speed — How Fast Your Site Loads (Live Google Data)</div>
+   <div class="scoreWrap" style="display:flex;gap:26px;flex-wrap:wrap;align-items:center;background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:20px 24px">
      ${chip('📱 Mobile', m&&!m.error?m.score:null)}
      ${chip('💻 Desktop', d&&!d.error?d.score:null)}
      <div style="flex:1;min-width:220px;font-size:12.5px;color:#475569;line-height:1.6">
@@ -987,6 +987,10 @@ function speedPanel(r){
        ${m&&!m.error&&m.field?`Real-world experience: <strong>${esc(m.field.toLowerCase().replace('_',' '))}</strong><br>`:''}
        <span style="color:#94a3b8">Scores: 90–100 fast · 50–89 needs work · under 50 slow.</span>
      </div>
+   </div>
+   <div style="margin-top:12px;background:#fef2f2;border:1px solid #fecaca;border-left:5px solid #dc2626;border-radius:10px;padding:14px 18px;font-size:13.5px;color:#7f1d1d;line-height:1.65">
+     <strong>Why page speed matters — it's the first thing every visitor feels.</strong>
+     When a page takes more than about 3 seconds to load, <strong>over half of mobile visitors give up and leave</strong> — and they almost always go straight to a competitor's site instead. A slow page silently bounces the very customers your marketing worked to bring in, costing you calls, bookings, and sales you never even see. On top of that, <strong>Google ranks slower sites lower</strong>, so a slow site is found less <em>and</em> converts less. Speeding it up keeps visitors on the page, turns more of them into customers, and lifts your rankings at the same time.
    </div>`;
 }
 function aiExplainer(){
