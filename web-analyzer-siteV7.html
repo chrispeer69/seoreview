@@ -24,6 +24,18 @@
   .actionRow{margin-bottom:20px;display:flex;justify-content:flex-end}
   .primaryDark{padding:13px 24px;background:#0f172a;color:#fff;border:none;border-radius:8px;font-weight:700;cursor:pointer;font-size:1em}
 
+  /* Scan-screen controls sit on the dark gradient — keep them readable (white text).
+     Scoped to #scanView so btnGhost on the light report screen is unaffected. */
+  #scanView .btnGhost{color:#fff;border-color:rgba(255,255,255,.55);background:rgba(255,255,255,.12)}
+  #scanView .btnGhost:hover{background:rgba(255,255,255,.22)}
+  #scanView #saveTeamBtn{border-color:#93c5fd;background:rgba(59,130,246,.28)}
+  #scanView .sectionTitle{color:rgba(255,255,255,.82)}
+  #savedPanel,#teamPanel{color:#e2e8f0}
+  #savedPanel strong,#teamPanel strong{color:#fff}
+  #savedPanel .muted,#teamPanel .muted{color:rgba(255,255,255,.72)}
+  #teamBar{color:#fff}
+  #teamBar a{color:#bfdbfe}
+
   .card{background:#fff;border-radius:12px;padding:30px;box-shadow:0 10px 40px rgba(0,0,0,.25);margin-bottom:20px}
   .cardHead{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;border-bottom:2px solid #e2e8f0;padding-bottom:18px;margin-bottom:20px}
   .cardHead h2{margin:0;font-size:1.4em}
