@@ -117,9 +117,16 @@ if (teamEnabled) {
   passport.deserializeUser((email, d) => d(null, { email }));
 
   app.get('/auth/google', passport.authenticate('google', { scope: ['profile', 'email'] }));
-  app.get('/auth/google/callback',
-    passport.authenticate('google', { failureRedirect: '/?login=denied' }),
-    (req, res) => res.redirect('/web-analyzer-siteV7.html?login=ok'));
+  app.get('/auth/google/callback', (req, res, next) => {
+    passport.authenticate('google', (err, user, info) => {
+      if (err) { console.error('OAuth callback error:', err && err.stack ? err.stack : err); return res.status(500).send('Login error: ' + (err && err.message ? err.message : String(err))); }
+      if (!user) { return res.redirect('/web-analyzer-siteV7.html?login=denied'); }
+      req.logIn(user, (e) => {
+        if (e) { console.error('session logIn error:', e && e.stack ? e.stack : e); return res.status(500).send('Session error: ' + (e && e.message ? e.message : String(e))); }
+        return res.redirect('/web-analyzer-siteV7.html?login=ok');
+      });
+    })(req, res, next);
+  });
   app.get('/auth/logout', (req, res) => { req.logout(() => res.redirect('/web-analyzer-siteV7.html')); });
 }
 
