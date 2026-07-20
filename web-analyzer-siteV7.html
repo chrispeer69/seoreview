@@ -141,6 +141,7 @@
     <textarea id="urls" rows="3" placeholder="Enter one or more sites, one per line:&#10;example.com&#10;anothershop.com"></textarea>
     <div class="opts">
       <label><input type="checkbox" id="psiOn" checked /> Include Google PageSpeed (mobile + desktop) — adds ~20–40s per site</label>
+      <label><input type="checkbox" id="compareOn" onchange="if(typeof reports!=='undefined'&&reports.length)renderResults()" /> ⚖ Compare sites side-by-side (competitor view)</label>
       <!-- Key is supplied by config.js (baked in) or localStorage; not shown to visitors -->
       <input type="hidden" id="psiKey" />
     </div>
@@ -149,7 +150,7 @@
       <button id="stopBtn" onclick="stopScan()" style="display:none;background:#dc2626;color:#fff;border:none;padding:12px 18px;border-radius:10px;font-weight:700;cursor:pointer">⏹ Stop</button>
       <button id="resetBtn" class="btnGhost" onclick="resetScan()" style="display:none">↺ Start over</button>
     </div>
-    <p style="color:rgba(255,255,255,.72);font-size:.82em;margin:2px 0 18px">💡 Comparing competitors? Enter your client first, then each competitor on its own line — the report opens with a ranked side-by-side comparison.</p>
+    <p style="color:rgba(255,255,255,.72);font-size:.82em;margin:2px 0 18px">💡 Comparing competitors? Tick <strong>⚖ Compare</strong> above, then enter your client first and each competitor on its own line — the report opens with a ranked side-by-side comparison. Leave it unchecked to get separate reports for each site.</p>
 
     <div id="errorBox" style="display:none"></div>
     <div id="actionRow" class="actionRow" style="display:none">
@@ -719,7 +720,11 @@ function cardHtml(r){
 function renderResults(){
   document.getElementById('results').innerHTML=reports.map(cardHtml).join('');
   const row=document.getElementById('actionRow');
-  if(reports.length){row.style.display='flex';document.getElementById('openReportBtn').textContent=reports.length>1?`📊 Open Comparison Report (${reports.length} sites)`:'📄 Open Branded Report';}
+  if(reports.length){
+    row.style.display='flex';
+    const cmpEl=document.getElementById('compareOn'); const cmp=reports.length>1&&cmpEl&&cmpEl.checked;
+    document.getElementById('openReportBtn').textContent=cmp?`📊 Open Comparison Report (${reports.length} sites)`:(reports.length>1?`📄 Open Report (${reports.length} sites)`:'📄 Open Branded Report');
+  }
   else row.style.display='none';
   // Lead-capture prompt for public (non-team) visitors after a report
   const lb=document.getElementById('leadBox');
@@ -784,7 +789,8 @@ function buildReportEmail(clientName){
     </div>`;
   };
   let comp='';
-  if(reports.length>1){
+  const _cmpEl=document.getElementById('compareOn');
+  if(reports.length>1 && _cmpEl && _cmpEl.checked){
     const ranked=reports.map(r=>({r,sc:score(r)})).sort((a,b)=>((b.sc.score==null?-1:b.sc.score)-(a.sc.score==null?-1:a.sc.score)));
     comp=`<h3 style="margin:18px 0 8px">Competitor Comparison</h3>
       <table style="border-collapse:collapse;width:100%;font-size:13px">
@@ -1097,7 +1103,8 @@ function renderReport(){
       ${trails.length?`<p style="margin:0;color:#b91c1c">🎯 Biggest opportunities (behind the leader): ${trails.map(esc).join(', ')}.</p>`:'<p style="margin:0;color:#166534">Ahead of or tied with every competitor on all tracked metrics — dominant position.</p>'}
     </div>`;
   }
-  const summaryTable= multi?`
+  const compareOn = multi && document.getElementById('compareOn') && document.getElementById('compareOn').checked;
+  const summaryTable= compareOn?`
     <div class="rH2">Competitor Comparison — ${reports.length} Sites</div>
     <p style="font-size:12px;color:#64748b;margin:-6px 0 10px">Ranked by overall score. <span style="background:#dcfce7;padding:1px 6px;border-radius:4px">🏆 green</span> = best in column. First site entered is marked <span style="background:#2563eb;color:#fff;padding:1px 6px;border-radius:4px;font-size:11px">CLIENT</span>.</p>
     <div style="overflow-x:auto">
