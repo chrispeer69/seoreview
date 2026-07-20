@@ -279,6 +279,9 @@ const BRAND = {
   tagline:'AI-Powered Local SEO',
   web:'www.bluecollarai.online',
   webUrl:'https://www.bluecollarai.online',
+  bookUrl:'https://calendly.com/bluecollarai/15min',      /* TODO: your real Calendly (or similar) booking link */
+  buyUrl:'https://www.bluecollarai.online/buy-report',    /* TODO: your real Stripe/payment link for the $49 report */
+  reportPrice:'$49',
   sites:['www.bluecollarai.online','www.ustowalliance.com','www.usautoalliance.com'],
   contacts:[
     { name:'Chris',  phone:'614-633-7935', tel:'+16146337935', email:'chris@bluecollarai.online' },
@@ -905,9 +908,20 @@ function buildReportEmail(clientName, arr){
     <p style="font-size:15px;line-height:1.6;margin:0 0 18px">We audited your website across <b>Google SEO</b> and <b>AI search</b> — ChatGPT, Google AI Overviews and Perplexity — the two places customers now decide who to call. Here is exactly where you stand and what it's costing you.</p>
     ${R.map(site).join('')}
     <div style="background:#0f172a;color:#fff;border-radius:10px;padding:24px;margin:6px 0 18px">
-      <div style="font-size:19px;font-weight:800;margin-bottom:8px">Let's turn this into more calls — starting this week.</div>
-      <p style="margin:0 0 14px;color:#e2e8f0;font-size:14px;line-height:1.6">Every issue above is fixable, and usually faster than you'd think. ${esc(BRAND.name)} handles all of it — the Google SEO <i>and</i> the AI-search work most agencies aren't even doing yet — so you show up first and win the customer.</p>
-      <a href="mailto:${esc((BRAND.contacts&&BRAND.contacts[0]&&BRAND.contacts[0].email)||'')}?subject=Fix%20my%20website%20audit" style="display:inline-block;background:#2563eb;color:#fff;text-decoration:none;font-weight:800;padding:12px 22px;border-radius:6px;font-size:15px">Book my free 15-minute walkthrough →</a>
+      <div style="font-size:19px;font-weight:800;margin-bottom:8px">Want the complete report — every issue, every fix, prioritized?</div>
+      <p style="margin:0 0 16px;color:#e2e8f0;font-size:14px;line-height:1.6">This email is the snapshot. The full report walks through <b>every</b> finding with step-by-step fixes across Google SEO and AI search. Pick whichever works for you:</p>
+      <table role="presentation" style="width:100%;border-collapse:separate;border-spacing:0 8px">
+        <tr><td style="padding:14px 16px;background:#1e293b;border-radius:8px">
+          <div style="font-weight:800;font-size:15px;margin-bottom:2px">1 · Free 15-minute walkthrough</div>
+          <div style="color:#cbd5e1;font-size:13px;margin-bottom:10px">We review the full report with you and map the fastest wins — no obligation.</div>
+          <a href="${esc(BRAND.bookUrl||('mailto:'+((BRAND.contacts&&BRAND.contacts[0]&&BRAND.contacts[0].email)||'')))}" style="display:inline-block;background:#2563eb;color:#fff;text-decoration:none;font-weight:800;padding:11px 20px;border-radius:6px;font-size:14px">Book my free walkthrough →</a>
+        </td></tr>
+        <tr><td style="padding:14px 16px;background:#1e293b;border-radius:8px">
+          <div style="font-weight:800;font-size:15px;margin-bottom:2px">2 · Get the full report — ${esc(BRAND.reportPrice||'$49')} (DIY)</div>
+          <div style="color:#cbd5e1;font-size:13px;margin-bottom:10px">Download the complete, prioritized report and fix it yourself, at your pace.</div>
+          <a href="${esc(BRAND.buyUrl||BRAND.webUrl)}" style="display:inline-block;background:#fff;color:#0f172a;text-decoration:none;font-weight:800;padding:11px 20px;border-radius:6px;font-size:14px">Buy the full report — ${esc(BRAND.reportPrice||'$49')} →</a>
+        </td></tr>
+      </table>
       <div style="margin-top:14px;font-size:14px;color:#cbd5e1;line-height:1.7">${contacts}</div>
     </div>
     <p style="font-size:13px;color:#64748b;line-height:1.6;margin:0">P.S. Your competitors' sites were built the same era yours was — the ones winning today are simply the ones that fixed these exact items first. Let's make that you.</p>
@@ -925,8 +939,9 @@ function buildReportText(clientName, arr){
     r.checks.filter(c=>c.status==='fail'||c.status==='warn').slice(0,10).forEach(c=>{ t+='  - '+c.label+(c.fix?': '+c.fix:'')+'\n'; });
     t+='\n';
   });
-  t+="Every issue is fixable — usually faster than you'd think. Blue Collar AI handles the Google SEO and the AI-search work so you show up first and win the customer.\n\n";
-  t+="Book a free 15-minute walkthrough — just reply or call:\n";
+  t+="This is the snapshot. The full report walks through every finding with step-by-step fixes. Two options:\n\n";
+  t+="1) Free 15-minute walkthrough (no obligation): "+(BRAND.bookUrl||('reply or email '+((BRAND.contacts&&BRAND.contacts[0]&&BRAND.contacts[0].email)||'')))+"\n";
+  t+="2) Buy the full report ("+(BRAND.reportPrice||'$49')+", DIY): "+(BRAND.buyUrl||BRAND.webUrl)+"\n\n";
   t+=(BRAND.contacts||[]).map(c=>c.name+' · '+c.phone+' · '+c.email).join('\n')+'\n'+BRAND.web+'\n';
   return t;
 }
