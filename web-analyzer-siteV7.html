@@ -893,7 +893,10 @@ function buildReportEmail(clientName, arr, opts){
       : `This is costing you customers right now. When people search Google — or ask ChatGPT and Google's AI who to call — ${esc(r.domain)} is being passed over for competitors. The good news: every issue below is fixable.`;
     const speedLine=(r.speed&&r.speed.mobile&&!r.speed.mobile.error&&r.speed.mobile.score!=null)
       ? `<div style="font-size:13px;color:#475569;margin:0 0 12px">📱 Mobile speed: <b style="color:${r.speed.mobile.score>=90?'#16a34a':r.speed.mobile.score>=50?'#ea580c':'#dc2626'}">${r.speed.mobile.score}/100</b> — slow pages bounce customers straight to a competitor.</div>` : '';
-    const li=list=>list.map(c=>`<li style="margin:7px 0"><b>${esc(c.label)}</b>${c.fix?`<br><span style="color:#475569">${esc(c.fix)}</span>`:''}</li>`).join('');
+    const cats=Object.keys(sc.byCat);
+    const catRows=cats.map(cat=>{const p=Math.round(100*sc.byCat[cat].e/sc.byCat[cat].t);const cc=p>=80?'#16a34a':p>=60?'#f59e0b':'#dc2626';
+      return `<tr><td style="color:#475569;padding:4px 10px 4px 0;font-size:13px;white-space:nowrap;vertical-align:middle">${esc(cat)}</td><td style="padding:4px 0;vertical-align:middle;width:100%"><table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:separate;background:#e2e8f0;border-radius:999px"><tr><td style="height:10px;background:${cc};border-radius:999px;font-size:0;line-height:0;width:${p}%">&nbsp;</td>${p<100?'<td style="font-size:0;line-height:0">&nbsp;</td>':''}</tr></table></td><td style="text-align:right;font-weight:700;color:${cc};padding:4px 0 4px 10px;font-size:13px;white-space:nowrap;vertical-align:middle">${p}%</td></tr>`;}).join('');
+    const breakdown=cats.length?`<div style="font-weight:800;font-size:12px;text-transform:uppercase;letter-spacing:.06em;margin:0 0 6px">Category breakdown</div><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse">${catRows}</table>`:'';
     return `<div style="border:1px solid #e5e7eb;border-radius:10px;margin:0 0 20px;overflow:hidden">
       <div style="background:${col};color:#fff;padding:16px 20px">
         <div style="font-size:12px;letter-spacing:.1em;text-transform:uppercase;opacity:.85">Audit result</div>
@@ -903,8 +906,7 @@ function buildReportEmail(clientName, arr, opts){
         <p style="margin:0 0 12px;font-size:15px;line-height:1.6">${verdict}</p>
         <div style="font-size:13px;color:#475569;margin:0 0 12px"><b style="color:#b91c1c">${sc.counts.fail} critical</b> &nbsp;·&nbsp; <b style="color:#b45309">${sc.counts.warn} to improve</b> &nbsp;·&nbsp; ${sc.counts.pass} passing</div>
         ${speedLine}
-        ${quick.length?`<div style="font-weight:800;font-size:12px;text-transform:uppercase;letter-spacing:.06em;margin:0 0 4px">Quick wins</div><ul style="margin:0 0 14px;padding-left:18px;font-size:14px;line-height:1.5">${li(quick)}</ul>`:''}
-        ${proj.length?`<div style="font-weight:800;font-size:12px;text-transform:uppercase;letter-spacing:.06em;margin:0 0 4px">Bigger opportunities</div><ul style="margin:0;padding-left:18px;font-size:14px;line-height:1.5">${li(proj)}</ul>`:''}
+        ${breakdown}
       </div>
     </div>`;
   };
