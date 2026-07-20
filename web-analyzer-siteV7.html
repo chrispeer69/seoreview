@@ -36,12 +36,12 @@
   #teamBar{color:#fff}
   #teamBar a{color:#bfdbfe}
 
-  .card{background:#fff;border-radius:12px;padding:30px;box-shadow:0 10px 40px rgba(0,0,0,.25);margin-bottom:20px}
+  .card{background:#fff;border-radius:8px;padding:28px;border:1px solid #e2e8f0;box-shadow:0 4px 18px rgba(15,23,42,.12);margin-bottom:20px}
   .cardHead{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;border-bottom:2px solid #e2e8f0;padding-bottom:18px;margin-bottom:20px}
   .cardHead h2{margin:0;font-size:1.4em}
   .muted{color:#94a3b8;font-size:.85em}
   .tally{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:8px}
-  .pill{padding:6px 12px;border-radius:999px;font-size:.85em;font-weight:700}
+  .pill{padding:5px 11px;border-radius:4px;font-size:.82em;font-weight:700;letter-spacing:.01em}
   .pill.ok{background:#dcfce7;color:#15803d}
   .pill.warn{background:#fef3c7;color:#b45309}
   .pill.fail{background:#fee2e2;color:#b91c1c}
@@ -61,11 +61,11 @@
   .docPad{padding:24px 16px}
   .printArea{max-width:850px;margin:0 auto;background:#fff;padding:54px;box-shadow:0 10px 40px rgba(0,0,0,.18)}
   .rHeader{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;border-bottom:3px solid #0f172a;padding-bottom:20px;margin-bottom:26px}
-  .rH2{font-size:14px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;color:#0f172a;margin:30px 0 12px;padding-bottom:6px;border-bottom:1px solid #e2e8f0}
+  .rH2{font-size:12.5px;font-weight:800;text-transform:uppercase;letter-spacing:.09em;color:#0f172a;margin:32px 0 14px;padding-bottom:7px;border-bottom:2px solid #0f172a}
   .rSec{break-inside:avoid}
 
   /* Executive summary */
-  .execBox{border:2px solid #cbd5e1;border-radius:12px;padding:22px 24px;margin-bottom:8px;background:#f8fafc;break-inside:avoid}
+  .execBox{border:1px solid #e2e8f0;border-left:5px solid #cbd5e1;border-radius:6px;padding:22px 26px;margin-bottom:8px;background:#fff;break-inside:avoid}
   .execTop{display:flex;gap:20px;align-items:center;flex-wrap:wrap}
   .execLabel{font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;color:#64748b}
   .execScore{font-size:30px;font-weight:800;line-height:1.1;margin:2px 0}
@@ -81,7 +81,7 @@
 
   .planSub{font-size:14px;font-weight:800;color:#0f172a;margin:18px 0 4px;display:flex;align-items:center;gap:8px}
   .planNote{font-size:12.5px;color:#64748b;margin:0 0 12px}
-  .issueCard{border:1px solid #e2e8f0;border-left-width:5px;border-radius:8px;padding:14px 16px;margin-bottom:12px;break-inside:avoid}
+  .issueCard{border:1px solid #e2e8f0;border-left-width:5px;border-radius:6px;padding:14px 16px;margin-bottom:12px;break-inside:avoid}
   .issueCard h4{margin:0 0 4px;font-size:15px}
   .issueCard .why{font-size:13px;color:#475569;margin:4px 0}
   .issueCard .fix{font-size:13px;color:#0f172a;margin:6px 0 0}
@@ -94,17 +94,17 @@
   table.doc td{padding:7px 10px;border-bottom:1px solid #eef2f7;vertical-align:top}
 
   /* AI search explainer */
-  .aiBox{background:#f0f9ff;border:1px solid #bae6fd;border-radius:12px;padding:22px 24px;margin-top:6px;break-inside:avoid}
+  .aiBox{background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;padding:22px 26px;margin-top:6px;break-inside:avoid}
   .aiBox p{font-size:13.5px;color:#334155;line-height:1.65;margin:0 0 12px}
   .aiBox p:last-child{margin-bottom:0}
   .aiCols{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:6px 0 14px}
   .aiCol{background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:12px 14px}
-  .aiCol h5{margin:0 0 6px;font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;color:#0369a1}
+  .aiCol h5{margin:0 0 6px;font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;color:#0f172a}
   .aiCol p{font-size:12.5px;line-height:1.55;margin:0;color:#475569}
   @media(max-width:560px){.aiCols{grid-template-columns:1fr}}
 
   /* CTA */
-  .ctaBox{background:#0f172a;color:#fff;border-radius:12px;padding:26px 28px;margin-top:6px;break-inside:avoid}
+  .ctaBox{background:#0f172a;color:#fff;border-radius:6px;padding:26px 30px;margin-top:6px;break-inside:avoid}
   .ctaBox p{margin:0 0 12px;font-size:14px;line-height:1.65;color:#e2e8f0}
   .ctaBox a{color:#7dd3fc;text-decoration:none}
   .ctaContact{display:flex;flex-wrap:wrap;gap:6px 28px;margin-top:6px;padding-top:16px;border-top:1px solid rgba(255,255,255,.18);font-size:14px}
@@ -687,9 +687,11 @@ function renderSaved(){
 
 function badge(r,size){
   const sc=score(r);
-  return `<div style="width:${size}px;height:${size}px;border-radius:50%;border:5px solid ${sc.color};display:flex;flex-direction:column;align-items:center;justify-content:center;flex-shrink:0">
-    <span style="font-size:${size*0.36}px;font-weight:800;color:${sc.color};line-height:1">${sc.grade}</span>
-    <span style="font-size:${size*0.17}px;color:#64748b;margin-top:2px">${sc.score==null?'n/a':sc.score}</span></div>`;
+  const pad=Math.round(size*0.13);
+  return `<div style="min-width:${Math.round(size*1.2)}px;border:1px solid #e2e8f0;border-top:4px solid ${sc.color};border-radius:6px;padding:${pad}px ${Math.round(size*0.18)}px;text-align:center;flex-shrink:0;background:#fff">
+    <div style="font-size:${Math.round(size*0.46)}px;font-weight:800;color:${sc.color};line-height:1">${sc.score==null?'—':sc.score}</div>
+    <div style="font-size:${Math.round(size*0.135)}px;color:#64748b;letter-spacing:.08em;text-transform:uppercase;margin-top:4px">Grade ${sc.grade}</div>
+  </div>`;
 }
 function findRow(c){
   const col=SEV[c.status].color;
@@ -944,7 +946,7 @@ function reportSection(r){
   if(!sc.counts.fail&&!sc.counts.warn) sum+=`No significant problems were found — this is a well-optimized page. `;
   else sum+=`Start with the Quick Wins below for the fastest results.`;
 
-  const execTop = `<section class="rSec execBox" style="border-color:${sc.color}">
+  const execTop = `<section class="rSec execBox" style="border-left-color:${sc.color}">
     <div class="execTop">
       ${badge(r,84)}
       <div>
@@ -972,10 +974,10 @@ function reportSection(r){
     actionPlan = `<div class="rH2">Your Action Plan</div><p style="font-size:14px;color:#16a34a;font-weight:600">No significant issues found — nice work.</p>`;
   }else{
     actionPlan = `<div class="rH2">Your Action Plan (${issues.length} item${issues.length>1?'s':''})</div>
-    ${quick.length?`<div class="planSub">⚡ Quick Wins <span style="font-weight:600;color:#64748b;font-size:12px">— high impact, low effort</span></div>
+    ${quick.length?`<div class="planSub">Quick Wins <span style="font-weight:600;color:#64748b;font-size:12px">— high impact, low effort</span></div>
       <p class="planNote">Fast fixes you (or your web person) can usually make in minutes inside your site builder or settings.</p>
       ${quick.map(issueCardHtml).join('')}`:''}
-    ${proj.length?`<div class="planSub">🔧 Bigger Projects <span style="font-weight:600;color:#64748b;font-size:12px">— worth planning for</span></div>
+    ${proj.length?`<div class="planSub">Bigger Projects <span style="font-weight:600;color:#64748b;font-size:12px">— worth planning for</span></div>
       <p class="planNote">These take a bit more work (content, code, or setup) but deliver lasting gains. ${esc(BRAND.name.replace(/,.*/,''))} can handle these for you.</p>
       ${proj.map(issueCardHtml).join('')}`:''}`;
   }
@@ -1002,10 +1004,10 @@ function speedPanel(r){
   if((!m||m.error)&&(!d||d.error)) return '';
   const chip=(lbl,s)=>{ if(s==null)return ''; const col=s>=90?'#16a34a':s>=50?'#f59e0b':'#dc2626';
     return `<div style="text-align:center;min-width:90px"><div style="font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;color:#64748b">${lbl}</div><div style="font-size:32px;font-weight:800;color:${col};line-height:1.1">${s}</div><div style="font-size:10px;color:#94a3b8">out of 100</div></div>`; };
-  return `<div class="rH2">⚡ Page Speed — How Fast Your Site Loads (Live Google Data)</div>
+  return `<div class="rH2">Page Speed — How Fast Your Site Loads (Live Google Data)</div>
    <div class="scoreWrap" style="display:flex;gap:26px;flex-wrap:wrap;align-items:center;background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:20px 24px">
-     ${chip('📱 Mobile', m&&!m.error?m.score:null)}
-     ${chip('💻 Desktop', d&&!d.error?d.score:null)}
+     ${chip('Mobile', m&&!m.error?m.score:null)}
+     ${chip('Desktop', d&&!d.error?d.score:null)}
      <div style="flex:1;min-width:220px;font-size:12.5px;color:#475569;line-height:1.6">
        ${m&&!m.error&&m.lcpTxt?`Largest Contentful Paint: <strong>${esc(m.lcpTxt)}</strong> <span style="color:#94a3b8">(mobile · good ≤ 2.5s)</span><br>`:''}
        ${m&&!m.error&&m.clsTxt!=null?`Cumulative Layout Shift: <strong>${esc(String(m.clsTxt))}</strong> <span style="color:#94a3b8">(mobile · good ≤ 0.1)</span><br>`:''}
@@ -1022,7 +1024,7 @@ function comparisonMetrics(){
   return `<div class="rH2">What We Measured — and Why It Matters</div>
   <div class="aiBox" style="font-size:13.5px;line-height:1.6">
     <p style="margin:0 0 8px"><strong>Overall Score (0–100)</strong> — a single grade from a multi-point inspection of the homepage across Google SEO, local visibility, page speed, and AI-search readiness. It's the clearest snapshot of how well a site is built to be <em>found</em> and to <em>convert</em>.</p>
-    <p style="margin:0 0 8px"><strong>📱 Mobile &amp; 💻 Desktop Speed</strong> — real Google PageSpeed scores. Most local searches happen on phones, and when a page takes more than ~3 seconds to load, over half of visitors give up and leave for a competitor. Google also ranks slow sites lower — so a slow site is found less <em>and</em> converts less.</p>
+    <p style="margin:0 0 8px"><strong>Mobile &amp; Desktop Speed</strong> — real Google PageSpeed scores. Most local searches happen on phones, and when a page takes more than ~3 seconds to load, over half of visitors give up and leave for a competitor. Google also ranks slow sites lower — so a slow site is found less <em>and</em> converts less.</p>
     <p style="margin:0 0 8px"><strong>Local SEO</strong> — LocalBusiness schema, click-to-call, map/address, and review stars. This is what lands a business in the Google Map Pack and in "near me" results — the highest-intent local traffic there is.</p>
     <p style="margin:0 0 8px"><strong>AI Search</strong> — whether ChatGPT, Google AI Overviews, and Perplexity can read and recommend the business (crawler access, FAQ/entity data, llms.txt). It's the fastest-growing way people find local services, and most sites aren't set up for it at all — an easy way to get ahead.</p>
     <p style="margin:0 0 8px"><strong>On-Page</strong> — titles, headings, descriptions, and content. The foundation search engines and AI use to understand what a page is about and when to show it.</p>
@@ -1049,8 +1051,8 @@ function ctaBlock(){
     <p><strong>Your next steps:</strong> &nbsp;1) Knock out the Quick Wins. &nbsp;2) Re-scan to confirm. &nbsp;3) Reach out and we'll handle the heavy lifting — including the AI-search items most agencies aren't even checking yet.</p>
     <div class="ctaContact">
       <div class="co">${esc(BRAND.name)}</div>
-      ${BRAND.contacts.map(c=>`<span><strong style="color:#fff">${esc(c.name)}</strong> &nbsp;📞 <a href="tel:${esc(c.tel)}">${esc(c.phone)}</a> &nbsp;✉ <a href="mailto:${esc(c.email)}">${esc(c.email)}</a></span>`).join('')}
-      <span>🌐 ${BRAND.sites.map(s=>`<a href="https://${esc(s)}">${esc(s)}</a>`).join(' &nbsp;·&nbsp; ')}</span>
+      ${BRAND.contacts.map(c=>`<span><strong style="color:#fff">${esc(c.name)}</strong> &nbsp;<a href="tel:${esc(c.tel)}">${esc(c.phone)}</a> &nbsp;·&nbsp; <a href="mailto:${esc(c.email)}">${esc(c.email)}</a></span>`).join('')}
+      <span>${BRAND.sites.map(s=>`<a href="https://${esc(s)}">${esc(s)}</a>`).join(' &nbsp;·&nbsp; ')}</span>
     </div>
   </div>`;
 }
@@ -1125,7 +1127,7 @@ function renderReport(){
           <strong style="font-size:15px">#${x.rank} · ${esc(x.domain)}</strong>
           <span style="font-weight:800;color:${x.color}">${x.grade} · ${x.overall}/100</span>
         </div>
-        <div class="muted" style="font-size:12px;margin:3px 0 6px">📱 ${x.mob==null?'—':x.mob} · 💻 ${x.dsk==null?'—':x.dsk} · Local SEO ${x.local==null?'—':x.local+'%'} · AI Search ${x.ai==null?'—':x.ai+'%'} · ${x.crit} critical</div>
+        <div class="muted" style="font-size:12px;margin:3px 0 6px">Mobile ${x.mob==null?'—':x.mob} · Desktop ${x.dsk==null?'—':x.dsk} · Local SEO ${x.local==null?'—':x.local+'%'} · AI Search ${x.ai==null?'—':x.ai+'%'} · ${x.crit} critical</div>
         ${issues.length?`<div style="font-size:13px;color:#0f172a"><strong>Top fixes:</strong> ${issues.map(c=>esc(c.label)).join(' · ')}</div>`:'<div style="font-size:13px;color:#16a34a">No major issues found.</div>'}
       </div>`;
     }).join('')}`;
@@ -1137,7 +1139,7 @@ function renderReport(){
     <div style="overflow-x:auto">
     <table class="doc"><thead><tr>
       <th style="text-align:center">#</th><th>Website</th><th style="text-align:center">Overall</th>
-      ${hasSpeed?'<th style="text-align:center">📱 Mobile</th><th style="text-align:center">💻 Desktop</th>':''}
+      ${hasSpeed?'<th style="text-align:center">Mobile</th><th style="text-align:center">Desktop</th>':''}
       <th style="text-align:center">Local SEO</th><th style="text-align:center">AI Search</th><th style="text-align:center">On-Page</th><th style="text-align:center">Technical</th><th style="text-align:center">Critical</th>
     </tr></thead><tbody>${compRows}</tbody></table></div>`;
   const comparisonMeat = fieldInsights + rankingsTable + comparisonMetrics() + perCompany;
