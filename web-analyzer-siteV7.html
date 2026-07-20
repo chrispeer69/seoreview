@@ -915,7 +915,7 @@ async function emailToClient(){
   try{
     const res=await fetch('/api/send-report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({to,subject:`Your SEO & AI Search Audit — ${BRAND.name}`,html})});
     if(res.ok){ alert('Report emailed to '+to+'.'); }
-    else { const d=await res.json().catch(()=>({})); alert('Could not send'+(d.error?' ('+d.error+')':'')+'. Check that team email is configured.'); }
+    else { const d=await res.json().catch(()=>({})); alert(emailErr(d.error)+(d.detail?('\n\nResend says: '+(typeof d.detail==='string'?d.detail:JSON.stringify(d.detail))):'')); }
   }catch(e){ alert('Could not send — network error.'); }
 }
 
@@ -1108,7 +1108,7 @@ function renderCrmResults(){
       <td>${esc(b.industry||'—')}</td>
       <td style="text-align:center"><span class="gpill" style="background:${gc}1a;color:${gc}">${esc(grade)}${sc}</span></td>
       <td>${mem}</td>
-      <td><span class="stpill">${esc(b.status||'new')}</span></td>
+      <td><span class="stpill">${esc(b.status||'new')}</span>${b.alliance_status?` <span class="stpill" style="background:${b.alliance_status==='elite'?'#fde68a':'#dbeafe'};color:#0f172a">${b.alliance_status==='elite'?'Elite':'Basic'}</span>`:''}</td>
       <td style="text-align:right"><button class="btnGhost" onclick="openLead(${b.id})">Work</button></td>
     </tr>`;
   }).join('');
@@ -1122,7 +1122,7 @@ function leadFields(){
     <div class="crmGrid">
       <label class="crmField">Business name<input id="edName"></label>
       <label class="crmField">Website<input id="edWebsite" placeholder="joetow.com"></label>
-      <label class="crmField">Industry<input id="edIndustry"></label>
+      <label class="crmField">Industry<input id="edIndustry" oninput="allianceVis()"></label>
       <label class="crmField">Business phone<input id="edPhone"></label>
       <label class="crmField">Email<input id="edEmail"></label>
       <label class="crmField">Address<input id="edAddress"></label>
@@ -1131,6 +1131,7 @@ function leadFields(){
       <label class="crmField">ZIP<input id="edZip"></label>
       <label class="crmField">Status<select id="edStatus"><option>new</option><option>working</option><option>contacted</option><option>client</option><option>lost</option></select></label>
       <label class="crmField">Follow-up<input id="edFollow" type="date"></label>
+      <label class="crmField" id="allianceWrap" style="display:none">US Tow Alliance status<select id="edAlliance"><option value="">No profile yet</option><option value="basic">Basic profile</option><option value="elite">Elite profile</option></select></label>
     </div>
     <div class="panelTitle" style="margin:14px 0 8px">Owner contact</div>
     <div class="crmGrid">
@@ -1153,14 +1154,16 @@ function fillLead(b){
   set('edStatus',b.status||'new'); set('edFollow',b.follow_up?String(b.follow_up).slice(0,10):'');
   set('edOwnerName',b.owner_name); set('edOwnerPhone',b.owner_phone); set('edOwnerEmail',b.owner_email);
   set('edMgrName',b.manager_name); set('edMgrPhone',b.manager_phone); set('edMgrEmail',b.manager_email);
-  set('edNotes',b.notes);
+  set('edNotes',b.notes); set('edAlliance',b.alliance_status); allianceVis();
 }
+function allianceEligible(ind){ ind=(ind||'').toLowerCase(); return ind.includes('tow')||ind.includes('repair')||ind.includes('body'); }
+function allianceVis(){ const ind=document.getElementById('edIndustry'); const w=document.getElementById('allianceWrap'); if(w) w.style.display=allianceEligible(ind?ind.value:'')?'':'none'; }
 function leadBody(){
   const g=id=>{ const e=document.getElementById(id); return e?e.value.trim():''; };
   return { name:g('edName'), website:g('edWebsite'), industry:g('edIndustry'), phone:g('edPhone'), email:g('edEmail'),
     address:g('edAddress'), city:g('edCity'), state:g('edState'), zip:g('edZip'), status:g('edStatus'), follow_up:g('edFollow'),
     owner_name:g('edOwnerName'), owner_phone:g('edOwnerPhone'), owner_email:g('edOwnerEmail'),
-    manager_name:g('edMgrName'), manager_phone:g('edMgrPhone'), manager_email:g('edMgrEmail'), notes:g('edNotes') };
+    manager_name:g('edMgrName'), manager_phone:g('edMgrPhone'), manager_email:g('edMgrEmail'), notes:g('edNotes'), alliance_status:g('edAlliance') };
 }
 function modalShell(title, inner){
   const wrap=document.createElement('div'); wrap.id='leadModal';
@@ -1253,7 +1256,7 @@ async function emailCrmReport(id){
   try{ const res=await fetch('/api/send-report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({to,subject:'Your SEO & AI Search Audit — '+BRAND.name,html})});
     if(res.ok){ alert('Report emailed to '+to+'.'); return; }
     const d=await res.json().catch(()=>({}));
-    alert(emailErr(d.error)); }
+    alert(emailErr(d.error)+(d.detail?('\n\nResend says: '+(typeof d.detail==='string'?d.detail:JSON.stringify(d.detail))):'')); }
   catch(e){ alert('Email failed — network error.'); }
 }
 function emailErr(code){
@@ -1276,7 +1279,7 @@ async function saveScanToCrm(){
 }
 function exportCrmCsv(){
   if(!crmRows.length){ crmMsg('Run a query first, then export.'); return; }
-  const cols=['name','domain','website','industry','address','city','state','zip','phone','email','latest_grade','latest_score','status','follow_up','memberships'];
+  const cols=['name','domain','website','industry','address','city','state','zip','phone','email','latest_grade','latest_score','status','follow_up','memberships','alliance_status'];
   const cell=v=>{ v=(v==null?'':Array.isArray(v)?v.join('; '):String(v)); return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v; };
   const lines=[cols.join(',')].concat(crmRows.map(r=>cols.map(c=>cell(r[c])).join(',')));
   const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([lines.join('\n')],{type:'text/csv'})); a.download='leads.csv'; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),1000);

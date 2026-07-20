@@ -100,7 +100,7 @@ async function migrate() {
   await pool.query(`ALTER TABLE crm_businesses
      ADD COLUMN IF NOT EXISTS owner_name TEXT, ADD COLUMN IF NOT EXISTS owner_phone TEXT, ADD COLUMN IF NOT EXISTS owner_email TEXT,
      ADD COLUMN IF NOT EXISTS manager_name TEXT, ADD COLUMN IF NOT EXISTS manager_phone TEXT, ADD COLUMN IF NOT EXISTS manager_email TEXT,
-     ADD COLUMN IF NOT EXISTS last_report JSONB;`);
+     ADD COLUMN IF NOT EXISTS last_report JSONB, ADD COLUMN IF NOT EXISTS alliance_status TEXT;`);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS crm_members (
       id SERIAL PRIMARY KEY,
@@ -405,7 +405,7 @@ app.post('/api/send-report', requireAuth, async (req, res) => {
   if (!process.env.RESEND_API_KEY) return res.status(503).json({ error: 'email_not_configured' });
   const r = await sendEmail({ to, subject: subject || 'Your SEO Audit', html, replyTo: req.user.email });
   if (r && r.ok) return res.json({ ok: true });
-  return res.status(502).json({ error: 'send_failed' });
+  return res.status(502).json({ error: 'send_failed', detail: (r && (r.body || r.error)) || null });
 });
 
 // ---------- CRM API (team-only) ----------
@@ -480,7 +480,7 @@ app.get('/api/crm/businesses', requireAuth, async (req, res) => {
       }
     }
     const whereSql = cond.length ? ('WHERE ' + cond.join(' AND ')) : '';
-    const sql = `SELECT id,name,domain,website,industry,address,city,state,zip,lat,lng,phone,email,latest_score,latest_grade,last_audit_at,status,follow_up,notes,memberships${distSel}
+    const sql = `SELECT id,name,domain,website,industry,address,city,state,zip,lat,lng,phone,email,latest_score,latest_grade,last_audit_at,status,follow_up,notes,memberships,alliance_status${distSel}
                  FROM crm_businesses ${whereSql} ${order} LIMIT 2000`;
     const { rows } = await pool.query(sql, p);
     res.json(rows);
@@ -523,8 +523,8 @@ app.post('/api/crm/businesses', requireAuth, async (req, res) => {
   try {
     const { rows } = await pool.query(
       `INSERT INTO crm_businesses (name,domain,website,industry,address,city,state,zip,lat,lng,phone,email,
-         owner_name,owner_phone,owner_email,manager_name,manager_phone,manager_email,memberships,updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,now())
+         owner_name,owner_phone,owner_email,manager_name,manager_phone,manager_email,memberships,alliance_status,updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,now())
        ON CONFLICT (domain) DO UPDATE SET
          name=EXCLUDED.name, website=EXCLUDED.website, industry=EXCLUDED.industry, address=EXCLUDED.address,
          city=EXCLUDED.city, state=EXCLUDED.state, zip=EXCLUDED.zip,
@@ -532,11 +532,11 @@ app.post('/api/crm/businesses', requireAuth, async (req, res) => {
          phone=EXCLUDED.phone, email=EXCLUDED.email,
          owner_name=EXCLUDED.owner_name, owner_phone=EXCLUDED.owner_phone, owner_email=EXCLUDED.owner_email,
          manager_name=EXCLUDED.manager_name, manager_phone=EXCLUDED.manager_phone, manager_email=EXCLUDED.manager_email,
-         updated_at=now()
+         alliance_status=EXCLUDED.alliance_status, updated_at=now()
        RETURNING id`,
       [b.name || null, domain, b.website || null, b.industry || null, b.address || null, b.city || null, b.state || null, b.zip || null,
        lat, lng, b.phone || null, b.email || null, b.owner_name || null, b.owner_phone || null, b.owner_email || null,
-       b.manager_name || null, b.manager_phone || null, b.manager_email || null, JSON.stringify(memberships)]);
+       b.manager_name || null, b.manager_phone || null, b.manager_email || null, JSON.stringify(memberships), b.alliance_status || null]);
     res.json({ ok: true, id: rows[0].id });
   } catch (e) { console.error('crm create', e.message); res.status(500).json({ error: 'create_failed' }); }
 });
@@ -585,7 +585,7 @@ app.patch('/api/crm/businesses/:id', requireAuth, async (req, res) => {
   const b = req.body || {};
   const sets = []; const p = []; let i = 1;
   for (const f of ['name', 'website', 'industry', 'phone', 'email', 'address', 'city', 'state', 'zip', 'status', 'notes', 'follow_up',
-                   'owner_name', 'owner_phone', 'owner_email', 'manager_name', 'manager_phone', 'manager_email']) {
+                   'owner_name', 'owner_phone', 'owner_email', 'manager_name', 'manager_phone', 'manager_email', 'alliance_status']) {
     if (f in b) { sets.push(`${f}=$${i++}`); p.push(b[f] === '' ? null : b[f]); }
   }
   try {
