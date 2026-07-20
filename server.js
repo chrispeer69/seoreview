@@ -20,8 +20,10 @@ const cfg = {
   places: !!process.env.PLACES_API_KEY,
   email: !!process.env.RESEND_API_KEY,
   geocode: !!(process.env.GOOGLE_MAPS_API_KEY || process.env.PLACES_API_KEY),
+  stripe: !!process.env.STRIPE_SECRET_KEY,
   teamEmails: (process.env.TEAM_EMAILS || '').split(/[,\s]+/).map(s => s.trim().toLowerCase()).filter(Boolean),
 };
+const REPORT_PRICE_CENTS = parseInt(process.env.REPORT_PRICE_CENTS || '4900', 10);
 const teamEnabled = cfg.db && cfg.google;
 
 app.set('trust proxy', 1);
@@ -116,6 +118,16 @@ async function migrate() {
       lat DOUBLE PRECISION, lng DOUBLE PRECISION,
       created_at TIMESTAMPTZ DEFAULT now()
     );`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS shared_reports (
+      token TEXT PRIMARY KEY,
+      name TEXT,
+      report JSONB NOT NULL,
+      summary JSONB,
+      paid BOOLEAN DEFAULT false,
+      stripe_session TEXT,
+      created_at TIMESTAMPTZ DEFAULT now()
+    );`);
 }
 
 // ---------- Auth (Google OAuth) ----------
@@ -188,6 +200,8 @@ app.get('/api/config', (req, res) => {
     placesEnabled: cfg.places,
     geocodeEnabled: cfg.geocode,
     emailEnabled: cfg.email,
+    stripeEnabled: cfg.stripe,
+    reportPriceCents: REPORT_PRICE_CENTS,
     crmEnabled: teamEnabled,
     user: loggedIn(req) ? req.user : null,
   });
@@ -627,6 +641,84 @@ app.post('/api/crm/members/import', requireAuth, async (req, res) => {
   } catch (e) { console.error('crm retag', e.message); }
   res.json({ ok: true, imported: n });
 });
+
+// ---------- Shared paid report (DIY $49 flow) ----------
+const crypto = require('crypto');
+async function stripeCreateCheckout(token, name) {
+  const key = process.env.STRIPE_SECRET_KEY;
+  if (!key) return null;
+  const p = new URLSearchParams();
+  p.set('mode', 'payment');
+  p.set('success_url', BASE_URL + '/r/' + token + '?session_id={CHECKOUT_SESSION_ID}');
+  p.set('cancel_url', BASE_URL + '/r/' + token);
+  p.set('client_reference_id', token);
+  p.set('line_items[0][quantity]', '1');
+  p.set('line_items[0][price_data][currency]', 'usd');
+  p.set('line_items[0][price_data][unit_amount]', String(REPORT_PRICE_CENTS));
+  p.set('line_items[0][price_data][product_data][name]', 'Full SEO & AI Search Report' + (name ? (' — ' + name) : ''));
+  try {
+    const r = await fetch('https://api.stripe.com/v1/checkout/sessions', {
+      method: 'POST', headers: { 'Authorization': 'Bearer ' + key, 'Content-Type': 'application/x-www-form-urlencoded' }, body: p.toString(),
+    });
+    if (!r.ok) { console.error('stripe checkout', r.status, await r.text().catch(() => '')); return null; }
+    return (await r.json()).url;
+  } catch (e) { console.error('stripe checkout err', e.message); return null; }
+}
+async function stripeSessionPaid(sessionId) {
+  const key = process.env.STRIPE_SECRET_KEY;
+  if (!key || !sessionId) return false;
+  try {
+    const r = await fetch('https://api.stripe.com/v1/checkout/sessions/' + encodeURIComponent(sessionId), { headers: { 'Authorization': 'Bearer ' + key } });
+    if (!r.ok) return false;
+    return (await r.json()).payment_status === 'paid';
+  } catch (e) { return false; }
+}
+// Team creates a shareable report link
+app.post('/api/shared', requireAuth, async (req, res) => {
+  const { report, name, summary } = req.body || {};
+  if (!report) return res.status(400).json({ error: 'report_required' });
+  const token = crypto.randomBytes(9).toString('hex');
+  try {
+    await pool.query('INSERT INTO shared_reports (token,name,report,summary) VALUES ($1,$2,$3,$4)',
+      [token, name || null, JSON.stringify(report), summary ? JSON.stringify(summary) : null]);
+    res.json({ token, url: BASE_URL + '/r/' + token, buy: BASE_URL + '/buy/' + token });
+  } catch (e) { console.error('share', e.message); res.status(500).json({ error: 'share_failed' }); }
+});
+// Public: fetch a shared report (full report only if paid)
+app.get('/api/shared/:token', async (req, res) => {
+  if (!pool) return res.status(503).json({ error: 'not_configured' });
+  try {
+    const { rows } = await pool.query('SELECT name,report,summary,paid FROM shared_reports WHERE token=$1', [req.params.token]);
+    if (!rows.length) return res.status(404).json({ error: 'not_found' });
+    const row = rows[0];
+    res.json({ name: row.name, paid: row.paid, summary: row.summary, report: row.paid ? row.report : null, stripeEnabled: cfg.stripe });
+  } catch (e) { res.status(500).json({ error: 'load_failed' }); }
+});
+// Public: after Stripe returns, verify + unlock
+app.post('/api/shared/:token/claim', async (req, res) => {
+  if (!pool) return res.status(503).json({ error: 'not_configured' });
+  try {
+    const paid = await stripeSessionPaid((req.body || {}).session_id);
+    if (!paid) return res.json({ paid: false });
+    await pool.query('UPDATE shared_reports SET paid=true, stripe_session=$1 WHERE token=$2', [(req.body || {}).session_id || null, req.params.token]);
+    const { rows } = await pool.query('SELECT name,report,summary FROM shared_reports WHERE token=$1', [req.params.token]);
+    if (!rows.length) return res.status(404).json({ error: 'not_found' });
+    res.json({ paid: true, name: rows[0].name, report: rows[0].report, summary: rows[0].summary });
+  } catch (e) { res.status(500).json({ error: 'claim_failed' }); }
+});
+// Public: start checkout
+app.get('/buy/:token', async (req, res) => {
+  if (!pool) return res.status(503).send('Not configured');
+  try {
+    const { rows } = await pool.query('SELECT name FROM shared_reports WHERE token=$1', [req.params.token]);
+    if (!rows.length) return res.status(404).send('Report not found');
+    if (!cfg.stripe) return res.redirect('/r/' + req.params.token + '?nostripe=1');
+    const url = await stripeCreateCheckout(req.params.token, rows[0].name);
+    return url ? res.redirect(url) : res.redirect('/r/' + req.params.token + '?payerr=1');
+  } catch (e) { res.status(500).send('error'); }
+});
+// Public: the hosted report page (app HTML handles render/teaser by token)
+app.get('/r/:token', (req, res) => res.sendFile(path.join(__dirname, 'web-analyzer-siteV7.html')));
 
 app.get('/healthz', (req, res) => res.type('text/plain').send('ok'));
 // DB connectivity check (no secrets) — helps diagnose login/session failures

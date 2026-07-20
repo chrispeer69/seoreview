@@ -279,7 +279,7 @@ const BRAND = {
   tagline:'AI-Powered Local SEO',
   web:'www.bluecollarai.online',
   webUrl:'https://www.bluecollarai.online',
-  bookUrl:'https://calendly.com/bluecollarai/15min',      /* TODO: your real Calendly (or similar) booking link */
+  bookUrl:'https://calendar.app.google/REPLACE-WITH-YOUR-GOOGLE-APPOINTMENT-LINK',   /* Google Calendar > Appointment schedule > share this booking page link */
   buyUrl:'https://www.bluecollarai.online/buy-report',    /* TODO: your real Stripe/payment link for the $49 report */
   reportPrice:'$49',
   sites:['www.bluecollarai.online','www.ustowalliance.com','www.usautoalliance.com'],
@@ -865,9 +865,15 @@ async function initTeam(){
   if(/[?&]login=denied/.test(location.search)){ const eb=document.getElementById('errorBox'); eb.textContent='Sign-in denied — that Google account is not on the team whitelist.'; eb.style.display='block'; }
 }
 
+function scoreSummaryOf(arr){ return (arr||[]).map(r=>r.error?{domain:r.domain,error:true,score:null,grade:null}:{domain:r.domain,error:false,score:score(r).score,grade:score(r).grade}); }
+async function makeShareLink(arr, name){
+  try{ const sh=await fetch('/api/shared',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({report:arr,name:name||'',summary:scoreSummaryOf(arr)})}).then(r=>r.ok?r.json():null); return sh; }catch(e){ return null; }
+}
 // Build a persuasive, sales-driven, inline-styled email of the report
-function buildReportEmail(clientName, arr){
+function buildReportEmail(clientName, arr, opts){
+  opts=opts||{};
   const R = (arr && arr.length) ? arr : reports;
+  const buyUrl = opts.buyUrl || BRAND.buyUrl || BRAND.webUrl;
   const F="font-family:'Helvetica Neue',Arial,sans-serif;color:#0f172a";
   const contacts=(BRAND.contacts||[]).map(c=>esc(c.name)+' &nbsp;·&nbsp; '+esc(c.phone)+' &nbsp;·&nbsp; '+esc(c.email)).join('<br>');
   const site=(r)=>{
@@ -919,7 +925,7 @@ function buildReportEmail(clientName, arr){
         <tr><td style="padding:14px 16px;background:#1e293b;border-radius:8px">
           <div style="font-weight:800;font-size:15px;margin-bottom:2px">2 · Get the full report — ${esc(BRAND.reportPrice||'$49')} (DIY)</div>
           <div style="color:#cbd5e1;font-size:13px;margin-bottom:10px">Download the complete, prioritized report and fix it yourself, at your pace.</div>
-          <a href="${esc(BRAND.buyUrl||BRAND.webUrl)}" style="display:inline-block;background:#fff;color:#0f172a;text-decoration:none;font-weight:800;padding:11px 20px;border-radius:6px;font-size:14px">Buy the full report — ${esc(BRAND.reportPrice||'$49')} →</a>
+          <a href="${esc(buyUrl)}" style="display:inline-block;background:#fff;color:#0f172a;text-decoration:none;font-weight:800;padding:11px 20px;border-radius:6px;font-size:14px">Buy the full report — ${esc(BRAND.reportPrice||'$49')} →</a>
         </td></tr>
       </table>
       <div style="margin-top:14px;font-size:14px;color:#cbd5e1;line-height:1.7">${contacts}</div>
@@ -953,7 +959,8 @@ async function emailToClient(){
   if(!to) return;
   if(!/.+@.+\..+/.test(to)){ alert('Please enter a valid email address.'); return; }
   const name=(prompt('Client name (optional — used in the greeting):','')||'').trim();
-  const html=buildReportEmail(name); const text=buildReportText(name);
+  const sh=await makeShareLink(reports, reports[0]&&reports[0].domain);
+  const html=buildReportEmail(name, null, {buyUrl:sh&&sh.buy}); const text=buildReportText(name);
   const subj = reports.length===1 ? `Website audit for ${reports[0].domain} — Grade ${score(reports[0]).grade}` : `Website audit — ${reports.length} sites reviewed`;
   try{
     const res=await fetch('/api/send-report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({to,subject:subj,html,text})});
@@ -1296,7 +1303,8 @@ async function emailCrmReport(id){
   if(!to) return;
   const arr=Array.isArray(b.last_report)?b.last_report:[b.last_report];
   const nm=b.owner_name||b.manager_name||b.name||'';
-  const html=buildReportEmail(nm, arr); const text=buildReportText(nm, arr);
+  const sh=await makeShareLink(arr, b.name||b.domain);
+  const html=buildReportEmail(nm, arr, {buyUrl:sh&&sh.buy}); const text=buildReportText(nm, arr);
   const subj='Website audit for '+(b.name||b.domain||(arr[0]&&arr[0].domain)||'your site')+((arr[0]&&!arr[0].error)?(' — Grade '+score(arr[0]).grade):'');
   try{ const res=await fetch('/api/send-report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({to,subject:subj,html,text})});
     if(res.ok){ alert('Report emailed to '+to+'.'); return; }
@@ -1588,6 +1596,43 @@ try{ const el=document.getElementById('psiKey'); const k=localStorage.getItem('b
 try{ renderSaved(); }catch(e){}
 // Initialize team zone (login state, saved-report panel) if configured
 try{ initTeam(); }catch(e){}
+
+// ---------- Public shared paid report page (/r/<token>) ----------
+async function enterSharedMode(token){
+  const bar=document.querySelector('.appbar'); if(bar) bar.style.display='none';
+  const sv=document.getElementById('scanView'); if(sv) sv.style.display='none';
+  const cv=document.getElementById('crmView'); if(cv) cv.style.display='none';
+  const params=new URLSearchParams(location.search); const sid=params.get('session_id');
+  let data=null;
+  try{ data=await fetch('/api/shared/'+token).then(r=>r.ok?r.json():null); }catch(e){}
+  if(!data){ document.getElementById('reportView').style.display='block'; document.querySelectorAll('#reportView .toolbar .btnGhost, #reportView .btnPrint').forEach(b=>b.style.display='none'); document.getElementById('printArea').innerHTML='<div style="max-width:600px;margin:40px auto;text-align:center"><h2>Report not found</h2><p class="muted">This link may be invalid or expired.</p></div>'; return; }
+  if(!data.paid && sid){
+    try{ const c=await fetch('/api/shared/'+token+'/claim',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:sid})}).then(r=>r.json()); if(c&&c.paid){ data.paid=true; data.report=c.report; } }catch(e){}
+  }
+  if(data.paid && data.report){
+    reports=Array.isArray(data.report)?data.report:[data.report];
+    document.getElementById('reportView').style.display='block';
+    renderReport();
+    document.querySelectorAll('#reportView .toolbar .btnGhost').forEach(b=>b.style.display='none');
+    window.scrollTo(0,0);
+  } else { renderSharedTeaser(token, data); }
+}
+function renderSharedTeaser(token, data){
+  const sm=Array.isArray(data.summary)?data.summary:[]; const s=sm[0]||{};
+  const gc=s.score==null?'#64748b':(s.score>=91?'#16a34a':s.score>=80?'#ea580c':'#dc2626');
+  document.getElementById('reportView').style.display='block';
+  document.querySelectorAll('#reportView .toolbar .btnGhost, #reportView .btnPrint').forEach(b=>b.style.display='none');
+  document.getElementById('printArea').innerHTML=`<div style="max-width:640px;margin:0 auto;font-family:'Inter',Arial,sans-serif">
+    <div style="border-bottom:3px solid #0f172a;padding-bottom:12px;margin-bottom:18px"><div style="font-size:22px;font-weight:800">Your SEO &amp; AI Search Report</div><div style="color:#64748b;font-size:13px">${esc(BRAND.name)} · ${esc(BRAND.tagline)}</div></div>
+    ${s.domain?`<div style="background:${gc};color:#fff;border-radius:10px;padding:16px 20px;margin-bottom:16px"><div style="font-size:12px;letter-spacing:.1em;text-transform:uppercase;opacity:.85">Audit result</div><div style="font-size:21px;font-weight:800">${esc(s.domain)} — Grade ${esc(s.grade||'')}${s.score!=null?(' · '+s.score+'/100'):''}</div></div>`:''}
+    <p style="font-size:15px;line-height:1.6">You're one step from the complete, prioritized report — <b>every issue with step-by-step fixes</b> across Google SEO and AI search. Unlock it and fix your site yourself, at your pace.</p>
+    <a href="/buy/${esc(token)}" style="display:inline-block;background:#2563eb;color:#fff;text-decoration:none;font-weight:800;padding:14px 28px;border-radius:8px;font-size:16px;margin:6px 0 14px">Unlock the full report — ${esc(BRAND.reportPrice||'$49')}</a>
+    ${data.stripeEnabled===false?'<p style="color:#b91c1c">Checkout isn\'t set up yet — please contact us below.</p>':''}
+    <p style="color:#64748b;font-size:14px;line-height:1.7">Prefer a hand? Reach us:<br>${(BRAND.contacts||[]).map(c=>esc(c.name)+' · '+esc(c.phone)+' · '+esc(c.email)).join('<br>')}</p>
+  </div>`;
+  window.scrollTo(0,0);
+}
+try{ const _sm=location.pathname.match(/^\/r\/([a-z0-9]+)/i); if(_sm) enterSharedMode(_sm[1]); }catch(e){}
 </script>
 </body>
 </html>
