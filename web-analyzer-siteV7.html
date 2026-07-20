@@ -1166,7 +1166,7 @@ function modalShell(title, inner){
   const wrap=document.createElement('div'); wrap.id='leadModal';
   wrap.style.cssText='position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:50;display:flex;align-items:flex-start;justify-content:center;padding:40px 16px;overflow:auto';
   wrap.onclick=e=>{ if(e.target===wrap) closeLead(); };
-  wrap.innerHTML=`<div style="background:#fff;border-radius:10px;max-width:760px;width:100%;padding:24px;box-shadow:0 20px 60px rgba(0,0,0,.3)">
+  wrap.innerHTML=`<div style="background:#fff;border-radius:10px;max-width:856px;width:100%;padding:24px;box-shadow:0 20px 60px rgba(0,0,0,.3)">
     <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:6px">
       <h2 style="margin:0;font-size:20px">${title}</h2>
       <button class="btnGhost" onclick="closeLead()">Close</button>
