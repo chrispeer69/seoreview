@@ -812,7 +812,8 @@ async function submitLead(){
   const urls=reports.map(r=>r.url||r.domain).filter(Boolean);
   try{
     const res=await fetch('/api/lead',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email,url:urls[0]||'',meta:{urls,summary:scoreSummary()}})});
-    msg.textContent = res.ok ? 'Thanks! We’ll be in touch shortly.' : 'Could not submit — please try again.';
+    const data=await res.json().catch(()=>({}));
+    msg.textContent = res.ok ? (data&&data.emailed ? 'Thanks! Check your inbox — we’ll be in touch shortly.' : 'Thanks! We’ll be in touch shortly.') : 'Could not submit — please try again.';
     if(res.ok) document.getElementById('leadEmail').value='';
   }catch(e){ msg.textContent='Could not submit — please try again.'; }
 }

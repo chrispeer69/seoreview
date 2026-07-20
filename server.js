@@ -18,6 +18,7 @@ const cfg = {
   db: !!process.env.DATABASE_URL,
   google: !!(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET),
   places: !!process.env.PLACES_API_KEY,
+  email: !!process.env.RESEND_API_KEY,
   teamEmails: (process.env.TEAM_EMAILS || '').split(/[,\s]+/).map(s => s.trim().toLowerCase()).filter(Boolean),
 };
 const teamEnabled = cfg.db && cfg.google;
@@ -184,16 +185,62 @@ app.get('/api/proxy', async (req, res) => {
   } finally { clearTimeout(t); }
 });
 
+// ---------- Email (Resend) ----------
+function escapeHtml(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+async function sendEmail({ to, subject, html, replyTo }) {
+  const key = process.env.RESEND_API_KEY;
+  if (!key) return { skipped: true };
+  const from = process.env.MAIL_FROM || 'Blue Collar AI <onboarding@resend.dev>';
+  try {
+    const r = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from, to: Array.isArray(to) ? to : [to], subject, html, reply_to: replyTo }),
+    });
+    if (!r.ok) { const t = await r.text().catch(() => ''); console.error('email send failed', r.status, t); return { ok: false, status: r.status, body: t }; }
+    return { ok: true };
+  } catch (e) { console.error('email error', e.message); return { ok: false, error: e.message }; }
+}
+
 // ---------- Lead capture (public) ----------
 app.post('/api/lead', async (req, res) => {
   const { email, url, meta } = req.body || {};
   if (!email || !/.+@.+\..+/.test(email)) return res.status(400).json({ error: 'valid email required' });
-  if (!pool) return res.json({ ok: true, stored: false });
-  try {
-    await pool.query('INSERT INTO leads (email, url, meta) VALUES ($1,$2,$3)',
-      [email.trim().toLowerCase(), url || null, meta ? JSON.stringify(meta) : null]);
-    res.json({ ok: true, stored: true });
-  } catch (e) { res.status(500).json({ error: 'store_failed' }); }
+  const clean = email.trim().toLowerCase();
+  let stored = false;
+  if (pool) {
+    try { await pool.query('INSERT INTO leads (email, url, meta) VALUES ($1,$2,$3)', [clean, url || null, meta ? JSON.stringify(meta) : null]); stored = true; }
+    catch (e) { console.error('lead store failed', e.message); }
+  }
+  let emailed = false;
+  if (process.env.RESEND_API_KEY) {
+    const sites = (meta && Array.isArray(meta.summary))
+      ? meta.summary.map(s => `${escapeHtml(s.domain)}: ${s.error ? '—' : (escapeHtml(s.grade) + ' (' + s.score + ')')}`).join('<br>')
+      : escapeHtml(url || '');
+    // A) Alert the team of a new lead
+    const n = await sendEmail({
+      to: process.env.LEAD_NOTIFY_TO || clean,
+      replyTo: clean,
+      subject: `New audit lead: ${clean}`,
+      html: `<h2>New SEO audit lead</h2><p><b>Email:</b> ${escapeHtml(clean)}<br><b>Requested:</b> ${escapeHtml(url || '')}</p><p><b>Scores:</b><br>${sites}</p>`,
+    });
+    emailed = !!(n && n.ok);
+    // B) Thank the prospect (requires a verified sending domain in Resend)
+    await sendEmail({
+      to: clean,
+      replyTo: process.env.LEAD_NOTIFY_TO || undefined,
+      subject: 'Your SEO & AI Search audit — Blue Collar AI',
+      html: `<h2>Thanks for running an audit</h2>
+        <p>Here's a snapshot of what we found:</p>
+        <p>${sites}</p>
+        <p>Every issue in your report is fixable — usually faster than you'd think. Blue Collar AI helps local businesses turn audits like this into more calls and higher rankings in both Google <i>and</i> the new AI search tools.</p>
+        <p>Just reply and we'll walk you through your results and a plan — no obligation.</p>
+        <p style="color:#64748b;font-size:13px">Blue Collar AI, Inc. · AI-Powered Local SEO · www.bluecollarai.online</p>`,
+    });
+  }
+  res.json({ ok: true, stored, emailed });
 });
 
 // ---------- Google Places reviews (server-side, optional) ----------
@@ -268,6 +315,6 @@ app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
   try { await migrate(); if (pool) console.log('DB ready'); }
   catch (e) { console.error('DB migrate failed (team features may be off):', e.message); }
   app.listen(PORT, () => {
-    console.log(`SEO audit server on :${PORT} | team=${teamEnabled} places=${cfg.places} whitelist=${cfg.teamEmails.length}`);
+    console.log(`SEO audit server on :${PORT} | team=${teamEnabled} places=${cfg.places} email=${cfg.email} whitelist=${cfg.teamEmails.length}`);
   });
 })();
