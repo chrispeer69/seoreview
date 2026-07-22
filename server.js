@@ -203,6 +203,7 @@ app.get('/api/config', (req, res) => {
     stripeEnabled: cfg.stripe,
     reportPriceCents: REPORT_PRICE_CENTS,
     crmEnabled: teamEnabled,
+    renderEnabled: !!process.env.RENDER_API_KEY,
     user: loggedIn(req) ? req.user : null,
   });
 });
@@ -256,6 +257,31 @@ app.get('/api/proxy', async (req, res) => {
     res.status(challenged ? 502 : r.status).type('text/plain; charset=utf-8').send(body);
   } catch (e) {
     res.status(502).send('fetch failed: ' + (e && e.name ? e.name : 'error'));
+  } finally { clearTimeout(t); }
+});
+
+// ---------- Headless rendering (JS sites) — key stays server-side; off until RENDER_API_KEY is set ----------
+app.get('/api/render', async (req, res) => {
+  const key = process.env.RENDER_API_KEY;
+  if (!key) return res.status(503).send('render_not_configured');
+  const target = req.query.url;
+  if (!target) return res.status(400).send('missing url');
+  let u; try { u = new URL(target); } catch (e) { return res.status(400).send('bad url'); }
+  if (!/^https?:$/.test(u.protocol)) return res.status(400).send('only http/https allowed');
+  if (isPrivateHost(u.hostname)) return res.status(403).send('blocked host');
+  const provider = (process.env.RENDER_PROVIDER || 'scrapingbee').toLowerCase();
+  const api = provider === 'scraperapi'
+    ? 'https://api.scraperapi.com/?api_key=' + encodeURIComponent(key) + '&render=true&url=' + encodeURIComponent(u.href)
+    : 'https://app.scrapingbee.com/api/v1/?api_key=' + encodeURIComponent(key) + '&render_js=true&url=' + encodeURIComponent(u.href);
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 45000);
+  try {
+    const r = await fetch(api, { signal: ctrl.signal });
+    const body = await r.text();
+    res.set('Access-Control-Allow-Origin', '*');
+    res.status(r.ok ? 200 : 502).type('text/plain; charset=utf-8').send(body);
+  } catch (e) {
+    res.status(502).send('render failed');
   } finally { clearTimeout(t); }
 });
 
