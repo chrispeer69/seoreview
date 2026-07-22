@@ -676,10 +676,20 @@ async function discoverPages(root, max, render){
   const linksIn=(html)=>[...new Set([...String(html).matchAll(/href=["']([^"'#]+)["']/gi)].map(m=>m[1])
       .map(h=>{ try{ return new URL(h, base+'/').href.split('#')[0]; }catch(e){ return null; } })
       .filter(u=>u && u.indexOf(base)===0 && !/\.(png|jpe?g|gif|svg|css|js|pdf|zip|ico|webp|mp4|woff2?)(\?|$)/i.test(u)))];
-  let xml=await grab(base+'/sitemap.xml');
-  let locs=[...String(xml).matchAll(locRe)].map(m=>m[1]);
-  const children=locs.filter(u=>/\.xml(\?|$)/i.test(u)); let via='sitemap';
-  if(children.length && children.length>=locs.length-1){ let all=[]; for(const c of children.slice(0,20)){ const cx=await grab(c); all=all.concat([...String(cx).matchAll(locRe)].map(m=>m[1])); if(all.length>max*3)break; } locs=all; }
+  // Find sitemap(s): robots.txt "Sitemap:" directives first, then /sitemap.xml — each with one retry (flaky origins).
+  const grab1=async(u)=>{ let x=await grab(u); if(!x) x=await grab(u); return x; };
+  let smList=[];
+  const robotsTxt=await grab(base+'/robots.txt');
+  [...String(robotsTxt).matchAll(/sitemap:\s*(\S+)/gi)].forEach(m=>{ const s=m[1].trim(); if(/^https?:\/\//i.test(s)) smList.push(s); });
+  smList.push(base+'/sitemap.xml'); smList=[...new Set(smList)].slice(0,8);
+  let locs=[]; let via='sitemap';
+  for(const sm of smList){
+    const xml=await grab1(sm); const l=[...String(xml).matchAll(locRe)].map(m=>m[1]);
+    const kids=l.filter(u=>/\.xml(\?|$)/i.test(u));
+    if(kids.length && kids.length>=l.length-1){ for(const c of kids.slice(0,20)){ const cx=await grab1(c); locs=locs.concat([...String(cx).matchAll(locRe)].map(m=>m[1])); if(locs.length>max*3)break; } }
+    else locs=locs.concat(l);
+    if(locs.length) break;
+  }
   let urls=[...new Set(locs.filter(u=>/^https?:\/\//i.test(u) && !/\.xml(\?|$)/i.test(u)))];
   if(!urls.length){ via='link-crawl'; let home=await grab(base+'/'); urls=linksIn(home);
     if(urls.length<3 && render){ try{ const rh=await render(base+'/'); if(rh){ const rl=linksIn(rh); if(rl.length>urls.length){ urls=rl; via='link-crawl (rendered)'; } } }catch(e){} }
@@ -703,8 +713,18 @@ async function crawlSite(root, opts){
   const disc=await discoverPages(root, max, render);
   if(!disc.urls.length) return { error:'No pages discovered (no sitemap and no crawlable links — the site may be a JavaScript app with no sitemap).', root:disc.base };
   const pages=[]; let i=0, done=0, rendered=0;
+  async function loadPage(u){
+    let r;
+    try{ r=await auditOne(u); }
+    catch(e1){ // one free retry — most failures are transient (slow origin throttling under concurrency)
+      try{ r=await auditOne(u); }
+      catch(e2){ if(render){ const html=await render(u); if(html){ r=await auditOne(u, html); r._rendered=true; rendered++; return r; } } throw e2; }
+    }
+    if(r.jsShell && render){ try{ const html=await render(u); if(html){ r=await auditOne(u, html); r._rendered=true; rendered++; } }catch(e){} }
+    return r;
+  }
   async function worker(){ while(true){ const idx=i++; if(idx>=disc.urls.length)return; const u=disc.urls[idx];
-    try{ let r=await auditOne(u); if(r.jsShell && render){ try{ const html=await render(u); if(html){ r=await auditOne(u,html); r._rendered=true; rendered++; } }catch(e){} } r._score=score(r); pages.push(r); }
+    try{ const r=await loadPage(u); r._score=score(r); pages.push(r); }
     catch(e){ pages.push({ url:u, error:(e&&e.reason)||(e&&e.message)||'failed' }); }
     done++; onProgress(done, disc.urls.length, u); } }
   const pool=[]; for(let w=0; w<conc; w++) pool.push(worker()); await Promise.all(pool);
