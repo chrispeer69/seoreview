@@ -289,6 +289,9 @@ const BRAND = {
     { name:'Dustin', phone:'614-206-3606', tel:'+16142063606', email:'dustin@bluecollarai.online' },
   ]
 };
+// Don't ship the placeholder booking link as a dead CTA — blank it so the email/text fall back to a working mailto.
+if(/REPLACE|\bREPLACE-WITH\b/i.test(BRAND.bookUrl||'')) BRAND.bookUrl='';
+if(/buy-report/i.test(BRAND.buyUrl||'')) BRAND.buyUrl='';  // TODO placeholder → let a real server share link (opts.buyUrl) or webUrl take over
 
 const PROXIES = [
   // Our own server-side proxy first (reliable, no rate limits). Public proxies
@@ -646,7 +649,7 @@ async function addSpeed(r, key){
 }
 
 function score(r){
-  if(r.error) return {score:null,grade:'—',color:'#94a3b8',counts:{pass:0,warn:0,fail:0},byCat:{},verdict:'',scored:0};
+  if(!r||r.error) return {score:null,grade:'—',color:'#94a3b8',counts:{pass:0,warn:0,fail:0},byCat:{},verdict:'',scored:0};
   let earned=0,total=0,scored=0; const counts={pass:0,warn:0,fail:0}; const byCat={};
   r.checks.forEach(c=>{
     if(c.status==='pass')counts.pass++; else if(c.status==='warn')counts.warn++; else if(c.status==='fail')counts.fail++;
@@ -706,7 +709,7 @@ function crossPageIssues(pages){
   const stop=['home','page','service','services','ohio','near','the','and','for','with','your'];
   const mismatch=pages.filter(p=>{ if(!p.title||!p.bodySig)return false; const ws=norm(p.title).split(/[^a-z0-9]+/).filter(w=>w.length>=4&&stop.indexOf(w)<0); if(!ws.length)return false; return ws.filter(w=>p.bodySig.indexOf(w)>=0).length/ws.length < 0.34; }).map(p=>p.url);
   return { duplicateTitles:group('title'), duplicateH1:group('h1text'), duplicateBodies:bodyGroups, titleBodyMismatch:mismatch,
-    thin:pages.filter(p=>p.words!=null&&p.words<300).map(p=>({url:p.url,words:p.words})),
+    thin:pages.filter(p=>p.words!=null&&p.words<250).map(p=>({url:p.url,words:p.words})),
     jsRendered:pages.filter(p=>p.jsShell).map(p=>p.url), missingH1:pages.filter(p=>!p.h1text).map(p=>p.url) };
 }
 async function crawlSite(root, opts){
@@ -794,7 +797,7 @@ function siteReportHTML(res){
       +'<div style="border:2px solid '+col+';border-radius:8px;padding:12px 14px;font-size:13px;line-height:1.8">'
         +'<div style="font-size:15px"><b>Average page response: <span style="color:'+col+'">'+fmt(v)+'</span></b> &nbsp;·&nbsp; median '+fmt(pf.median)+' &nbsp;·&nbsp; slowest '+fmt(pf.max)+' &nbsp;<span style="color:#64748b">(across '+pf.count+' pages)</span></div>'
         +'<div style="color:'+col+';font-weight:700;margin-top:2px">'+verdict+'</div>'
-        +'<div style="font-size:12px;color:#64748b;margin-top:4px">Measured live while crawling. Google treats slow server response (TTFB) as a ranking signal, and a slow site gets crawled less often — so pages get found and indexed slower.</div>'
+        +'<div style="font-size:12px;color:#64748b;margin-top:4px">Measured live while crawling (server + network time to fetch each page). Slow responses mean a slower experience for visitors and search engines, which can hurt rankings and reduce how often your pages get crawled and indexed.</div>'
         +((pf.slow&&pf.slow.length)?('<div style="margin-top:8px"><b style="color:#b91c1c">Slowest pages (over 2s):</b><div style="font-size:12px;color:#475569;margin-top:3px;line-height:1.7">'+pf.slow.slice(0,8).map(o=>esc(o.url.replace(res.root,'')||'/')+' — <b>'+fmt(o.ms)+'</b>').join('<br>')+(pf.slow.length>8?'<br>…and '+(pf.slow.length-8)+' more':'')+'</div></div>'):'')
       +'</div>';
   })();
@@ -826,7 +829,7 @@ function siteReportHTML(res){
       out+=issue('Duplicate page titles', cp.duplicateTitles, g=>'"'+esc(g.value)+'" — '+g.urls.length+' pages');
       out+=issue('Duplicate H1 headings', cp.duplicateH1, g=>'"'+esc(g.value)+'" — '+g.urls.length+' pages');
       out+=issue('Title doesn’t match page content', cp.titleBodyMismatch, u=>esc(u.replace(res.root,'')||'/'));
-      out+=issue('Thin content (under 300 words)', cp.thin, o=>esc(o.url.replace(res.root,'')||'/')+' — '+o.words+'w');
+      out+=issue('Thin content (under 250 words)', cp.thin, o=>esc(o.url.replace(res.root,'')||'/')+' — '+o.words+'w');
       out+=issue('JavaScript-rendered (invisible to AI/Bing)', cp.jsRendered, u=>esc(u.replace(res.root,'')||'/'));
       out+=issue('Missing H1', cp.missingH1, u=>esc(u.replace(res.root,'')||'/'));
       return out||'<div style="color:#16a34a;font-size:13px">No site-wide issues detected across audited pages.</div>'; })()
@@ -909,8 +912,12 @@ async function runScan(){
 // server-side render adapter (used only when RENDER_API_KEY is set in Railway)
 function renderPage(u){ return fetch('/api/render?url='+encodeURIComponent(u)).then(function(r){ return r.ok?r.text():null; }).catch(function(){ return null; }); }
 async function runCrawl(){
+  if(scanning) return;                 // don't stomp an in-flight scan/crawl
   const list=document.getElementById('urls').value.split(/[\n,]+/).map(u=>u.trim()).filter(Boolean);
   if(!list.length){ alert('Enter a website first.'); return; }
+  // Fresh AbortController: a prior Stop/Start-over left scanCtrl aborted, which would otherwise
+  // make every fetch short-circuit and the crawl silently discover 0 pages.
+  scanCtrl=new AbortController(); scanning=true; resetting=false;
   const root=list[0]; const out=document.getElementById('results');
   document.getElementById('actionRow') && (document.getElementById('actionRow').style.display='none');
   out.innerHTML='<div style="padding:16px;color:#64748b">Discovering pages on '+esc(root)+'…</div>';
@@ -923,6 +930,7 @@ async function runCrawl(){
     out.innerHTML='<div style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:20px">'+siteReportHTML(res)+'</div>'
       +'<div style="margin-top:10px"><button class="primaryDark" onclick="printSiteReport()">🖨 Print full-site report</button></div>';
   }catch(e){ out.innerHTML='<div style="padding:16px;color:#dc2626">Crawl failed — '+esc(e&&e.message||'error')+'</div>'; }
+  finally{ scanning=false; }
 }
 var lastSiteResult=null;
 function printSiteReport(){
@@ -1095,11 +1103,11 @@ function buildReportEmail(clientName, arr, opts){
   const site=(r)=>{
     if(r.error) return `<div style="border:1px solid #e5e7eb;border-radius:8px;padding:16px;margin:0 0 16px"><b>${esc(r.domain)}</b><div style="color:#b91c1c">We couldn't reach this site to audit it.</div></div>`;
     const sc=score(r);
-    const col=sc.score>=91?'#16a34a':sc.score>=80?'#ea580c':'#dc2626';
+    const col=sc.score>=90?'#16a34a':sc.score>=80?'#ea580c':'#dc2626';
     const issues=r.checks.filter(c=>c.status==='fail'||c.status==='warn').sort((a,b)=>(a.status===b.status?b.points-a.points:(a.status==='fail'?-1:1)));
     const quick=issues.filter(c=>isQuick(c.label)).slice(0,8);
     const proj=issues.filter(c=>!isQuick(c.label)).slice(0,6);
-    const verdict = sc.score>=91
+    const verdict = sc.score>=90
       ? `Good news — ${esc(r.domain)} is in solid shape. A few refinements below will keep you ahead of the competitors chasing you.`
       : sc.score>=80
       ? `${esc(r.domain)} is leaving money on the table. The fixable issues below are keeping you off the top of Google and out of AI search results — right where your competitors are showing up instead.`
@@ -1367,7 +1375,7 @@ function renderCrmResults(){
   const el=document.getElementById('crmResults');
   if(!crmRows.length){ el.innerHTML='<div class="panel"><p class="muted" style="margin:0">No results yet. Set filters and click “Run query”, or import a CSV of businesses.</p></div>'; return; }
   const rows=crmRows.map(b=>{
-    const s=b.latest_score, gc=s==null?'#94a3b8':(s>=91?'#16a34a':s>=80?'#ea580c':'#dc2626');
+    const s=b.latest_score, gc=s==null?'#94a3b8':(s>=90?'#16a34a':s>=80?'#ea580c':'#dc2626');
     const grade=b.latest_grade||'—', sc=(s!=null?' '+s:'');
     const mem=(b.memberships&&b.memberships.length)?b.memberships.map(esc).join(', '):'<span class="muted">—</span>';
     return `<tr>
@@ -1724,7 +1732,7 @@ function renderReport(){
   const ranked=[...cRows].sort((a,b)=>((b.overall==null?-1:b.overall)-(a.overall==null?-1:a.overall))||(a.i-b.i));
   ranked.forEach((x,idx)=>x.rank=idx+1);
   // Traffic-light by score: 91+ OK (green), 80-90 needs attention (orange), <=79 urgent (red)
-  const sColor=v=>v==null?'#94a3b8':(v>=91?'#16a34a':v>=80?'#ea580c':'#dc2626');
+  const sColor=v=>v==null?'#94a3b8':(v>=90?'#16a34a':v>=80?'#ea580c':'#dc2626');
   const pctCell=v=>{ if(v==null) return '<td style="text-align:center;color:#cbd5e1">—</td>'; return `<td style="text-align:center;font-weight:700;color:${sColor(v)}">${v}%</td>`; };
   const spCell2=v=>{ if(v==null) return '<td style="text-align:center;color:#cbd5e1">—</td>'; return `<td style="text-align:center;font-weight:700;color:${sColor(v)}">${v}</td>`; };
   const compRows=ranked.map(x=>{
@@ -1837,7 +1845,7 @@ async function enterSharedMode(token){
 }
 function renderSharedTeaser(token, data){
   const sm=Array.isArray(data.summary)?data.summary:[]; const s=sm[0]||{};
-  const gc=s.score==null?'#64748b':(s.score>=91?'#16a34a':s.score>=80?'#ea580c':'#dc2626');
+  const gc=s.score==null?'#64748b':(s.score>=90?'#16a34a':s.score>=80?'#ea580c':'#dc2626');
   document.getElementById('reportView').style.display='block';
   document.querySelectorAll('#reportView .toolbar .btnGhost, #reportView .btnPrint').forEach(b=>b.style.display='none');
   document.getElementById('printArea').innerHTML=`<div style="max-width:640px;margin:0 auto;font-family:'Inter',Arial,sans-serif">
