@@ -185,6 +185,55 @@ if (teamEnabled) {
     })(req, res, next);
   });
   app.get('/auth/logout', (req, res) => { req.logout(() => res.redirect('/web-analyzer-siteV7.html')); });
+
+  /* ---------- Roadside SSO (OpenID Connect, code + PKCE) ----------
+     /auth/roadside starts the round-trip; /auth/roadside/callback verifies it and signs the person in
+     through the same passport session as Google. Team allow-list (cfg.teamEmails) still applies.
+     Env: ROADSIDE_SSO_ISSUER, ROADSIDE_SSO_CLIENT_ID, ROADSIDE_SSO_CLIENT_SECRET, ROADSIDE_SSO_CALLBACK_URL */
+  const crypto = require('crypto');
+  const RS = {
+    issuer: (process.env.ROADSIDE_SSO_ISSUER || '').replace(/\/+$/, ''),
+    clientId: process.env.ROADSIDE_SSO_CLIENT_ID || 'seoreview',
+    clientSecret: process.env.ROADSIDE_SSO_CLIENT_SECRET || '',
+    callbackUrl: process.env.ROADSIDE_SSO_CALLBACK_URL || (BASE_URL + '/auth/roadside/callback'),
+  };
+  const rsEnabled = () => !!(RS.issuer && RS.clientSecret);
+  const b64url = (b) => Buffer.from(b).toString('base64url');
+  app.get('/auth/roadside', (req, res) => {
+    if (!rsEnabled()) return res.redirect('/web-analyzer-siteV7.html?login=denied');
+    const verifier = b64url(crypto.randomBytes(48)), state = b64url(crypto.randomBytes(24)), nonce = b64url(crypto.randomBytes(16));
+    req.session.roadsideSso = { s: state, n: nonce, v: verifier, exp: Date.now() + 600000 };
+    const q = new URLSearchParams({ client_id: RS.clientId, redirect_uri: RS.callbackUrl, response_type: 'code', scope: 'openid profile email roadside',
+      state, nonce, code_challenge: b64url(crypto.createHash('sha256').update(verifier).digest()), code_challenge_method: 'S256' });
+    res.redirect(RS.issuer + '/oauth/authorize?' + q.toString());
+  });
+  app.get('/auth/roadside/callback', async (req, res) => {
+    const saved = req.session.roadsideSso; delete req.session.roadsideSso;
+    const deny = (why) => { console.warn('[roadside-sso]', why); res.redirect('/web-analyzer-siteV7.html?login=denied'); };
+    try {
+      if (!saved || saved.exp < Date.now() || req.query.state !== saved.s) return deny('state mismatch or expired');
+      if (req.query.error) return deny(req.query.error_description || req.query.error);
+      const basic = Buffer.from(encodeURIComponent(RS.clientId) + ':' + encodeURIComponent(RS.clientSecret)).toString('base64');
+      const tr = await fetch(RS.issuer + '/oauth/token', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json', authorization: 'Basic ' + basic },
+        body: new URLSearchParams({ grant_type: 'authorization_code', code: String(req.query.code || ''), redirect_uri: RS.callbackUrl, code_verifier: saved.v }) });
+      if (!tr.ok) return deny('token exchange ' + tr.status);
+      const tokens = await tr.json();
+      const idc = JSON.parse(Buffer.from(String(tokens.id_token || '').split('.')[1] || '', 'base64url').toString() || '{}');
+      if (idc.nonce !== saved.n) return deny('nonce mismatch');
+      const ur = await fetch(RS.issuer + '/oauth/userinfo', { headers: { authorization: 'Bearer ' + tokens.access_token } });
+      if (!ur.ok) return deny('userinfo ' + ur.status);
+      const info = await ur.json();
+      const email = String(info.email || '').toLowerCase();
+      if (!email) return deny('no email');
+      if (cfg.teamEmails.length && !cfg.teamEmails.includes(email)) return deny('not on team list: ' + email);
+      const name = info.name || '';
+      await pool.query(`INSERT INTO users (email, name, last_login) VALUES ($1,$2, now()) ON CONFLICT (email) DO UPDATE SET name=EXCLUDED.name, last_login=now()`, [email, name]);
+      req.logIn({ email, name }, (e) => {
+        if (e) { console.error('session logIn error:', e); return res.status(500).send('Session error'); }
+        res.redirect('/web-analyzer-siteV7.html?login=ok');
+      });
+    } catch (e) { console.error('[roadside-sso]', e); deny(e.message); }
+  });
 }
 
 function loggedIn(req) { return !!(passport && req.isAuthenticated && req.isAuthenticated()); }
