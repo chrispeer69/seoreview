@@ -43,7 +43,20 @@ CRM = `C:\Users\chris\OneDrive\Desktop\CRMColumbus`. Railway auto-deploys on pus
   "Email in Gmail" BCC group send, Compare selected, shop drawer with owner/manager/alliance/
   voice-AI/CC fields, back-button closes drawer (no logout).
 
+## Machine API for other sites (`/api/v1`, public tool only) — added 2026-09-12
+- `api-v1.js` + `headless-audit.js`: runs the public tool's engine in **jsdom on the server** (same
+  `crawlSite()`/`siteReportHTML()` as the browser, no second copy) and exposes whole-site audits over
+  `X-API-Key` auth. Contract lives in `chrispeer69/google-review-site/docs/seo-engine-api.md`; this
+  side's docs in `API.md`. Endpoints: `POST /api/v1/audits`, `GET /api/v1/audits/:id`,
+  `GET /api/v1/audits/latest?domain=`, `POST /api/v1/audits/status`, `GET /report/:id?t=` (HTML).
+- Idempotent per domain for 30 days, signed HMAC callback (`X-Signature`), audits persist in Postgres
+  table `seo_audits` (memory fallback without DB). Consumer = Review Intelligence Terminal (google-review-site).
+- Verified 2026-09-12 locally: excitecollisionrepair.com → C 79, 21 pages in 6 s; failure path clean.
+
 ## Activation / env vars (Railway, per project — NEVER commit secrets)
+- Public tool API: `SEO_API_KEY` (required to enable /api/v1), `SEO_WEBHOOK_SECRET` (callback HMAC; defaults
+  to the key), optional `SEO_API_MAX_PAGES` (100), `SEO_API_REUSE_DAYS` (30), `SEO_API_CONCURRENCY` (2),
+  `SEO_API_TIMEOUT_SEC` (600).
 - Shared: `RENDER_API_KEY` (ScrapingBee, SET ✓), optional `RENDER_PROVIDER` (scrapingbee default /
   scraperapi), `PLACES_API_KEY` (Places+Geocoding enabled ✓), `PAGESPEED_KEY`, `RESEND_API_KEY`,
   `MAIL_FROM` (code forces display name "Blue Collar AI"), `STRIPE_SECRET_KEY`, `BASE_URL`.

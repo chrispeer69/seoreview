@@ -10,6 +10,8 @@
 const express = require('express');
 const path = require('path');
 
+const apiV1 = require('./api-v1');
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 const BASE_URL = (process.env.BASE_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
@@ -128,6 +130,7 @@ async function migrate() {
       stripe_session TEXT,
       created_at TIMESTAMPTZ DEFAULT now()
     );`);
+  await apiV1.migrate(pool);
 }
 
 // ---------- Auth (Google OAuth) ----------
@@ -330,37 +333,39 @@ function rateLimit({ windowMs, max }) {
     next();
   };
 }
+const BROWSER_HEADERS = {
+  // Present as a real Chrome browser so header-based bot filters pass.
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+  'Accept-Language': 'en-US,en;q=0.9',
+  'Upgrade-Insecure-Requests': '1',
+  'Sec-Fetch-Dest': 'document',
+  'Sec-Fetch-Mode': 'navigate',
+  'Sec-Fetch-Site': 'none',
+  'Sec-Fetch-User': '?1',
+  'Sec-Ch-Ua': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+  'Sec-Ch-Ua-Mobile': '?0',
+  'Sec-Ch-Ua-Platform': '"Windows"',
+};
+// Core of /api/proxy — also used by the headless audit API (api-v1.js). Detects interstitial bot-challenge
+// pages (Cloudflare et al.) so callers can show an accurate message rather than a generic proxy error.
+async function proxyFetch(target, signal) {
+  const r = await guardedFetch(target, { signal, headers: BROWSER_HEADERS });
+  const body = await r.text();
+  const challenged = (r.status === 403 || r.status === 503) &&
+    /just a moment|cf-chl|challenge-platform|cf-mitigated|enable javascript and cookies/i.test(body);
+  return { status: r.status, body, challenged, finalUrl: r.url || target };
+}
 app.get('/api/proxy', rateLimit({ windowMs: 60000, max: 60 }), async (req, res) => {
   const target = req.query.url;
   if (!target) return res.status(400).send('missing url');
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), 15000);
   try {
-    const r = await guardedFetch(target, {
-      signal: ctrl.signal,
-      headers: {
-        // Present as a real Chrome browser so header-based bot filters pass.
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Upgrade-Insecure-Requests': '1',
-        'Sec-Fetch-Dest': 'document',
-        'Sec-Fetch-Mode': 'navigate',
-        'Sec-Fetch-Site': 'none',
-        'Sec-Fetch-User': '?1',
-        'Sec-Ch-Ua': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
-        'Sec-Ch-Ua-Mobile': '?0',
-        'Sec-Ch-Ua-Platform': '"Windows"',
-      },
-    });
-    const body = await r.text();
+    const r = await proxyFetch(target, ctrl.signal);
     res.set('Access-Control-Allow-Origin', '*');
-    // Detect interstitial bot-challenge pages (Cloudflare et al.) so the client
-    // shows an accurate message rather than a generic proxy error.
-    const challenged = (r.status === 403 || r.status === 503) &&
-      /just a moment|cf-chl|challenge-platform|cf-mitigated|enable javascript and cookies/i.test(body);
-    if (challenged) res.set('X-Proxy-Reason', 'bot-protection');
-    res.status(challenged ? 502 : r.status).type('text/plain; charset=utf-8').send(body);
+    if (r.challenged) res.set('X-Proxy-Reason', 'bot-protection');
+    res.status(r.challenged ? 502 : r.status).type('text/plain; charset=utf-8').send(r.body);
   } catch (e) {
     const code = e && e.code ? e.code : 502;
     res.status(code).send(code === 403 ? 'blocked host' : code === 400 ? 'bad url' : 'fetch failed: ' + (e && e.name ? e.name : 'error'));
@@ -368,14 +373,12 @@ app.get('/api/proxy', rateLimit({ windowMs: 60000, max: 60 }), async (req, res) 
 });
 
 // ---------- Headless rendering (JS sites) — key stays server-side; off until RENDER_API_KEY is set ----------
-app.get('/api/render', rateLimit({ windowMs: 60000, max: 12 }), async (req, res) => {
+async function renderFetch(target) {
   const key = process.env.RENDER_API_KEY;
-  if (!key) return res.status(503).send('render_not_configured');
-  const target = req.query.url;
-  if (!target) return res.status(400).send('missing url');
-  let u; try { u = new URL(target); } catch (e) { return res.status(400).send('bad url'); }
-  if (!/^https?:$/.test(u.protocol)) return res.status(400).send('only http/https allowed');
-  if (isPrivateHost(u.hostname)) return res.status(403).send('blocked host');
+  if (!key) throw Object.assign(new Error('render_not_configured'), { code: 503 });
+  let u; try { u = new URL(target); } catch (e) { throw Object.assign(new Error('bad url'), { code: 400 }); }
+  if (!/^https?:$/.test(u.protocol)) throw Object.assign(new Error('only http/https allowed'), { code: 400 });
+  if (isPrivateHost(u.hostname)) throw Object.assign(new Error('blocked host'), { code: 403 });
   const provider = (process.env.RENDER_PROVIDER || 'scrapingbee').toLowerCase();
   const api = provider === 'scraperapi'
     ? 'https://api.scraperapi.com/?api_key=' + encodeURIComponent(key) + '&render=true&url=' + encodeURIComponent(u.href)
@@ -384,12 +387,23 @@ app.get('/api/render', rateLimit({ windowMs: 60000, max: 12 }), async (req, res)
   const t = setTimeout(() => ctrl.abort(), 45000);
   try {
     const r = await fetch(api, { signal: ctrl.signal });
-    const body = await r.text();
-    res.set('Access-Control-Allow-Origin', '*');
-    res.status(r.ok ? 200 : 502).type('text/plain; charset=utf-8').send(body);
-  } catch (e) {
-    res.status(502).send('render failed');
+    return { ok: r.ok, body: await r.text() };
   } finally { clearTimeout(t); }
+}
+app.get('/api/render', rateLimit({ windowMs: 60000, max: 12 }), async (req, res) => {
+  const target = req.query.url;
+  if (!target) return res.status(400).send('missing url');
+  try {
+    const r = await renderFetch(target);
+    res.set('Access-Control-Allow-Origin', '*');
+    res.status(r.ok ? 200 : 502).type('text/plain; charset=utf-8').send(r.body);
+  } catch (e) {
+    const code = e && e.code;
+    if (code === 503) return res.status(503).send('render_not_configured');
+    if (code === 400) return res.status(400).send(e.message);
+    if (code === 403) return res.status(403).send('blocked host');
+    res.status(502).send('render failed');
+  }
 });
 
 // ---------- Email (Resend) ----------
@@ -486,24 +500,26 @@ app.post('/api/lead', rateLimit({ windowMs: 600000, max: 5 }), async (req, res) 
 });
 
 // ---------- Google Places reviews (server-side, optional) ----------
+async function placesLookup(query) {
+  const key = process.env.PLACES_API_KEY;
+  const ts = await fetch(`https://maps.googleapis.com/maps/api/place/textsearch/json?query=${encodeURIComponent(query)}&key=${key}`).then(r => r.json());
+  const first = ts.results && ts.results[0];
+  if (!first) return { found: false };
+  const det = await fetch(`https://maps.googleapis.com/maps/api/place/details/json?place_id=${first.place_id}&fields=name,rating,user_ratings_total,url,formatted_address,formatted_phone_number,reviews&key=${key}`).then(r => r.json());
+  const d = det.result || {};
+  return {
+    found: true,
+    name: d.name, rating: d.rating, reviews: d.user_ratings_total,
+    address: d.formatted_address, phone: d.formatted_phone_number, mapsUrl: d.url,
+    recent: (d.reviews || []).slice(0, 3).map(x => ({ author: x.author_name, rating: x.rating, text: x.text, when: x.relative_time_description })),
+  };
+}
 app.get('/api/places', rateLimit({ windowMs: 60000, max: 20 }), async (req, res) => {
   if (!cfg.places) return res.status(503).json({ error: 'places_not_configured' });
   const query = (req.query.q || req.query.name || '').trim();
   if (!query) return res.status(400).json({ error: 'q_required' });
-  const key = process.env.PLACES_API_KEY;
-  try {
-    const ts = await fetch(`https://maps.googleapis.com/maps/api/place/textsearch/json?query=${encodeURIComponent(query)}&key=${key}`).then(r => r.json());
-    const first = ts.results && ts.results[0];
-    if (!first) return res.json({ found: false });
-    const det = await fetch(`https://maps.googleapis.com/maps/api/place/details/json?place_id=${first.place_id}&fields=name,rating,user_ratings_total,url,formatted_address,formatted_phone_number,reviews&key=${key}`).then(r => r.json());
-    const d = det.result || {};
-    res.json({
-      found: true,
-      name: d.name, rating: d.rating, reviews: d.user_ratings_total,
-      address: d.formatted_address, phone: d.formatted_phone_number, mapsUrl: d.url,
-      recent: (d.reviews || []).slice(0, 3).map(x => ({ author: x.author_name, rating: x.rating, text: x.text, when: x.relative_time_description })),
-    });
-  } catch (e) { res.status(502).json({ error: 'places_failed' }); }
+  try { res.json(await placesLookup(query)); }
+  catch (e) { res.status(502).json({ error: 'places_failed' }); }
 });
 
 // ---------- Team reports API (protected) ----------
@@ -875,6 +891,12 @@ app.get('/healthz/db', async (req, res) => {
   catch (e) { res.status(500).json({ db: true, ok: false, error: e.message }); }
 });
 
+// ---------- Machine-auth audit API (/api/v1) + hosted API reports (/report/:id) ----------
+apiV1.mount(app, {
+  pool, BASE_URL, guardedFetch, proxyFetch, renderFetch, placesLookup, isPrivateHost, rateLimit,
+  renderEnabled: !!process.env.RENDER_API_KEY, placesEnabled: cfg.places,
+});
+
 // ---------- Static public tool ----------
 app.use(express.static(__dirname, { extensions: ['html'] }));
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
@@ -891,5 +913,6 @@ app.use((err, req, res, next) => {
   catch (e) { console.error('DB migrate failed (team features may be off):', e.message); }
   app.listen(PORT, () => {
     console.log(`SEO audit server on :${PORT} | team=${teamEnabled} places=${cfg.places} email=${cfg.email} whitelist=${cfg.teamEmails.length}`);
+    apiV1.start().catch(e => console.error('api v1 start failed:', e.message));
   });
 })();
