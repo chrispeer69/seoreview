@@ -17,6 +17,7 @@ see `headless-audit.js`), so API grades match what the browser tool's "Crawl ent
 | `SEO_API_REUSE_DAYS` | no | Reuse window for repeat requests on a domain (default 30; 0 = always re-crawl). |
 | `SEO_API_CONCURRENCY` | no | Audits crawled at once (default 2). Each crawl fetches 4 pages in parallel. |
 | `SEO_API_TIMEOUT_SEC` | no | Per-audit time limit (default 600). |
+| `PSI_API_KEY` | no | Google PageSpeed Insights key for page-mode speed checks. Unset = keyless (rate-limited; speed may read "could not measure"). |
 | `DATABASE_URL` | recommended | Audits persist in Postgres table `seo_audits`. Without it they live in memory and vanish on restart. |
 | `PLACES_API_KEY` | no | Enables the `local` block (Google Business Profile match, rating, review count). |
 | `RENDER_API_KEY` | no | Enables JS rendering for JavaScript-only sites (ScrapingBee). |
@@ -43,6 +44,12 @@ curl -s https://seoreview-production.up.railway.app/api/v1/ping -H "X-API-Key: $
 * `external_id` — echoed back in every response for this audit.
 * `callback_url` — optional; must be a public `http(s)` URL. The finished audit is POSTed there (see Callback).
 * `force` — `true` re-crawls even if a recent audit exists.
+* `mode` — `"site"` (default): the whole-site crawl, every page. `"page"`: page 1 only — the homepage, the public
+  tool's regular **Run Audit** (its site checks: robots.txt, sitemap, AI-crawler access, llms.txt; plus Google
+  PageSpeed mobile + desktop when `PSI_API_KEY` is set). A page audit's `grade`/`score` is the homepage's own,
+  `pages_crawled` is 1, `page_speed` carries `{mobile:{score,lcp_ms,cls,field}, desktop:{…}}`, and its report is the
+  single-site branded report. Reuse and in-flight attach are per domain **and** mode. Page audits never write the CRM
+  columns (those stay the whole-site grade). `GET /api/v1/audits/latest?domain=…&mode=page` reads the latest page audit.
 
 Responses (body is always the full audit object below, plus `reused`):
 * `202` `status: queued` — new audit started (`reused: false`).
@@ -73,6 +80,7 @@ This is the `report_url` in every finished audit. The token is per-audit; withou
 ```json
 {
   "audit_id": "a_09e25d9656c27239",
+  "mode": "site",                         // site | page
   "external_id": "rit:103",
   "domain": "speedytowingservice.com",
   "status": "done",                       // queued | running | done | failed

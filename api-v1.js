@@ -2,7 +2,8 @@
 // /api/v1 — machine-auth SEO audit API for other Blue Collar AI systems (Review Intelligence Terminal, CRM…).
 // Contract: chrispeer69/google-review-site/docs/seo-engine-api.md. Full docs for this side: API.md.
 //
-//   POST /api/v1/audits                 request a whole-site audit (idempotent per domain for 30 days)
+//   POST /api/v1/audits                 request an audit: mode "site" (whole-site crawl, default) or "page" (the
+//                                       homepage - the tool's single-page Run Audit); idempotent per domain+mode
 //   GET  /api/v1/audits/latest?domain=  newest audit for a domain
 //   GET  /api/v1/audits/:id             poll one audit
 //   POST /api/v1/audits/status          batch poll  { audit_ids: [...] }
@@ -21,6 +22,9 @@ const WEBHOOK_SECRET = process.env.SEO_WEBHOOK_SECRET || API_KEY;
 const REUSE_DAYS = Math.max(0, parseInt(process.env.SEO_API_REUSE_DAYS || '30', 10) || 0);
 const MAX_PAGES = Math.max(5, Math.min(300, parseInt(process.env.SEO_API_MAX_PAGES || '100', 10) || 100));
 const CONCURRENCY = Math.max(1, parseInt(process.env.SEO_API_CONCURRENCY || '2', 10) || 1);
+// PageSpeed Insights key for page-mode speed checks (the tool's "Measure page speed"); unset = keyless, rate-limited.
+const PSI_KEY = process.env.PSI_API_KEY || process.env.PAGESPEED_API_KEY || '';
+const MODES = ['site', 'page'];
 const JOB_TIMEOUT_MS = Math.max(60, parseInt(process.env.SEO_API_TIMEOUT_SEC || '600', 10) || 600) * 1000;
 
 let deps = null;
@@ -44,7 +48,7 @@ function validDomain(s) {
 }
 
 // ---------- storage ----------
-const COLS = 'id,domain,external_id,callback_url,status,error,result,report_html,view_token,progress,created_at,started_at,finished_at';
+const COLS = 'id,mode,domain,external_id,callback_url,status,error,result,report_html,view_token,progress,created_at,started_at,finished_at';
 const PATCHABLE = new Set(['external_id', 'status', 'error', 'result', 'report_html', 'progress', 'started_at', 'finished_at']);
 
 function memStore() {
@@ -55,8 +59,8 @@ function memStore() {
     async get(id) { return m.get(id) || null; },
     async update(id, patch) { const j = m.get(id); if (!j) return null; for (const k of Object.keys(patch)) if (PATCHABLE.has(k)) j[k] = patch[k]; return j; },
     async getMany(ids) { return ids.map(i => m.get(i)).filter(Boolean); },
-    async latest(domain, statuses) {
-      return [...m.values()].filter(j => j.domain === domain && (!statuses || statuses.includes(j.status)))
+    async latest(domain, statuses, mode) {
+      return [...m.values()].filter(j => j.domain === domain && (j.mode || 'site') === (mode || 'site') && (!statuses || statuses.includes(j.status)))
         .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0] || null;
     },
     async byStatus(st) { return [...m.values()].filter(j => j.status === st); },
@@ -83,11 +87,13 @@ function pgStore(pool) {
           finished_at TIMESTAMPTZ
         );`);
       await pool.query('CREATE INDEX IF NOT EXISTS idx_seo_audits_domain ON seo_audits (domain, created_at DESC);');
+      // mode came after the table: every earlier audit is a whole-site crawl
+      await pool.query("ALTER TABLE seo_audits ADD COLUMN IF NOT EXISTS mode TEXT NOT NULL DEFAULT 'site';");
     },
     async create(j) {
-      await pool.query(`INSERT INTO seo_audits (id,domain,external_id,callback_url,status,view_token,progress,created_at)
-                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-        [j.id, j.domain, j.external_id, j.callback_url, j.status, j.view_token, j.progress ? JSON.stringify(j.progress) : null, j.created_at]);
+      await pool.query(`INSERT INTO seo_audits (id,domain,external_id,callback_url,status,view_token,progress,created_at,mode)
+                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        [j.id, j.domain, j.external_id, j.callback_url, j.status, j.view_token, j.progress ? JSON.stringify(j.progress) : null, j.created_at, j.mode || 'site']);
       return j;
     },
     async get(id) { const { rows } = await pool.query(`SELECT ${COLS} FROM seo_audits WHERE id=$1`, [id]); return rows[0] || null; },
@@ -100,10 +106,10 @@ function pgStore(pool) {
       return rows[0] || null;
     },
     async getMany(ids) { const { rows } = await pool.query(`SELECT ${COLS} FROM seo_audits WHERE id = ANY($1)`, [ids]); return rows; },
-    async latest(domain, statuses) {
+    async latest(domain, statuses, mode) {
       const { rows } = await pool.query(
-        `SELECT ${COLS} FROM seo_audits WHERE domain=$1 AND ($2::text[] IS NULL OR status = ANY($2::text[])) ORDER BY created_at DESC LIMIT 1`,
-        [domain, statuses || null]);
+        `SELECT ${COLS} FROM seo_audits WHERE domain=$1 AND mode=$3 AND ($2::text[] IS NULL OR status = ANY($2::text[])) ORDER BY created_at DESC LIMIT 1`,
+        [domain, statuses || null, mode || 'site']);
       return rows[0] || null;
     },
     async byStatus(st) { const { rows } = await pool.query(`SELECT ${COLS} FROM seo_audits WHERE status=$1 ORDER BY created_at`, [st]); return rows; },
@@ -244,11 +250,27 @@ function summarize(res) {
   };
 }
 
+// A page-mode result (one audited page; its site checks and speed are already in its checks) in the same contract
+// shape as a crawl: one page, the page's own score as the grade, plus the PageSpeed numbers.
+function summarizePage(r) {
+  const root = (() => { try { return new URL(r.url).origin; } catch (e) { return r.url; } })();
+  const out = summarize({ root, siteScore: r._score ? r._score.score : null, pages: [r], crossPage: {},
+    perf: r.loadMs == null ? null : { avg: r.loadMs, median: r.loadMs, max: r.loadMs, count: 1, slow: r.loadMs > 2000 ? [{ url: r.url, ms: r.loadMs }] : [] },
+    local: null, coverage: { discovered: 1, audited: 1, failed: 0, capped: false, cap: 1, via: 'homepage', rendered: r._rendered ? 1 : 0, renderAvailable: !!deps.renderEnabled } });
+  const sp = r.speed || {};
+  const one = s => (!s || s.error ? { error: s ? s.error : 'not measured' }
+    : { score: s.score == null ? null : s.score, lcp_ms: s.lcp == null ? null : Math.round(s.lcp), cls: s.cls == null ? null : s.cls, field: s.field || null });
+  out.page_speed = r.speed ? { mobile: one(sp.mobile), desktop: one(sp.desktop) } : null;
+  out.url = r.url;
+  return out;
+}
+
 function contractBody(j, opts) {
   opts = opts || {};
   const r = j.result || {};
   const body = {
     audit_id: j.id,
+    mode: j.mode || 'site',
     external_id: opts.external_id || j.external_id || null,
     domain: j.domain,
     status: j.status,
@@ -267,6 +289,7 @@ function contractBody(j, opts) {
     ai_visibility: r.ai_visibility || null,
     server_speed: r.server_speed || null,
     coverage: r.coverage || null,
+    page_speed: r.page_speed || null,
     report_url: j.status === 'done' ? `${deps.BASE_URL}/report/${j.id}?t=${j.view_token}` : null,
   };
   if (j.status === 'running' && j.progress) body.progress = j.progress;
@@ -309,6 +332,7 @@ async function runJob(id) {
   let lastSave = 0;
   try {
     const root = await resolveRoot(job.domain);
+    if ((job.mode || 'site') === 'page') return await runPageJob(id, root);
     const work = headless.crawlSite(deps, root, {
       maxPages: MAX_PAGES, concurrency: 4,
       onProgress: (done, total, current) => {
@@ -327,6 +351,25 @@ async function runJob(id) {
   } catch (e) {
     const msg = String((e && e.message) || e).slice(0, 500);
     console.warn(`[api v1] audit ${id} failed: ${msg}`);
+    job = await store.update(id, { status: 'failed', finished_at: new Date(), error: msg, progress: null });
+  }
+  if (job && job.callback_url) sendCallback(job).catch(() => {});
+}
+
+// The homepage audit. Never writes the CRM's columns - those are the whole-site grade.
+async function runPageJob(id, root) {
+  let job;
+  try {
+    const work = headless.auditPage(deps, root + '/', { speed: true, psiKey: PSI_KEY });
+    const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error('audit timed out after ' + Math.round(JOB_TIMEOUT_MS / 1000) + 's')), JOB_TIMEOUT_MS));
+    const out = await Promise.race([work, timeout]);
+    const result = summarizePage(out.result);
+    if (result.score == null) throw new Error('The homepage could not be graded.');
+    job = await store.update(id, { status: 'done', finished_at: new Date(), result, report_html: out.html, progress: null, error: null });
+    console.log(`[api v1] page audit ${id} ${job.domain}: ${result.grade} ${result.score}`);
+  } catch (e) {
+    const msg = String((e && e.message) || e).slice(0, 500);
+    console.warn(`[api v1] page audit ${id} failed: ${msg}`);
     job = await store.update(id, { status: 'failed', finished_at: new Date(), error: msg, progress: null });
   }
   if (job && job.callback_url) sendCallback(job).catch(() => {});
@@ -395,6 +438,8 @@ function mount(app, d) {
     if (!validDomain(domain) || d.isPrivateHost(domain)) return res.status(400).json({ error: 'invalid_domain', domain });
     const external_id = b.external_id == null ? null : String(b.external_id).slice(0, 120);
     const force = b.force === true || b.force === 'true';
+    const mode = b.mode == null || b.mode === '' ? 'site' : String(b.mode);
+    if (!MODES.includes(mode)) return res.status(400).json({ error: 'invalid_mode', modes: MODES });
     let callback_url = null;
     if (b.callback_url) {
       try {
@@ -405,18 +450,18 @@ function mount(app, d) {
     }
 
     // One crawl per domain at a time: attach to the in-flight audit rather than start a second.
-    const active = await store.latest(domain, ['queued', 'running']);
+    const active = await store.latest(domain, ['queued', 'running'], mode);
     if (active) {
       if (external_id && !active.external_id) await store.update(active.id, { external_id });
       return res.status(202).json(contractBody(active, { reused: true, external_id, slim: true }));
     }
     if (!force && REUSE_DAYS > 0) {
-      const done = await store.latest(domain, ['done']);
+      const done = await store.latest(domain, ['done'], mode);
       if (done && Date.now() - new Date(done.created_at).getTime() < REUSE_DAYS * 86400000) {
         return res.status(200).json(contractBody(done, { reused: true, external_id }));
       }
     }
-    const job = { id: newId(), domain, external_id, callback_url, status: 'queued', error: null, result: null, report_html: null,
+    const job = { id: newId(), mode, domain, external_id, callback_url, status: 'queued', error: null, result: null, report_html: null,
       view_token: newToken(), progress: null, created_at: new Date(), started_at: null, finished_at: null };
     await store.create(job);
     enqueue(job.id);
@@ -426,7 +471,8 @@ function mount(app, d) {
   app.get('/api/v1/audits/latest', wrap(async (req, res) => {
     const domain = normalizeDomain(req.query.domain);
     if (!domain) return res.status(400).json({ error: 'domain_required' });
-    const job = (await store.latest(domain, ['done'])) || (await store.latest(domain, null));
+    const mode = MODES.includes(String(req.query.mode || '')) ? String(req.query.mode) : 'site';
+    const job = (await store.latest(domain, ['done'], mode)) || (await store.latest(domain, null, mode));
     if (!job) return res.status(404).json({ error: 'no_audit', domain });
     res.json(contractBody(job));
   }));
@@ -449,8 +495,8 @@ function mount(app, d) {
     res.set('Cache-Control', 'private, max-age=300');
     res.type('html').send(headless.reportPage({
       bodyHtml: job.report_html,
-      title: 'Full-Site SEO & AI Search Audit — ' + job.domain,
-      subtitle: `Grade ${job.result.grade} · ${job.result.score}/100 · ${job.result.pages_crawled} pages · ${iso(job.finished_at).slice(0, 10)}`,
+      title: ((job.mode || 'site') === 'page' ? 'Homepage SEO & AI Search Audit — ' : 'Full-Site SEO & AI Search Audit — ') + job.domain,
+      subtitle: `Grade ${job.result.grade} · ${job.result.score}/100 · ${(job.mode || 'site') === 'page' ? 'homepage' : job.result.pages_crawled + ' pages'} · ${iso(job.finished_at).slice(0, 10)}`,
     }));
   };
   app.get('/api/v1/audits/:id/report', wrap(async (req, res) => {

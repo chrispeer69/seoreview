@@ -133,6 +133,43 @@ async function crawlSite(deps, root, opts) {
   }
 }
 
+// The public tool's "Run Audit" on one URL (the homepage): the page's own auditOne() + addAux() (robots.txt,
+// sitemap, AI-crawler access, llms.txt) + addSpeed() (PageSpeed mobile + desktop) and the single-site branded
+// renderReport(). Same score and same report the browser gives for that page.
+async function auditPage(deps, url, opts) {
+  opts = opts || {};
+  const { dom, errors } = createWindow(deps);
+  const w = dom.window;
+  try {
+    await sleep(100);
+    if (typeof w.auditOne !== 'function' || typeof w.renderReport !== 'function') {
+      throw new Error('audit engine did not load' + (errors.length ? ' — ' + errors[0] : ''));
+    }
+    const render = deps.renderEnabled ? (u => w.fetch('/api/render?url=' + encodeURIComponent(u)).then(r => (r.ok ? r.text() : null)).catch(() => null)) : null;
+    let r;
+    try { r = await w.auditOne(url); }
+    catch (e1) {                                   // one retry, then the rendered page - as the crawl does
+      try { r = await w.auditOne(url); }
+      catch (e2) {
+        const html = render ? await render(url) : null;
+        if (!html) throw new Error((e2 && e2.reason) || (e2 && e2.message) || 'page could not be fetched');
+        r = await w.auditOne(url, html); r._rendered = true;
+      }
+    }
+    if (r.jsShell && render) { try { const html = await render(url); if (html) { r = await w.auditOne(url, html); r._rendered = true; } } catch (e) {} }
+    try { await w.addAux(r); } catch (e) { /* best effort, as in the tool */ }
+    if (opts.speed) { try { await w.addSpeed(r, opts.psiKey || ''); } catch (e) {} }
+    r._score = w.score(r);
+    w.__pageResult = r;
+    w.eval('reports=[window.__pageResult]');       // the page's own top-level `let reports`
+    w.renderReport();
+    const html = w.document.getElementById('printArea').innerHTML;
+    return { result: JSON.parse(JSON.stringify(r)), html, engineErrors: errors.slice(0, 5) };
+  } finally {
+    try { w.close(); } catch (e) {}
+  }
+}
+
 // Wrap a report body in a standalone page using the public tool's own stylesheet.
 function reportPage({ bodyHtml, title, subtitle }) {
   const css = pageSource().css;
@@ -146,4 +183,4 @@ function reportPage({ bodyHtml, title, subtitle }) {
     + '<div class="docPad"><div class="printArea">' + bodyHtml + '</div></div></div></body></html>';
 }
 
-module.exports = { crawlSite, reportPage };
+module.exports = { crawlSite, auditPage, reportPage };
