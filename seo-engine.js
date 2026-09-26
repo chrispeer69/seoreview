@@ -55,7 +55,7 @@ function linkAbort(ctrl){ if(scanCtrl){ if(scanCtrl.signal.aborted){ try{ctrl.ab
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 // Fixes that are bigger projects (need content, dev work, or third-party setup) vs. quick wins.
 const PROJECT_FIXES = new Set([
-  'Sufficient content','Served over HTTPS','No mixed (insecure) content','LocalBusiness structured data',
+  'Unique content','Unique vs sibling pages','Local detail','Served over HTTPS','No mixed (insecure) content','LocalBusiness structured data',
   'Reasonable page weight','Limited render-blocking scripts','Q&A / FAQ structured data',
   'Semantic main-content region','Review / rating schema (stars)',
   'Mobile speed score','Desktop speed score','Largest Contentful Paint (mobile)','Layout stability (mobile CLS)'
@@ -210,6 +210,123 @@ async function canonicalCheck(href, pageUrl, pageNoindex){
   return {status:'pass', detail:'→ '+(self?'this page (200, indexable)':target+' (200, indexable)')};
 }
 
+// ---------- Page type ----------
+// home | service | location | blog | utility | archive | hub | other — from the URL first (most reliable), since
+// titles on local sites name the service AND the city on nearly every page.
+const US_STATES='al|ak|az|ar|ca|co|ct|de|fl|ga|ia|id|il|ks|ky|la|ma|md|mi|mn|mo|ms|mt|nc|nd|ne|nh|nj|nm|nv|ny|oh|pa|ri|sc|sd|tn|tx|ut|va|vt|wa|wi|wv|wy'
+  +'|alabama|alaska|arizona|arkansas|california|colorado|connecticut|delaware|florida|georgia|idaho|illinois|indiana|iowa|kansas|kentucky'
+  +'|louisiana|maine|maryland|massachusetts|michigan|minnesota|mississippi|missouri|montana|nebraska|nevada|new-hampshire|new-jersey'
+  +'|new-mexico|new-york|north-carolina|north-dakota|ohio|oklahoma|oregon|pennsylvania|rhode-island|south-carolina|south-dakota|tennessee'
+  +'|texas|utah|vermont|virginia|washington|west-virginia|wisconsin|wyoming';
+const RE_UTILITY=/^(contact(-us)?|privacy(-policy)?|privacy-notice|terms.*|legal|disclaimer|cookies?(-policy)?|accessibility(-statement)?|(get-a-|free-|request-a-|request-|get-)?quotes?|estimate|pay|payments?|pay-now|pay-online|make-a-payment|thank-?you.*|login|log-in|sign-?in|account|my-account|cart|checkout|sitemap|404|search)$/;
+const RE_LOC_DIR=/^(service-?areas?|areas?(-we-serve|-served)?|locations?|cities|city|communities|towns?|neighborhoods?|counties|county|near-?me|where-we-serve)$/;
+const RE_SVC_DIR=/^(services?|our-services|what-we-do|solutions|specialties)$/;
+const RE_BLOG_DIR=/^(blog|news|articles?|posts?|insights|resources|tips|learn|guides?)$/;
+const RE_SVC_WORD=/(tow|repair|roadside|recovery|lockout|jump-?start|battery|fuel|tire|winch|impound|repo|brake|transmission|oil-change|lube|inspection|exhaust|muffler|suspension|alignment|diagnos|engine|electrical|hvac|heating|cooling|air-condition|plumb|drain|roof|gutter|siding|clean|detail|collision|body-?shop|paint|glass|windshield|install|replace|maintenance|tune-?up|mechanic|auction|fleet|flatbed|wheel-lift|haul|moving|junk|removal|landscap|lawn|pest|electric|remodel|construction|pressure-wash|locksmith|garage-door|fence|concrete|paving|service)/;
+const RE_STATE_SLUG=new RegExp('-('+US_STATES+')$');
+function pathSegs(u){ try{ return new URL(u).pathname.toLowerCase().split('/').filter(Boolean).map(s=>{ try{ return decodeURIComponent(s); }catch(e){ return s; } }); }catch(e){ return []; } }
+function classifyPage(u, nodes){
+  const segs=pathSegs(u);
+  if(!segs.length) return 'home';
+  const last=segs[segs.length-1].replace(/\.(html?|php|aspx?)$/,'');
+  if(segs.some(s=>RE_UTILITY.test(s))) return 'utility';
+  if(segs.some(s=>/^(category|categories|tag|tags|author|archives?)$/.test(s)) || segs.includes('page') || segs.every(s=>/^\d+$/.test(s))) return 'archive';
+  if(segs.length===1 && RE_BLOG_DIR.test(segs[0])) return 'archive';          // the blog index is a listing
+  if((segs.length>=2 && RE_BLOG_DIR.test(segs[0])) || /^\d{4}$/.test(segs[0])) return 'blog';
+  if((nodes||[]).some(n=>typesOf(n).some(t=>t==='BlogPosting'||t==='NewsArticle'))) return 'blog';
+  if(segs.some((s,i)=>RE_LOC_DIR.test(s) && i<segs.length-1)) return 'location';
+  if(segs.length===1 && RE_LOC_DIR.test(segs[0])) return 'hub';               // "all our service areas" page
+  if(RE_STATE_SLUG.test(last) && last.split('-').length>=2) return 'location';   // /towing-dublin-oh
+  if(segs.some((s,i)=>RE_SVC_DIR.test(s) && i<segs.length-1)) return 'service';
+  if(RE_SVC_DIR.test(last) || RE_SVC_WORD.test(last)) return 'service';
+  return 'other';
+}
+
+// ---------- Main content ----------
+// The page's own content: <main>/<article> when it holds most of the text, else the body — either way without
+// header / nav / footer / aside and their builder look-alikes. Returned as text blocks (one per block element).
+const BLOCK_TAGS=new Set(['ADDRESS','ARTICLE','ASIDE','BLOCKQUOTE','DD','DIV','DL','DT','FIELDSET','FIGCAPTION','FIGURE','FOOTER','FORM','H1','H2','H3','H4','H5','H6','HEADER','HR','LI','MAIN','NAV','OL','P','PRE','SECTION','TABLE','TBODY','THEAD','TFOOT','TR','TD','TH','UL','BR','DETAILS','SUMMARY']);
+const RE_CHROME=/(^|[\s_-])(site[-_]?header|site[-_]?footer|masthead|colophon|navbar|nav|navigation|main-?menu|mobile-?menu|menu|sidebar|widget-?area|cookie[\w-]*|breadcrumbs?|top-?bar|skip-?link|location-header|location-footer)($|[\s_])/i;
+const countWords=t=>(String(t).match(/[A-Za-z0-9][A-Za-z0-9'’&.-]*/g)||[]).length;
+function textBlocks(root){
+  const out=[]; let buf=[];
+  const flush=()=>{ const t=buf.join(' ').replace(/\s+/g,' ').trim(); buf=[]; if(t) out.push(t); };
+  const walk=n=>{ for(let c=n.firstChild;c;c=c.nextSibling){
+    if(c.nodeType===3) buf.push(c.nodeValue);
+    else if(c.nodeType===1){ if(BLOCK_TAGS.has(c.tagName)){ flush(); walk(c); flush(); } else walk(c); } } };
+  walk(root); flush();
+  return out;
+}
+function mainContent(doc){
+  if(!doc.body) return [];
+  const clone=doc.body.cloneNode(true);
+  clone.querySelectorAll('script,style,noscript,template,svg,iframe,form,button,select,nav,aside,[role="navigation"],[role="banner"],[role="contentinfo"],[role="complementary"],[aria-hidden="true"],[hidden]').forEach(e=>e.remove());
+  clone.querySelectorAll('header,footer').forEach(e=>{ if(!e.closest('main,article')) e.remove(); });
+  const total=countWords(clone.textContent);
+  clone.querySelectorAll('[id],[class]').forEach(e=>{
+    if(!e.isConnected || e.matches('main,article') || e.querySelector('main,article')) return;
+    const tag=(e.getAttribute('id')||'')+' '+(typeof e.className==='string'?e.className:'');
+    if(RE_CHROME.test(tag) && countWords(e.textContent)<total*0.5) e.remove();
+  });
+  const words=countWords(clone.textContent);
+  const arts=[...clone.querySelectorAll('article')].sort((a,b)=>countWords(b.textContent)-countWords(a.textContent));
+  const cand=clone.querySelector('main')||arts[0]||null;
+  const root=(cand && countWords(cand.textContent)>=words*0.5) ? cand : clone;
+  return textBlocks(root);
+}
+// 32-bit FNV-1a — block and shingle fingerprints
+function fnv(s){ let h=0x811c9dc5; for(let i=0;i<s.length;i++){ h^=s.charCodeAt(i); h=Math.imul(h,0x01000193); } return h>>>0; }
+const normBlock=t=>String(t).toLowerCase().replace(/\s+/g,' ').trim();
+function shingles(text){
+  const w=String(text).toLowerCase().match(/[a-z0-9]+/g)||[]; const set=new Set();
+  for(let i=0;i+5<=w.length;i++) set.add(fnv(w.slice(i,i+5).join(' ')));
+  return set;
+}
+function jaccard(a,b){
+  if(!a.size||!b.size) return 0;
+  const [s,l]=a.size<b.size?[a,b]:[b,a]; let inter=0;
+  s.forEach(x=>{ if(l.has(x)) inter++; });
+  return inter/(a.size+b.size-inter);
+}
+
+// ---------- Local detail (location pages) ----------
+// Named roads, routes, exits and landmarks — the specifics that prove a location page is about that place.
+const RE_ENT_STOP=/^(The|A|An|Our|Your|We|This|That|Any|Every|Best|Fast|Top|Call|Contact|Customer|Service|Services|Help|Auto|Towing|Tow|Emergency|Main|New|Get|Free|Local|Near|All|Why|How|What|When)\b/;
+const RE_ENT_GENERIC=/\b(Service|Services|Repair|Towing|Tow|Auto|Care|Business|Call|Help|Contact|Customer|Dispatch|Our|Your)\b/;
+const RE_ENTITIES=[
+  /\b((?:[A-Z][A-Za-z'.-]+ ){1,3}(?:Road|Rd|Street|St|Avenue|Ave|Boulevard|Blvd|Drive|Dr|Lane|Ln|Parkway|Pkwy|Highway|Hwy|Pike|Trail|Expressway|Freeway|Turnpike|Bypass|Circle|Court|Ct|Place|Pl|Square|Plaza|Crossing|Corridor))\b\.?/g,
+  /\b((?:I|Interstate)[- ]?\d{1,3})\b/g,
+  /\b((?:US|U\.S\.|SR|State Route|Route|Rt\.?|County Road|CR|OH|Ohio)[- ]?\d{1,4})\b/g,
+  /\b(Exit \d{1,3}[A-Z]?)\b/g,
+  /\b((?:[A-Z][A-Za-z'.&-]+ ){1,4}(?:Park|Mall|Center|Centre|Stadium|Arena|Airport|Hospital|University|College|High School|Church|Lake|River|Creek|Bridge|Market|Library|Zoo|Museum|Hall|Field|Station|Commons|Outlets|Festival|Fairgrounds|Reservoir|District|Campus|Speedway|Terminal))\b/g,
+];
+function localEntities(text){
+  const found=new Set();
+  RE_ENTITIES.forEach(re=>{ re.lastIndex=0; let m; while((m=re.exec(text))){
+    const e=m[1].trim();
+    if(RE_ENT_STOP.test(e) || RE_ENT_GENERIC.test(e)) continue;
+    found.add(e.toLowerCase().replace(/\binterstate[- ]?/,'i-').replace(/^i[- ]?(\d)/,'i-$1').replace(/\s+/g,' ').replace(/\.$/,''));
+  } });
+  return [...found];
+}
+// Content checks, shared by the single-page audit and the crawl (which re-runs them with cross-page knowledge).
+const CONTENT_FULL={ blog:800 };
+function uniqueContentCheck(type, words, strippedAcrossSite){
+  const why='Search engines and AI rank the words that are unique to this page — not the header, menus, footer and other text repeated on every page. Pages without enough of their own content rarely rank.';
+  if(type==='utility'||type==='archive') return {label:'Unique content',points:0,status:'info',detail:'Exempt ('+type+' page) · '+words+' unique words',why,fix:''};
+  const full=CONTENT_FULL[type]||500, frac=Math.max(0,Math.min(1,(words-100)/(full-100)));
+  return {label:'Unique content',points:25,frac,status:frac>=1?'pass':frac<=0?'fail':'warn',
+    detail:words+' words unique to this page (full credit at '+full+'+'+(strippedAcrossSite?', site-wide boilerplate removed)':', header/nav/footer removed)'),
+    why, fix:'Add genuinely useful, page-specific content — what the service involves, pricing factors, the areas and roads you cover, FAQs — aiming for '+full+'+ words that are not repeated on other pages.'};
+}
+function localDetailCheck(ents, compared){
+  const n=ents.length, frac=Math.min(1,n/12);
+  return {label:'Local detail',points:10,frac,status:frac>=1?'pass':n===0?'fail':'warn',
+    detail:n+' named road'+(n===1?'':'s')+'/routes/exits/landmarks'+(compared?' unique to this page':'')+(n?': '+ents.slice(0,8).join(', ')+(n>8?'…':''):''),
+    why:'A location page earns its place by proving local knowledge: the roads, highway exits and landmarks of that town. Pages that just swap the city name into the same template look like doorway pages to Google.',
+    fix:'Name the specific roads, highway exits, landmarks and neighborhoods you serve in this town (12+), in real sentences — not a copy of another city page.'};
+}
+
 async function auditOne(raw, prefetchedHtml){
   let url=raw.trim();
   if(!/^https?:\/\//i.test(url)) url='https://'+url;
@@ -274,6 +391,11 @@ async function auditOne(raw, prefetchedHtml){
   const ld=ldNodes(doc);
   const biz=businessSchema(ld);
   const selfReview=selfServingReview(ld);
+  const pageType=classifyPage(url, ld);
+  const blocks=mainContent(doc);
+  const mainText=blocks.join('\n');
+  const mainWords=countWords(mainText);
+  const entities=pageType==='location'?localEntities(mainText):[];
   // AI-search / rich-result signals
   const hasFaq = /FAQPage|QAPage|Question/i.test(schemaStr) || /"@type"\s*:\s*"(FAQPage|QAPage|Question)"/i.test(html);
   const hasOrg = schemaTypes.some(t=>/Organization|LocalBusiness|AutoRepair|AutomotiveBusiness|Store|ProfessionalService|HomeAndConstructionBusiness|EmergencyService/i.test(t));
@@ -318,7 +440,9 @@ async function auditOne(raw, prefetchedHtml){
     'The H1 is the big headline on the page. None means Google cannot tell what the page is about; several muddy the signal and can look spammy.',
     h1.length===0?'Add a single visible <h1> with your main service + city.':'Keep one <h1> and demote the others to <h2>.');
   add(CONTENT,'Uses subheadings (H2)',3, h2.length>0?'pass':'warn',h2.length+' H2 tag(s)','Subheadings make the page easy to skim for customers and easy to understand for search engines and AI.','Break content into sections with descriptive H2 headings.');
-  add(CONTENT,'Sufficient content',5, words>=250?'pass':'warn',words+' words of visible text','Thin pages rarely rank. Google rewards pages that actually answer what the visitor came for.','Add genuinely useful content — services, areas served, FAQs — aiming for 300+ words.');
+  checks.push(Object.assign({cat:CONTENT}, uniqueContentCheck(pageType, mainWords, false)));
+  checks.push({cat:CONTENT,label:'Unique vs sibling pages',points:0,status:'info',detail:'Compared against the site\'s other pages in a whole-site crawl',why:'',fix:''});
+  if(pageType==='location') checks.push(Object.assign({cat:LOCAL}, localDetailCheck(entities, false)));
 
   add(TECH,'Served over HTTPS',9, ssl?'pass':'fail', ssl?'Secure':'Not secure','The padlock in the browser bar. Google ranks secure sites higher and browsers scare visitors away from sites without it.','Install an SSL certificate (free via Let\'s Encrypt or your host) and force HTTPS.');
   add(TECH,'Mobile viewport set',7, viewport?'pass':'fail', viewport?'Configured':'Missing','Without this the site looks broken on phones — and Google judges your site by its phone version first.','Add <meta name="viewport" content="width=device-width, initial-scale=1">.');
@@ -375,11 +499,15 @@ async function auditOne(raw, prefetchedHtml){
     'Google can render JavaScript, but AI answer engines (ChatGPT, Perplexity, Google AI Overviews) and many crawlers do NOT. If your content only appears after JavaScript runs, they see a near-empty page and cannot read or recommend you.',
     'Serve your main content, headings and business info in the initial HTML via server-side rendering (SSR), static generation, or prerendering.');
 
-  return { url, domain:o.hostname, origin, timestamp:new Date().toLocaleString(), ssl, checks, tracking, schemaTypes,
+  const result={ url, domain:o.hostname, origin, timestamp:new Date().toLocaleString(), ssl, checks, tracking, schemaTypes,
     title, h1text:(h1[0]&&h1[0].textContent||'').trim(), desc, words, jsShell, loadMs,
     bodySig:bodyText.slice(0,600).replace(/\s+/g,' ').toLowerCase().trim(),
+    pageType, mainWords, entities,
     stats:{images:imgs.length, scripts:doc.querySelectorAll('script').length, stylesheets:doc.querySelectorAll('link[rel="stylesheet"]').length, sizeKb, words},
     aux:{robots:null,sitemap:null}, _origin:origin };
+  // Main-content text blocks for the crawl's cross-page analysis — kept out of JSON (saved reports, API results).
+  Object.defineProperty(result,'_blocks',{value:blocks,enumerable:false,writable:true,configurable:true});
+  return result;
 }
 
 async function addAux(r){
@@ -496,7 +624,7 @@ function score(r){
     if(c.status==='pass')counts.pass++; else if(c.status==='warn')counts.warn++; else if(c.status==='fail')counts.fail++;
     if(c.status==='info'||!c.points) return;
     scored++;
-    const w= c.status==='pass'?1: c.status==='warn'?0.5:0;
+    const w= c.frac!=null ? c.frac : c.status==='pass'?1: c.status==='warn'?0.5:0; // frac = partial credit
     earned+=c.points*w; total+=c.points;
     if(!byCat[c.cat])byCat[c.cat]={e:0,t:0};
     byCat[c.cat].e+=c.points*w; byCat[c.cat].t+=c.points;
@@ -550,8 +678,60 @@ function crossPageIssues(pages){
   const stop=['home','page','service','services','ohio','near','the','and','for','with','your'];
   const mismatch=pages.filter(p=>{ if(!p.title||!p.bodySig)return false; const ws=norm(p.title).split(/[^a-z0-9]+/).filter(w=>w.length>=4&&stop.indexOf(w)<0); if(!ws.length)return false; return ws.filter(w=>p.bodySig.indexOf(w)>=0).length/ws.length < 0.34; }).map(p=>p.url);
   return { duplicateTitles:group('title'), duplicateH1:group('h1text'), duplicateBodies:bodyGroups, titleBodyMismatch:mismatch,
-    thin:pages.filter(p=>p.words!=null&&p.words<250).map(p=>({url:p.url,words:p.words})),
+    thin:pages.filter(p=>p.pageType!=='utility'&&p.pageType!=='archive'&&(p.uniqueWords!=null?p.uniqueWords:p.words)<250).map(p=>({url:p.url,words:p.uniqueWords!=null?p.uniqueWords:p.words})),
     jsRendered:pages.filter(p=>p.jsShell).map(p=>p.url), missingH1:pages.filter(p=>!p.h1text).map(p=>p.url) };
+}
+// Cross-page content analysis — what one page alone cannot show:
+//  - hub pages (a directory page with its own sub-pages) are told apart from the pages under them;
+//  - boilerplate: a text block on >50% of a URL group's pages (first path segment; flat URLs share one group), or
+//    on >50% of all pages, is template, not content — "Unique content" is re-measured without it;
+//  - near-duplicates: 5-word shingles, Jaccard, against every other non-utility page;
+//  - local detail on a location page counts only entities no other location page names.
+const NEAR_DUP=0.8;
+function crossPageContent(pages){
+  const N=pages.length;
+  const pathOf=u=>{ try{ return new URL(u).pathname.replace(/\/+$/,'').toLowerCase(); }catch(e){ return ''; } };
+  pages.forEach(p=>{ const me=pathOf(p.url); if(!me || p.pageType==='home') return;
+    const kids=pages.filter(q=>q!==p && pathOf(q.url).indexOf(me+'/')===0).length;
+    if(kids>=2 && (p.pageType==='service'||p.pageType==='location'||p.pageType==='other')) p.pageType='hub'; });
+  const groupOf=p=>{ const s=pathSegs(p.url); return s.length>=2?s[0]:'/'; };
+  const groupSize={}, inGroup={}, inSite={};
+  pages.forEach(p=>{ const g=groupOf(p); groupSize[g]=(groupSize[g]||0)+1;
+    p._bh=[...new Set((p._blocks||[]).map(b=>fnv(normBlock(b))))];
+    p._bh.forEach(h=>{ const k=g+'|'+h; inGroup[k]=(inGroup[k]||0)+1; inSite[h]=(inSite[h]||0)+1; }); });
+  const isBoiler=(p,h)=>{ const g=groupOf(p), gs=groupSize[g];
+    return (gs>=3 && inGroup[g+'|'+h]>gs*0.5) || (N>=3 && inSite[h]>N*0.5); };
+  pages.forEach(p=>{
+    const seen=new Set(), own=[];
+    (p._blocks||[]).forEach(b=>{ const h=fnv(normBlock(b)); if(seen.has(h)) return; seen.add(h); if(!isBoiler(p,h)) own.push(b); });
+    p._ownText=own.join('\n'); p.uniqueWords=countWords(p._ownText);
+    p._sh=shingles(countWords(p._ownText)>=30?p._ownText:(p._blocks||[]).join('\n'));
+  });
+  const pool=pages.filter(p=>p.pageType!=='utility');
+  const pairs=[];
+  pool.forEach((p,i)=>{ p._maxSim=0; p._simWith=null; });
+  for(let i=0;i<pool.length;i++) for(let j=i+1;j<pool.length;j++){
+    const a=pool[i], b=pool[j], s=jaccard(a._sh,b._sh);
+    if(s>a._maxSim){ a._maxSim=s; a._simWith=b.url; } if(s>b._maxSim){ b._maxSim=s; b._simWith=a.url; }
+    if(s>=NEAR_DUP) pairs.push({a:a.url,b:b.url,similarity:Math.round(s*100)/100});
+  }
+  const locs=pages.filter(p=>p.pageType==='location');
+  const entCount={}; locs.forEach(p=>(p.entities||[]).forEach(e=>{ entCount[e]=(entCount[e]||0)+1; }));
+  const setCheck=(p,label,cat,chk)=>{ const i=p.checks.findIndex(c=>c.label===label); const c=Object.assign({cat},chk); if(i>=0) p.checks[i]=c; else p.checks.push(c); };
+  pages.forEach(p=>{
+    setCheck(p,'Unique content','On-Page Content',uniqueContentCheck(p.pageType,p.uniqueWords,true));
+    if(p.pageType==='utility') setCheck(p,'Unique vs sibling pages','On-Page Content',{label:'Unique vs sibling pages',points:0,status:'info',detail:'Exempt (utility page)',why:'',fix:''});
+    else { const sim=p._maxSim||0, frac=1-sim, rel=p._simWith?(p._simWith.replace(/^https?:\/\/[^/]+/,'')||'/'):'';
+      setCheck(p,'Unique vs sibling pages','On-Page Content',{label:'Unique vs sibling pages',points:15,frac,status:sim<0.2?'pass':sim>=NEAR_DUP?'fail':'warn',
+        detail:Math.round(sim*100)+'% overlap with its closest sibling'+(rel?' ('+rel+')':''),
+        why:'Pages that repeat another page\'s text (the same template with the city or service swapped) compete with each other and look like doorway pages; Google picks one and ignores the rest.',
+        fix:'Rewrite this page so most of its text is specific to it — its own service details, local specifics and FAQs — instead of the shared template.'}); }
+    if(p.pageType==='location'){ const own=(p.entities||[]).filter(e=>entCount[e]===1);
+      setCheck(p,'Local detail','Local SEO',localDetailCheck(own,true)); }
+    else { const i=p.checks.findIndex(c=>c.label==='Local detail'); if(i>=0) p.checks.splice(i,1); }
+    p.bodySig=String(p._ownText||'').slice(0,600).replace(/\s+/g,' ').toLowerCase().trim();
+  });
+  return { nearDuplicates:pairs };
 }
 async function crawlSite(root, opts){
   opts=opts||{}; const max=opts.max||150, conc=opts.concurrency||5, onProgress=opts.onProgress||function(){};
@@ -575,7 +755,10 @@ async function crawlSite(root, opts){
     catch(e){ pages.push({ url:u, error:(e&&e.reason)||(e&&e.message)||'failed' }); }
     done++; onProgress(done, disc.urls.length, u); } }
   const pool=[]; for(let w=0; w<conc; w++) pool.push(worker()); await Promise.all(pool);
-  const ok=pages.filter(p=>!p.error); const scored=ok.filter(p=>p._score&&p._score.score!=null);
+  const ok=pages.filter(p=>!p.error);
+  const content=crossPageContent(ok);
+  ok.forEach(p=>{ p._score=score(p); });
+  const scored=ok.filter(p=>p._score&&p._score.score!=null);
   const siteScore=scored.length?Math.round(scored.reduce((a,p)=>a+p._score.score,0)/scored.length):null;
   const times=ok.map(p=>p.loadMs).filter(v=>v!=null);
   let perf=null;
@@ -593,7 +776,9 @@ async function crawlSite(root, opts){
         : { found:false, query:bizName };
     }catch(e){ local=null; }
   }
-  return { root:disc.base, siteScore, perf, local, crossPage:crossPageIssues(ok), pages,
+  const crossPage=Object.assign(crossPageIssues(ok), content);
+  ok.forEach(p=>{ delete p._blocks; delete p._bh; delete p._sh; delete p._ownText; delete p._simWith; }); // working data, not results
+  return { root:disc.base, siteScore, perf, local, crossPage, pages,
     coverage:{ discovered:disc.total, audited:ok.length, failed:pages.length-ok.length, capped:disc.capped, cap:max, via:disc.via, rendered:rendered, renderAvailable:!!render } };
 }
 function aiExplainerHTML(){

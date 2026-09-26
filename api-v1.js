@@ -152,7 +152,7 @@ function summarize(res) {
       return out;
     }).filter(Boolean).sort((a, b) => SEV_RANK[a.severity] - SEV_RANK[b.severity]);
     return { url: p.url, path: relPath(p.url), title: p.title || null, grade: sc.grade || gradeOf(sc.score), score: sc.score == null ? null : sc.score,
-      words: p.words == null ? null : p.words, response_ms: p.loadMs == null ? null : p.loadMs, js_rendered: !!p.jsShell, issues };
+      words: p.words == null ? null : p.words, page_type: p.pageType || null, unique_words: p.uniqueWords == null ? null : p.uniqueWords, response_ms: p.loadMs == null ? null : p.loadMs, js_rendered: !!p.jsShell, issues };
   }).sort((a, b) => ((a.score == null ? 101 : a.score) - (b.score == null ? 101 : b.score)) || (b.issues.length - a.issues.length));
 
   const failed = all.filter(p => p.error).map(p => ({ url: p.url, path: relPath(p.url), title: null, grade: null, score: null, error: String(p.error),
