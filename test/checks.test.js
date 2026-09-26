@@ -82,3 +82,46 @@ test('Site findings deduct from their component: fail = full points, warn = half
   _x.applyDeductions(comps, [{ component: 'technical', status: 'fail', points: 6, label: 'a' }, { component: 'technical', status: 'warn', points: 4, label: 'b' }, { component: 'linkHealth', status: 'pass', points: 5, label: 'c' }]);
   assert.strictEqual(comps.technical.score, 82); assert.strictEqual(comps.linkHealth.score, 100);
 });
+
+// ---------------- Phase 3 — on-page ----------------
+test('Title quality: stacked/trailing separators or missing place fail; clean money-page title passes', () => {
+  const { _x } = engine();
+  const bad = _x.titleQualityCheck('Gallery | Broad & James | Towing | Roadside Assistance | Columbus |', 'https://t/gallery/', 'other');
+  assert.strictEqual(bad.status, 'fail'); assert.match(bad.detail, /separators/); assert.match(bad.evidence[0].snippet, /<title>/);
+  assert.strictEqual(_x.titleQualityCheck('Roadside Assistance | Co', 'https://t/service-area/dublin', 'location').status, 'fail');
+  assert.strictEqual(_x.titleQualityCheck('Towing Dublin OH | Roadside Towing', 'https://t/service-area/dublin', 'location').status, 'pass');
+  assert.ok(_x.titlePixels('W'.repeat(40)) > 580);
+});
+
+test('Specific H1: "GALLERY" / "PAY NOW" fail; a descriptive H1 passes', () => {
+  const { _x } = engine();
+  assert.strictEqual(_x.genericH1Check('GALLERY').status, 'fail');
+  assert.strictEqual(_x.genericH1Check(' Pay Now ').status, 'fail');
+  assert.strictEqual(_x.genericH1Check('24/7 Towing in Dublin, OH').status, 'pass');
+});
+
+test('Meta description equal to title warns; distinct passes', () => {
+  const { _x } = engine();
+  assert.strictEqual(_x.descEqualsTitleCheck('Towing | Co', 'towing | co').status, 'warn');
+  assert.strictEqual(_x.descEqualsTitleCheck('Towing | Co', '24/7 towing in Columbus. Call now.').status, 'pass');
+});
+
+test('Generic anchors: "Read more" to a service page warns; descriptive anchor passes', () => {
+  const { _x } = engine();
+  assert.strictEqual(_x.genericAnchorCheck([{ url: 'https://t/services/flatbed-towing', text: 'Read more', href: '/services/flatbed-towing' }]).status, 'warn');
+  assert.strictEqual(_x.genericAnchorCheck([{ url: 'https://t/services/flatbed-towing', text: 'Flatbed towing', href: '/services/flatbed-towing' }]).status, 'pass');
+  assert.strictEqual(_x.genericAnchorCheck([{ url: 'https://t/blog/post', text: 'Read more', href: '/blog/post' }]).status, 'pass', 'blog links are not money pages');
+});
+
+test('Link health: weakly linked money pages deduct 1 each; internal nofollow warns', () => {
+  const { _x } = engine();
+  const pages = [{ url: 'https://t/services/a', pageType: 'service', inlinks: 1, clickDepth: 2, _anchors: [{ href: '/x', text: 'x', nofollow: true }] },
+    { url: 'https://t/services/b', pageType: 'service', inlinks: 9, clickDepth: 5, _anchors: [] }, { url: 'https://t/services/c', pageType: 'service', inlinks: 9, clickDepth: 1, _anchors: [] }];
+  const f = _x.onPageLinkFindings(pages);
+  const weak = f.find(x => x.label === 'Money pages well linked');
+  assert.strictEqual(weak.status, 'fail'); assert.strictEqual(weak.points, 2); assert.strictEqual(weak.evidence.length, 2);
+  assert.strictEqual(f.find(x => x.label === 'No internal nofollow links').status, 'warn');
+  const clean = _x.onPageLinkFindings([pages[2]]);
+  assert.strictEqual(clean.find(x => x.label === 'Money pages well linked').status, 'pass');
+  assert.strictEqual(clean.find(x => x.label === 'No internal nofollow links').status, 'pass');
+});

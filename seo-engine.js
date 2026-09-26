@@ -615,6 +615,10 @@ async function auditOne(raw, prefetchedHtml){
   checks.push(Object.assign({cat:TECH}, viewportZoomCheck(doc)));
   checks.push(Object.assign({cat:CONTENT}, headingHierarchyCheck(doc)));
   checks.push(Object.assign({cat:INDEX}, soft404Check(pageType, title, (h1[0]&&h1[0].textContent||'').trim(), mainWords)));
+  checks.push(Object.assign({cat:CONTENT}, titleQualityCheck(title, url, pageType)));
+  checks.push(Object.assign({cat:CONTENT}, genericH1Check(h1[0]&&h1[0].textContent)));
+  checks.push(Object.assign({cat:CONTENT}, descEqualsTitleCheck(title, desc)));
+  checks.push(Object.assign({cat:CONTENT}, genericAnchorCheck(anchors)));
   add(PERF,'Limited render-blocking scripts',3, blocking<=3?'pass':'warn', blocking+' blocking script(s) in head','Scripts loaded the wrong way make visitors stare at a blank screen longer before your page appears.','Add async or defer to non-critical head scripts.');
 
   // ---- AI SEARCH / ANSWER ENGINES ----
@@ -1209,6 +1213,72 @@ async function measureAssets(pages, cap){
     p.assetBytes={ js:m.js, css:m.css, img:m.img };
   }
 }
+// ---------- Phase 3 — on-page ----------
+// Approximate pixel width of a title in Google's results (Arial ~20px); Google truncates around 580–600px.
+function titlePixels(t){ let w=0; for(const ch of String(t)){
+  if(/[iljI.,:;|!'’`]/.test(ch)) w+=5.6; else if(/[mwMW@]/.test(ch)) w+=16.7; else if(/[A-Z]/.test(ch)) w+=13.3; else if(/[0-9]/.test(ch)) w+=11.1;
+  else if(ch===' ') w+=5.6; else if(/[frt]/.test(ch)) w+=6.7; else w+=10; } return Math.round(w); }
+const RE_TITLE_SEP=/\s[-–—|•·:]\s|\s?[|•·]\s?/g;
+// The service or place a money page is about, from its URL slug ("/services/flatbed-towing" -> flatbed, towing).
+function slugTerms(u, type){
+  const last=(pathSegs(u).pop()||'').replace(/\.(html?|php)$/,'').replace(RE_STATE_SLUG,'');
+  const stop=/^(and|the|for|with|near|in|of|a|to|service|services|our|oh|page)$/;
+  const words=last.split('-').filter(w=>w.length>=3&&!stop.test(w));
+  return type==='location'?[words.join(' ')].filter(Boolean):words;
+}
+function titleQualityCheck(title, url, type){
+  const t=String(title||'').trim();
+  if(!t) return { label:'Title quality', points:0, status:'info', detail:'No title (see Title tag present)', evidence:[], why:'', fix:'' };
+  const seps=(t.match(RE_TITLE_SEP)||[]).length, trailing=/[-–—|•·:]\s*$/.test(t), px=titlePixels(t);
+  const money=type==='service'||type==='location', terms=money?slugTerms(url,type):[];
+  const missing=money&&terms.length&&!terms.some(w=>t.toLowerCase().includes(w.toLowerCase()));
+  const probs=[];
+  if(missing) probs.push({ s:'fail', t:'does not name the '+(type==='location'?'place ('+terms[0]+')':'service ('+terms.join(' ')+')') });
+  if(seps>=3) probs.push({ s:'fail', t:seps+' separators' });
+  if(trailing) probs.push({ s:'fail', t:'ends with a separator' });
+  if(px>580) probs.push({ s:'warn', t:'~'+px+'px wide (Google cuts at ~580px)' });
+  const st=probs.some(p=>p.s==='fail')?'fail':probs.length?'warn':'pass';
+  return { label:'Title quality', points:4, status:st, detail:st==='pass'?('"'+snip(t,70)+'" · ~'+px+'px'):('Title '+probs.map(p=>p.t).join(', ')),
+    evidence:st==='pass'?[]:[{ snippet:'<title>'+snip(t,120)+'</title>' }],
+    why:'The title is the headline in Google. On a money page it has to name the service or the town, once, and fit on screen.',
+    fix:money?'Lead with the '+(type==='location'?'service + town':'service')+', then the brand once: "'+(type==='location'?'Towing in '+(terms[0]||'Town'):(terms.join(' ')||'Service'))+' | Brand" — at most two separators.':'Keep one or two separators and under ~580px (≈55 characters).' };
+}
+const GENERIC_H1=/^(gallery|contact( us)?|inquire|services|pay now|home|about( us)?|blog|welcome|untitled|page)$/i;
+function genericH1Check(h1){
+  const t=String(h1||'').replace(/\s+/g,' ').trim();
+  if(!t) return { label:'Specific H1', points:0, status:'info', detail:'No H1 (see Exactly one H1 heading)', evidence:[], why:'', fix:'' };
+  const bad=GENERIC_H1.test(t);
+  return { label:'Specific H1', points:3, status:bad?'fail':'pass', detail:bad?('H1 is just "'+t+'"'):('H1: "'+snip(t,70)+'"'), evidence:bad?[{ snippet:'<h1>'+t+'</h1>' }]:[],
+    why:'A one-word H1 like "Gallery" or "Contact" tells Google and AI nothing about the business, service or town.',
+    fix:'Rewrite the H1 to say what the page offers and where, e.g. "Towing & Auto Repair Photos — Columbus, OH".' };
+}
+function descEqualsTitleCheck(title, desc){
+  const same=title&&desc&&title.trim().toLowerCase()===desc.trim().toLowerCase();
+  return { label:'Meta description differs from title', points:1, status:same?'warn':'pass', detail:same?'The meta description repeats the title':'Distinct title and description',
+    evidence:same?[{ snippet:'<meta name="description" content="'+snip(desc,100)+'">' }]:[], why:'A description that repeats the title wastes the second line of your Google listing.', fix:'Write a description that adds the offer, the area and a reason to call.' };
+}
+const RE_GENERIC_ANCHOR=/^(click here|read more|learn more|more|here|details|view more|see more|find out more|more info|continue reading|click)$/i;
+function genericAnchorCheck(anchors){
+  const bad=anchors.filter(a=>RE_GENERIC_ANCHOR.test(a.text||'') && /^(service|location)$/.test(classifyPage(a.url,[])));
+  return { label:'Descriptive links to money pages', points:1, status:bad.length?'warn':'pass',
+    detail:bad.length?(bad.length+' link'+(bad.length===1?'':'s')+' to service/location pages say only "'+bad[0].text+'"'):'Links to service/location pages use descriptive text',
+    evidence:bad.slice(0,5).map(a=>({ snippet:'<a href="'+a.href+'">'+a.text+'</a>' })),
+    why:'Anchor text tells Google what the linked page is about. "Click here" wastes that signal on your most important pages.', fix:'Use the service or town as the link text, e.g. "flatbed towing" or "towing in Dublin".' };
+}
+// Link health: weakly linked money pages and internal nofollow.
+function onPageLinkFindings(ok){
+  const out=[], money=ok.filter(p=>p.pageType==='service'||p.pageType==='location');
+  const weak=money.filter(p=>p.inlinks<3||(p.clickDepth!=null&&p.clickDepth>3)||p.clickDepth==null);
+  out.push(finding('linkHealth','Money pages well linked',weak.length,weak.length?'fail':'pass',
+    weak.length?(weak.length+' service/location page'+(weak.length===1?' has':'s have')+' <3 internal links or sit >3 clicks deep (−1 each)'):'Every service/location page has 3+ internal links and is ≤3 clicks from home',
+    weak.map(p=>({ url:p.url, snippet:p.inlinks+' inlink'+(p.inlinks===1?'':'s')+' · '+(p.clickDepth==null?'not reachable from the homepage':'depth '+p.clickDepth) })),
+    'Link each service and town page from the homepage or the main menu/hub page, and from related pages.'));
+  const nf=[]; ok.forEach(p=>(p._anchors||[]).filter(a=>a.nofollow).forEach(a=>nf.push({ url:p.url, snippet:'<a href="'+a.href+'" rel="nofollow">'+snip(a.text,40)+'</a>' })));
+  out.push(finding('linkHealth','No internal nofollow links',4,nf.length?'warn':'pass',nf.length?(nf.length+' internal link'+(nf.length===1?' is':'s are')+' rel="nofollow"'):'No internal links use nofollow',nf,
+    'Remove rel="nofollow" from links to your own pages — it stops them passing ranking value.'));
+  return out;
+}
+
 // Link graph facts per page: click depth from the homepage (BFS over audited pages' links), inlink count and the
 // anchor texts used; plus the full redirect chain for every redirecting URL met (hops, loops, final URL).
 function crawlGraph(pages, base, redirected, keyOf){
@@ -1326,7 +1396,7 @@ async function crawlSiteRun(root, opts){
   // image checks.
   await measureAssets([home].concat(money, ok).filter((p,i,a)=>p&&a.indexOf(p)===i), 400);
   // Page checks that need the whole crawl, then page scores.
-  ok.forEach(p=>{ setPageCheck(p,'Soft 404',soft404Check(p.pageType,p.title,p.h1text,p.uniqueWords!=null?p.uniqueWords:p.mainWords)); applyGates(p); p._score=score(p); });
+  ok.forEach(p=>{ setPageCheck(p,'Title quality',titleQualityCheck(p.title,p.url,p.pageType)); setPageCheck(p,'Soft 404',soft404Check(p.pageType,p.title,p.h1text,p.uniqueWords!=null?p.uniqueWords:p.mainWords)); applyGates(p); p._score=score(p); });
   const scored=ok.filter(p=>p._score&&p._score.score!=null);
   const pageAverage=scored.length?Math.round(scored.reduce((a,p)=>a+p._score.score,0)/scored.length):null;
   const aux={ origin:home.origin, checks:[] };
@@ -1349,6 +1419,7 @@ async function crawlSiteRun(root, opts){
   const ctx={ ok, home, money, disc, graph, keyOf, robots:aux._robotsTxt, speedRuns, sources, statusOf, opts };
   const siteFindings=[];
   try{ siteFindings.push(...await technicalFindings(ctx)); }catch(e){}
+  siteFindings.push(...onPageLinkFindings(ok));
   phase('scoring');
   const technical=technicalScore(aux.checks, speedRuns);
   const coverage=coverageScore(ok);
@@ -1757,7 +1828,7 @@ const API={ BRAND, PROXIES, TAGS, AI_BOTS, AISEARCH, PROJECT_FIXES, sleep, esc, 
   // building blocks, exposed for tests
   classifyPage, mainContent, localEntities, countClaims, h1Glued, smsLabelTelLinks, businessSchema, ldNodes, AI_SEARCH_BOTS, AI_TRAINING_BOTS,
   // individual checks, for unit tests
-  _x:{ soft404Check, viewportZoomCheck, headingHierarchyCheck, imageCheck, weightCheck, pageAssets, robotsRulesFor, robotsAllowed, chainOf, technicalFindings, applyDeductions } };
+  _x:{ soft404Check, viewportZoomCheck, headingHierarchyCheck, imageCheck, weightCheck, pageAssets, robotsRulesFor, robotsAllowed, chainOf, technicalFindings, applyDeductions, titleQualityCheck, titlePixels, genericH1Check, descEqualsTitleCheck, genericAnchorCheck, onPageLinkFindings } };
 root.SEO=API;
 if(typeof module!=="undefined"&&module.exports) module.exports=API;
 })(typeof window!=="undefined"?window:globalThis);
