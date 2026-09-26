@@ -609,7 +609,12 @@ async function auditOne(raw, prefetchedHtml){
   add(MEDIA,'Images have dimensions',2, !imgs.length?'pass':(withDim/Math.max(1,imgs.length)>=0.6?'pass':'warn'),
     imgs.length?(withDim+' of '+imgs.length+' images set width/height'):'n/a','Telling the browser each image size stops the page from jumping around as it loads (something Google measures and dislikes).','Add width and height attributes to images.');
 
-  add(PERF,'Reasonable page weight',3, sizeKb<500?'pass':'warn', sizeKb+' KB of HTML','A heavy page is slow to appear, especially on phones and slower connections — and slow pages lose visitors.','Trim inline content and let the builder lazy-load below-the-fold sections.');
+  const assets=pageAssets(doc, url);
+  checks.push(Object.assign({cat:PERF}, weightCheck(bytes, assets, null)));
+  checks.push(Object.assign({cat:MEDIA}, imageCheck(assets, null)));
+  checks.push(Object.assign({cat:TECH}, viewportZoomCheck(doc)));
+  checks.push(Object.assign({cat:CONTENT}, headingHierarchyCheck(doc)));
+  checks.push(Object.assign({cat:INDEX}, soft404Check(pageType, title, (h1[0]&&h1[0].textContent||'').trim(), mainWords)));
   add(PERF,'Limited render-blocking scripts',3, blocking<=3?'pass':'warn', blocking+' blocking script(s) in head','Scripts loaded the wrong way make visitors stare at a blank screen longer before your page appears.','Add async or defer to non-critical head scripts.');
 
   // ---- AI SEARCH / ANSWER ENGINES ----
@@ -645,6 +650,7 @@ async function auditOne(raw, prefetchedHtml){
   // Raw HTML and anchor details stay available to the crawl's checks but out of saved results.
   Object.defineProperty(result,'_html',{value:html,enumerable:false,writable:true,configurable:true});
   Object.defineProperty(result,'_anchors',{value:anchors,enumerable:false,writable:true,configurable:true});
+  Object.defineProperty(result,'_assets',{value:assets,enumerable:false,writable:true,configurable:true});
   return result;
 }
 
@@ -652,6 +658,7 @@ async function addAux(r){
   // best-effort robots.txt + sitemap + AI-crawler + llms.txt, never fail the audit
   const INDEX='Indexability & Crawlability';
   const robots=await fetchAux(r.origin+'/robots.txt');
+  Object.defineProperty(r,'_robotsTxt',{value:robots,enumerable:false,writable:true,configurable:true});
   if(robots===null){
     r.checks.push({cat:INDEX,label:'robots.txt present',points:0,status:'info',detail:'Could not verify (fetch blocked)',why:'',fix:''});
     r.checks.push({cat:AISEARCH,label:'AI search crawlers allowed',points:0,status:'info',detail:'Could not verify robots.txt',why:'',fix:''});
@@ -694,6 +701,10 @@ async function addAux(r){
 }
 
 // ---- Google PageSpeed Insights (real load speed, mobile + desktop) ----
+// Chrome UX Report field data as PageSpeed returns it (real users; absent for low-traffic sites).
+function cruxOf(le){ if(!le||!le.metrics) return null; const m=le.metrics, p=k=>m[k]&&m[k].percentile!=null?m[k].percentile:null;
+  const cls=p('CUMULATIVE_LAYOUT_SHIFT_SCORE');
+  return { category:le.overall_category||null, lcp:p('LARGEST_CONTENTFUL_PAINT_MS'), inp:p('INTERACTION_TO_NEXT_PAINT'), cls:cls==null?null:cls/100 }; }
 async function fetchPSI(url, strategy, key){
   let api=`https://www.googleapis.com/pagespeedonline/v5/runPagespeed?url=${encodeURIComponent(url)}&strategy=${strategy}&category=performance`;
   if(key) api+=`&key=${encodeURIComponent(key)}`;
@@ -713,7 +724,8 @@ async function fetchPSI(url, strategy, key){
       cls: a['cumulative-layout-shift']?a['cumulative-layout-shift'].numericValue:null,
       clsTxt: a['cumulative-layout-shift']?a['cumulative-layout-shift'].displayValue:null,
       tbtTxt: a['total-blocking-time']?a['total-blocking-time'].displayValue:null,
-      field: j.loadingExperience&&j.loadingExperience.overall_category?j.loadingExperience.overall_category:null
+      field: j.loadingExperience&&j.loadingExperience.overall_category?j.loadingExperience.overall_category:null,
+      fieldData: { url:cruxOf(j.loadingExperience), origin:cruxOf(j.originLoadingExperience) }
     };
   }catch(e){ return {error:e.name==='AbortError'?'timeout':'fetch failed'}; }
   finally{ clearTimeout(t); }
@@ -731,7 +743,7 @@ async function fetchPSIMedian(url, strategy, key){
   const sc=median(pick('score')), lcp=median(pick('lcp')), cls=median(pick('cls'));
   return { score:sc==null?null:Math.round(sc), lcp, cls,
     lcpTxt:lcp==null?null:(lcp/1000).toFixed(1)+' s', clsTxt:cls==null?null:String(Math.round(cls*1000)/1000),
-    field:(ok.find(x=>x.field)||{}).field||null, runs:ok.length, range:{ score:range('score'), lcp:range('lcp'), cls:range('cls') } };
+    field:(ok.find(x=>x.field)||{}).field||null, fieldData:(ok.find(x=>x.fieldData&&(x.fieldData.url||x.fieldData.origin))||{}).fieldData||null, runs:ok.length, range:{ score:range('score'), lcp:range('lcp'), cls:range('cls') } };
 }
 const psiRange=(m,k,fmt)=>{ const r=m.range&&m.range[k]; if(!r||m.runs<2) return ''; return ' · range '+fmt(r[0])+'–'+fmt(r[1])+' over '+m.runs+' runs'; };
 async function addSpeed(r, key){
@@ -985,6 +997,218 @@ function technicalScore(siteChecks, speedRuns){
   return { score:t?Math.round(e/t):50, parts };
 }
 
+// =====================================================================================================================
+// EXTENDED CHECKS. Every finding carries evidence (URL + exact snippet / selector / value); no evidence, no finding.
+// Page checks add to the page's points. Site checks ("site findings") deduct from one of the five site-level
+// components — each names its component: fail = full deduction, warn = half, info/pass = none.
+// =====================================================================================================================
+const kb=b=>b==null?'?':(b>=1048576?(b/1048576).toFixed(1)+' MB':Math.round(b/1024)+' KB');
+const snip=(t,n)=>{ t=String(t==null?'':t).replace(/\s+/g,' ').trim(); n=n||140; return t.length>n?t.slice(0,n-1)+'…':t; };
+// A site finding. component: technical | linkHealth | freshness | duplication | coverage.
+function finding(component, label, points, status, detail, evidence, fix, extra){
+  return Object.assign({ component, label, points, status, detail, evidence:(evidence||[]).slice(0,8), fix:fix||'' }, extra||{});
+}
+// Scripts, stylesheets and images a page loads (absolute URLs), plus inline JS size.
+function pageAssets(doc, url){
+  const abs=h=>{ try{ return h&&!/^data:/i.test(h)?new URL(h,url).href:null; }catch(e){ return null; } };
+  const uniq=a=>[...new Set(a.filter(Boolean))];
+  const scripts=uniq([...doc.querySelectorAll('script[src]')].map(s=>abs(s.getAttribute('src'))));
+  const css=uniq([...doc.querySelectorAll('link[rel~="stylesheet"][href]')].map(l=>abs(l.getAttribute('href'))));
+  const inlineJs=[...doc.querySelectorAll('script:not([src])')].filter(s=>!/json|template|html|text\/x-/i.test(s.getAttribute('type')||'')).reduce((a,s)=>a+(s.textContent||'').length,0);
+  const seen=new Set(), images=[];
+  [...doc.querySelectorAll('img')].forEach((im,i)=>{
+    const src=im.getAttribute('src')||im.getAttribute('data-src')||im.getAttribute('data-lazy-src')||''; const u=abs(src);
+    if(!u||seen.has(u)) return; seen.add(u);
+    images.push({ url:u, idx:i, lazy:(im.getAttribute('loading')||'').toLowerCase()==='lazy'||im.hasAttribute('data-src')||im.hasAttribute('data-lazy-src')||/\blazy/i.test(im.getAttribute('class')||'') });
+  });
+  return { scripts, css, images, inlineJs };
+}
+const RE_LEGACY_IMG=/\.(jpe?g|png|gif|bmp|tiff?)(\?|$)/i, RE_MODERN_IMG=/\.(webp|avif)(\?|$)/i;
+// Page weight: HTML + JS + CSS + images. Asset sizes are measured (crawl, key pages) or unknown (HTML-only estimate).
+function weightCheck(bytes, a, m){
+  const js=a.inlineJs+(m?m.js:0), total=bytes+(m?m.js+m.css+m.img:0), heavy=total>2e6||js>5e5;
+  return { label:'Reasonable page weight', points:3, status:heavy?'warn':'pass',
+    detail:m?('Total '+kb(total)+' (HTML '+kb(bytes)+' · JS '+kb(js)+' · CSS '+kb(m.css)+' · images '+kb(m.img)+')')
+            :('HTML '+kb(bytes)+' · inline JS '+kb(a.inlineJs)+' · '+a.scripts.length+' scripts, '+a.images.length+' images (asset sizes measured on key pages in a site crawl)'),
+    evidence:m&&m.top?m.top.map(x=>({ snippet:x.url+' — '+kb(x.bytes) })):[],
+    why:'Heavy pages load slowly on phones. Google measures real load speed, and visitors leave slow pages.',
+    fix:'Keep pages under ~2 MB and JavaScript under ~500 KB: compress images, drop unused plugins/scripts, defer the rest.' };
+}
+// Image efficiency: >150 KB images and old formats warn; eager images below the first screen are noted (info).
+function imageCheck(a, sizes){
+  const imgs=a.images;
+  if(!imgs.length) return { label:'Image efficiency', points:4, status:'pass', detail:'No images in the HTML', evidence:[], why:'', fix:'' };
+  const heavy=sizes?imgs.map(i=>({url:i.url, bytes:sizes[i.url]})).filter(x=>x.bytes>150*1024).sort((a,b)=>b.bytes-a.bytes):[];
+  const legacy=imgs.filter(i=>RE_LEGACY_IMG.test(i.url)||(!RE_MODERN_IMG.test(i.url)&&sizes&&sizes['ct:'+i.url]&&!/webp|avif|svg/i.test(sizes['ct:'+i.url])));
+  const eager=imgs.filter(i=>i.idx>=3&&!i.lazy);
+  const ev=heavy.slice(0,5).map(x=>({ snippet:x.url+' — '+kb(x.bytes) })).concat(heavy.length?[]:legacy.slice(0,5).map(x=>({ snippet:x.url })));
+  return { label:'Image efficiency', points:4, status:(heavy.length||legacy.length)?'warn':'pass',
+    detail:(sizes?heavy.length+' image'+(heavy.length===1?'':'s')+' over 150 KB · ':'')+legacy.length+' of '+imgs.length+' in JPG/PNG/GIF (not WebP/AVIF)'+(eager.length?' · '+eager.length+' below-the-fold image'+(eager.length===1?' is':'s are')+' not lazy-loaded (info)':''),
+    evidence:ev, why:'Images are usually most of a page\'s weight. Large JPG/PNG files slow the page on phones; WebP/AVIF are ~30–50% smaller.',
+    fix:'Convert photos to WebP/AVIF, resize them to the size they display at (under ~150 KB), and add loading="lazy" to images below the first screen.' };
+}
+function viewportZoomCheck(doc){
+  const v=doc.querySelector('meta[name="viewport"]'); const c=(v&&v.getAttribute('content')||'').toLowerCase();
+  const noScale=/user-scalable\s*=\s*(no|0)\b/.test(c), mx=(c.match(/maximum-scale\s*=\s*([\d.]+)/)||[])[1], lowMax=mx!=null&&parseFloat(mx)<2;
+  return { label:'Viewport allows zoom', points:2, status:(noScale||lowMax)?'warn':'pass', detail:v?('viewport: "'+snip(c,90)+'"'):'No viewport tag',
+    evidence:(noScale||lowMax)?[{ snippet:'<meta name="viewport" content="'+snip(c,120)+'">' }]:[],
+    why:'Blocking pinch-zoom fails accessibility guidelines and frustrates visitors who need to zoom.', fix:'Remove user-scalable=no and any maximum-scale below 2 from the viewport tag.' };
+}
+function headingHierarchyCheck(doc){
+  const hs=[...doc.querySelectorAll('h1,h2,h3,h4,h5,h6')].map(h=>({ lv:+h.tagName[1], t:snip(h.textContent,60) }));
+  for(let i=1;i<hs.length;i++){ if(hs[i].lv>hs[i-1].lv+1 && hs[i-1].lv>=1)
+    return { label:'Heading hierarchy', points:1, status:'warn', detail:'H'+hs[i-1].lv+' → H'+hs[i].lv+' skips a level', evidence:[{ snippet:'<h'+hs[i-1].lv+'>'+hs[i-1].t+'</h'+hs[i-1].lv+'> → <h'+hs[i].lv+'>'+hs[i].t+'</h'+hs[i].lv+'>' }],
+      why:'Headings are the page outline for search engines, AI and screen readers; skipped levels blur the structure.', fix:'Use headings in order (H2, then H3 under it) — style them with CSS instead of picking a smaller tag.' }; }
+  return { label:'Heading hierarchy', points:1, status:'pass', detail:hs.length+' headings in order', evidence:[], why:'', fix:'' };
+}
+const RE_NOT_FOUND=/\b(page\s+not\s+found|not\s+found|404|page\s+(can(no|’|')t|could\s*n[o’']t)\s+be\s+found|no\s+longer\s+available)\b/i;
+function soft404Check(type, title, h1, words){
+  if(type==='home'||type==='utility'||type==='archive') return { label:'Soft 404', points:0, status:'info', detail:'Not checked on '+type+' pages', evidence:[], why:'', fix:'' };
+  const msg=[title,h1].find(t=>RE_NOT_FOUND.test(t||''));
+  const bad=!!msg || words<50;
+  return { label:'Soft 404', points:4, status:bad?'fail':'pass',
+    detail:bad?(msg?'Returns 200 but says "'+snip(msg,80)+'"':'Returns 200 with only '+words+' words of its own'):'Real page ('+words+' words of its own)',
+    evidence:bad?[{ snippet:msg?('title/H1: "'+snip(msg,100)+'"'):(words+' unique words') }]:[],
+    why:'A page that answers 200 but is empty or says "not found" wastes crawl budget and can drag down how Google judges the site.',
+    fix:'Give the page real content, or return a proper 404/410 (or 301 it to the right page).' };
+}
+// robots.txt path matching (Google's rules: longest match wins, Allow wins ties; * and $ supported).
+function robotsRulesFor(robots, ua){
+  const groups=robotsGroups(robots||''); let mine=groups.filter(g=>g.agents.includes(ua.toLowerCase()));
+  if(!mine.length) mine=groups.filter(g=>g.agents.includes('*'));
+  return { allow:mine.flatMap(g=>g.allow).filter(Boolean), disallow:mine.flatMap(g=>g.disallow).filter(Boolean) };
+}
+function robotsAllowed(rules, path){
+  const re=p=>{ const end=p.endsWith('$'); const body=(end?p.slice(0,-1):p).split('*').map(x=>x.replace(/[.+?^${}()|[\]\\]/g,'\\$&')).join('.*'); return new RegExp('^'+body+(end?'$':'')); };
+  let a=-1,d=-1, rule=null;
+  rules.allow.forEach(p=>{ if(re(p).test(path)) a=Math.max(a,p.length); });
+  rules.disallow.forEach(p=>{ if(re(p).test(path)&&p.length>d){ d=p.length; rule=p; } });
+  return { allowed:d<0||a>=d, rule };
+}
+// Follow a URL's redirects one hop at a time (no auto-follow), up to 6 hops.
+async function chainOf(u){
+  const hops=[]; let cur=u;
+  for(let i=0;i<6;i++){
+    const c=await checkUrl(cur);
+    if(!c||!c.status||c.challenged) return { hops, end:cur, status:c&&c.status||0 };
+    if(c.status>=300&&c.status<400&&c.location){ hops.push({ from:cur, status:c.status, to:c.location });
+      if(hops.some(h=>sameUrl(h.from,c.location))) return { hops, end:c.location, loop:true }; cur=c.location; }
+    else return { hops, end:cur, status:c.status, canonical:c.canonical||null };
+  }
+  return { hops, end:cur, status:null, tooLong:true };
+}
+const chainText=ch=>ch.hops.map(h=>h.from+' → '+h.status).concat([ch.end+(ch.status?' ('+ch.status+')':'')]).join(' → ');
+
+// Phase 2 — technical site findings (all feed "technical").
+async function technicalFindings(ctx){
+  const out=[], { ok, home, disc, graph, keyOf, robots } = ctx;
+  // HTTP→HTTPS and www / non-www: one 301 hop to one canonical origin.
+  try{
+    const host=new URL(disc.base).hostname.replace(/^www\./,'');
+    const variants=['http://'+host+'/','http://www.'+host+'/','https://'+host+'/','https://www.'+host+'/'];
+    const chains=await Promise.all(variants.map(v=>chainOf(v)));
+    const live=chains.map((c,i)=>({ v:variants[i], c })).filter(x=>x.c.status||x.c.hops.length);
+    const finals=[...new Set(live.filter(x=>x.c.status===200).map(x=>{ try{ return new URL(x.c.end).origin; }catch(e){ return x.c.end; } }))];
+    const direct200=live.filter(x=>!x.c.hops.length&&x.c.status===200).map(x=>x.v);
+    const problems=[];
+    if(direct200.length>1) problems.push({ s:'fail', t:'Serves 200 on '+direct200.length+' variants', ev:direct200.map(v=>({ url:v, snippet:v+' → 200' })) });
+    live.forEach(x=>{ if(x.c.loop) problems.push({ s:'fail', t:'Redirect loop', ev:[{ url:x.v, snippet:chainText(x.c) }] });
+      else if(x.c.hops.length>1) problems.push({ s:'fail', t:'Chain of '+x.c.hops.length+' redirects', ev:[{ url:x.v, snippet:chainText(x.c) }] });
+      else if(x.c.hops.length===1 && x.c.hops[0].status!==301 && x.c.hops[0].status!==308) problems.push({ s:'warn', t:'Temporary ('+x.c.hops[0].status+') redirect', ev:[{ url:x.v, snippet:chainText(x.c) }] }); });
+    if(finals.length>1) problems.push({ s:'fail', t:'Variants end on different origins', ev:finals.map(f=>({ snippet:f })) });
+    const st=problems.some(p=>p.s==='fail')?'fail':problems.length?'warn':'pass';
+    out.push(finding('technical','HTTPS + www redirects',8,st,
+      st==='pass'?('All variants reach '+(finals[0]||disc.base)+' in one 301'):problems.map(p=>p.t).join(' · '),
+      st==='pass'?live.map(x=>({ url:x.v, snippet:chainText(x.c) })):problems.flatMap(p=>p.ev),
+      'Make http://, https://, www and non-www each 301 straight to the one canonical https origin — one hop, no chains.'));
+  }catch(e){}
+  // Redirect chains (> 1 hop) and loops met in the crawl.
+  const bad=(graph.chains||[]).filter(c=>c.loop||c.hops>1);
+  out.push(finding('technical','Redirect chains and loops',6,bad.length?'fail':'pass',
+    bad.length?(bad.length+' redirect'+(bad.length===1?'':'s')+' take more than one hop'+(bad.some(c=>c.loop)?' (including a loop)':'')):((graph.chains||[]).length+' internal redirects, all single-hop'),
+    bad.map(c=>({ url:c.from, snippet:c.chain.join(' → ')+(c.loop?' (loop)':'') })),
+    'Point every redirect straight at its final URL, and update internal links to the final URL.'));
+  // Duplicate URL variants answering 200 without pointing their canonical at the clean URL.
+  const sample=[home].concat(ctx.money.slice(0,4)).filter(Boolean);
+  const dupEv=[];
+  for(const p of sample){
+    let u; try{ u=new URL(p.url); }catch(e){ continue; }
+    const vs=[];
+    const slashless=u.pathname.length>1&&u.pathname.endsWith('/'), path=u.pathname;
+    if(path!=='/') vs.push(u.origin+(slashless?path.slice(0,-1):path+'/'));
+    if(/[a-z]/.test(path)&&path!=='/') vs.push(u.origin+path.toUpperCase());
+    vs.push(u.origin+(path.endsWith('/')?path:path+'/')+'index.html');
+    vs.push(u.origin+path+'?utm_source=seo-audit');
+    const res=await Promise.all(vs.map(v=>checkUrl(v)));
+    res.forEach((c,i)=>{ if(c&&c.status===200 && !(c.canonical&&sameUrl(c.canonical,p.url))) dupEv.push({ url:vs[i], snippet:vs[i]+' → 200'+(c.canonical?' (canonical → '+c.canonical+')':' (no canonical)') }); });
+  }
+  out.push(finding('technical','Duplicate URL variants',4,dupEv.length?'warn':'pass',
+    dupEv.length?(dupEv.length+' variant URL'+(dupEv.length===1?'':'s')+' answer 200 as separate pages'):'Variants redirect or point their canonical at the real URL',
+    dupEv,'301 trailing-slash, uppercase and /index.html variants to the real URL, and make every page\'s canonical point at its clean URL (so ?utm links fold into it).'));
+  // Sitemap quality.
+  const smUrls=disc.sitemapUrls||[];
+  if(smUrls.length){
+    const badSm=[];
+    for(const u of smUrls.slice(0,400)){ const c=await checkUrl(u); if(!c||!c.status||c.challenged) continue;
+      if(c.status!==200) badSm.push({ url:u, snippet:u+' → '+c.status+(c.location?' → '+c.location:'') });
+      else if(c.noindex) badSm.push({ url:u, snippet:u+' → 200 but noindex' }); }
+    out.push(finding('technical','Sitemap lists only live, indexable URLs',6,badSm.length?'fail':'pass',
+      badSm.length?(badSm.length+' of '+smUrls.length+' sitemap URLs redirect, error or are noindex'):('All '+smUrls.length+' sitemap URLs answer 200 and are indexable'),
+      badSm,'List only final, indexable (200, no noindex) URLs in the sitemap; drop redirects and dead pages.'));
+    const lm=disc.lastmod||{}, withLm=smUrls.filter(u=>lm[u]), days=new Set(withLm.map(u=>String(lm[u]).slice(0,10)));
+    const missing=smUrls.length-withLm.length, same=withLm.length>=5&&days.size===1;
+    out.push(finding('technical','Sitemap lastmod dates',2,(missing||same)?'warn':'pass',
+      missing?(missing+' of '+smUrls.length+' URLs have no <lastmod>'):same?('Every <lastmod> is '+[...days][0]+' (generated, not real edit dates)'):('Real <lastmod> dates on all '+smUrls.length+' URLs'),
+      missing?smUrls.filter(u=>!lm[u]).slice(0,5).map(u=>({ url:u, snippet:'<url><loc>'+u+'</loc> — no <lastmod>' })):same?withLm.slice(0,3).map(u=>({ url:u, snippet:'<lastmod>'+lm[u]+'</lastmod>' })):[],
+      'Give every sitemap URL a <lastmod> that changes only when that page\'s content changes.'));
+  }
+  // robots.txt blocking CSS/JS or important pages.
+  if(robots!=null){
+    const rules=robotsRulesFor(robots,'Googlebot'), blocked=[];
+    const assets=home&&home._assets?home._assets.scripts.concat(home._assets.css):[];
+    const test=(u,kind)=>{ try{ const x=new URL(u); if(siteKey(x.hostname)!==siteKey(new URL(disc.base).hostname)) return; const r=robotsAllowed(rules,x.pathname+x.search); if(!r.allowed) blocked.push({ url:u, snippet:kind+' '+x.pathname+' blocked by "Disallow: '+r.rule+'"' }); }catch(e){} };
+    assets.forEach(u=>test(u,'asset'));
+    [home].concat(ctx.money).filter(Boolean).forEach(p=>test(p.url,'page'));
+    out.push(finding('technical','robots.txt allows CSS, JS and key pages',6,blocked.length?'fail':'pass',
+      blocked.length?(blocked.length+' important URL'+(blocked.length===1?' is':'s are')+' disallowed for Googlebot'):'Googlebot can fetch the homepage, key pages and their CSS/JS',
+      blocked,'Remove the Disallow rules that cover CSS/JS files and important pages; Google needs them to render and rank the page.'));
+  }
+  // Core Web Vitals field data (real Chrome users, from PageSpeed's CrUX data).
+  const field=(ctx.speedRuns||[]).map(s=>s.mobile&&s.mobile.fieldData).find(Boolean);
+  if(field&&field.origin&&field.origin.category){
+    const cat=field.origin.category, st=cat==='FAST'?'pass':cat==='AVERAGE'?'warn':'fail';
+    out.push(finding('technical','Core Web Vitals (real users)',6,st,'Origin field data: '+cat.toLowerCase().replace('_',' ')+fieldMetrics(field.origin),
+      [{ url:disc.base, snippet:'CrUX origin: '+cat+fieldMetrics(field.origin) }],'Fix the slow metric first (usually LCP: hero image size and server response).'));
+  } else out.push(finding('technical','Core Web Vitals (real users)',0,'info','No Chrome UX Report field data for this site (too little traffic) — lab PageSpeed only',[],''));
+  return out;
+}
+const fieldMetrics=f=>(f.lcp!=null?' · LCP '+(f.lcp/1000).toFixed(1)+'s':'')+(f.inp!=null?' · INP '+f.inp+'ms':'')+(f.cls!=null?' · CLS '+f.cls:'');
+
+// Deduct site findings from their components: fail = full points, warn = half; floor 0. Each component keeps its list.
+function applyDeductions(components, findings){
+  Object.keys(components).forEach(k=>{ const c=components[k]; if(!c) return; const mine=findings.filter(f=>f.component===k);
+    const d=mine.reduce((a,f)=>a+(f.status==='fail'?f.points:f.status==='warn'?f.points/2:0),0);
+    c.base=c.score; c.deducted=Math.round(d*10)/10; c.score=Math.round(clamp100(c.score-d));
+    c.findings=mine.filter(f=>f.status==='fail'||f.status==='warn').map(f=>({ label:f.label, status:f.status, points:f.status==='fail'?f.points:f.points/2 })); });
+}
+function setPageCheck(p, label, chk){ const i=p.checks.findIndex(c=>c.label===label); const c=Object.assign({cat:(i>=0?p.checks[i].cat:'On-Page Content')},chk); if(i>=0) p.checks[i]=c; else p.checks.push(c); }
+// Fetch the size (and type) of every asset on the key pages, then redo their weight + image checks with real bytes.
+async function measureAssets(pages, cap){
+  const seen=new Set();
+  for(const p of pages){
+    const a=p._assets; if(!a) continue;
+    const list=a.scripts.concat(a.css, a.images.map(i=>i.url)).slice(0,120);
+    const fresh=list.filter(u=>!seen.has(u)); if(seen.size+fresh.length>cap) continue; fresh.forEach(u=>seen.add(u));
+    const res=await Promise.all(list.map(u=>checkUrl(u)));
+    const size={}; res.forEach((c,i)=>{ if(c&&c.status===200&&c.bytes){ size[list[i]]=c.bytes; if(c.contentType) size['ct:'+list[i]]=c.contentType; } });
+    const sum=arr=>arr.reduce((t,u)=>t+(size[u]||0),0);
+    const m={ js:sum(a.scripts), css:sum(a.css), img:sum(a.images.map(i=>i.url)),
+      top:list.filter(u=>size[u]).sort((x,y)=>size[y]-size[x]).slice(0,5).map(u=>({url:u, bytes:size[u]})) };
+    setPageCheck(p,'Reasonable page weight',weightCheck(p.bytes||0,a,m));
+    setPageCheck(p,'Image efficiency',imageCheck(a,size));
+    p.assetBytes={ js:m.js, css:m.css, img:m.img };
+  }
+}
 // Link graph facts per page: click depth from the homepage (BFS over audited pages' links), inlink count and the
 // anchor texts used; plus the full redirect chain for every redirecting URL met (hops, loops, final URL).
 function crawlGraph(pages, base, redirected, keyOf){
@@ -1073,9 +1297,6 @@ async function crawlSiteRun(root, opts){
     pages, coverage:{ discovered:queued.size, audited:0, failed:pages.length, capped, cap:max, via:disc.via, rendered, renderAvailable:!!render } };
   const graph=crawlGraph(ok, disc.base, redirected, keyOf);
   const content=crossPageContent(ok);
-  ok.forEach(p=>{ p._score=score(p); });
-  const scored=ok.filter(p=>p._score&&p._score.score!=null);
-  const pageAverage=scored.length?Math.round(scored.reduce((a,p)=>a+p._score.score,0)/scored.length):null;
 
   // Link health: every internal link target on the audited pages, status-checked (cached from the crawl queue).
   phase('links');
@@ -1097,16 +1318,24 @@ async function crawlSiteRun(root, opts){
   // Technical: robots.txt, sitemap, AI search crawler access (once, for the site) + PageSpeed on the homepage and
   // two money pages (service pages first, then location pages).
   const home=ok.find(p=>p.pageType==='home')||ok[0];
+  // Money pages = the service (then location) pages the site links to most.
+  const inbound={}; Object.keys(sources).forEach(t=>{ inbound[keyOf(t)]=(inbound[keyOf(t)]||0)+sources[t].length; });
+  const byLinks=type=>ok.filter(p=>p.pageType===type).sort((a,b)=>(inbound[keyOf(b.url)]||0)-(inbound[keyOf(a.url)]||0)||(a.url<b.url?-1:1));
+  const money=byLinks('service').concat(byLinks('location'));
+  // Measure every script, stylesheet and image (key pages first; 400 distinct asset URLs at most) for the weight and
+  // image checks.
+  await measureAssets([home].concat(money, ok).filter((p,i,a)=>p&&a.indexOf(p)===i), 400);
+  // Page checks that need the whole crawl, then page scores.
+  ok.forEach(p=>{ setPageCheck(p,'Soft 404',soft404Check(p.pageType,p.title,p.h1text,p.uniqueWords!=null?p.uniqueWords:p.mainWords)); applyGates(p); p._score=score(p); });
+  const scored=ok.filter(p=>p._score&&p._score.score!=null);
+  const pageAverage=scored.length?Math.round(scored.reduce((a,p)=>a+p._score.score,0)/scored.length):null;
   const aux={ origin:home.origin, checks:[] };
   try{ await addAux(aux); }catch(e){}
   let speedRuns=[];
   if(opts.speed!==false) phase('pagespeed',{pages:3, runs:PSI_RUNS});
   if(opts.speed!==false){
-    // Money pages = the service (then location) pages the site links to most.
-    const inbound={}; Object.keys(sources).forEach(t=>{ inbound[keyOf(t)]=(inbound[keyOf(t)]||0)+sources[t].length; });
-    const byLinks=type=>ok.filter(p=>p.pageType===type).sort((a,b)=>(inbound[keyOf(b.url)]||0)-(inbound[keyOf(a.url)]||0)||(a.url<b.url?-1:1));
-    const money=[home].concat(byLinks('service'), byLinks('location')).filter((p,i,a)=>a.indexOf(p)===i).slice(0,3);
-    speedRuns=await Promise.all(money.map(async p=>{
+    const speedPages=[home].concat(money).filter((p,i,a)=>a.indexOf(p)===i).slice(0,3);
+    speedRuns=await Promise.all(speedPages.map(async p=>{
       const s={ url:p.url, checks:[] };
       try{ await addSpeed(s, opts.psiKey||''); }catch(e){}
       // Mobile counts 70%, desktop 30% (Google ranks the mobile version; most local searches are on phones).
@@ -1116,6 +1345,10 @@ async function crawlSiteRun(root, opts){
       return { url:p.url, score:blend, mobile:s.speed&&s.speed.mobile||null, desktop:s.speed&&s.speed.desktop||null, checks:s.checks };
     }));
   }
+  // Site findings (each deducts from its component).
+  const ctx={ ok, home, money, disc, graph, keyOf, robots:aux._robotsTxt, speedRuns, sources, statusOf, opts };
+  const siteFindings=[];
+  try{ siteFindings.push(...await technicalFindings(ctx)); }catch(e){}
   phase('scoring');
   const technical=technicalScore(aux.checks, speedRuns);
   const coverage=coverageScore(ok);
@@ -1123,6 +1356,7 @@ async function crawlSiteRun(root, opts){
   const dupPool=ok.filter(p=>p.pageType!=='utility');
   const inPairs=new Set(); (content.nearDuplicates||[]).forEach(x=>{ inPairs.add(x.a); inPairs.add(x.b); });
   const duplication={ score:Math.round(100*(1-(dupPool.length?inPairs.size/dupPool.length:0))), pagesInNearDuplicatePairs:inPairs.size, pagesCompared:dupPool.length };
+  applyDeductions({ technical, coverage, freshness, linkHealth, duplication }, siteFindings);
   const parts={ coverage:coverage.score, freshness:freshness.score, linkHealth:linkHealth.score, duplication:duplication.score, technical:technical.score };
   const siteLevel=Math.round(Object.keys(SITE_WEIGHTS).reduce((a,k)=>a+SITE_WEIGHTS[k]*parts[k],0));
   let siteScore=pageAverage==null?null:Math.round(0.5*pageAverage+0.5*siteLevel);
@@ -1142,6 +1376,7 @@ async function crawlSiteRun(root, opts){
   const aiCat={e:0,t:0}; ok.forEach(p=>{ const b=p._score&&p._score.byCat&&p._score.byCat[AISEARCH]; if(b){ aiCat.e+=b.e; aiCat.t+=b.t; } });
   const aiSearch=aiCat.t?Math.min(95,Math.round(100*aiCat.e/aiCat.t)):null; // never 100: live AI answers are not observed
   const siteBreakdown={ final:siteScore, pageAverage, siteLevel, weights:SITE_WEIGHTS, coverage, freshness, linkHealth, duplication, technical, penalties, caps, aiSearch };
+  const findingsOut=siteFindings.map(f=>{ const o=Object.assign({},f); return o; });
   const times=ok.map(p=>p.loadMs).filter(v=>v!=null);
   let perf=null;
   if(times.length){ const sorted=times.slice().sort((a,b)=>a-b); const avg=Math.round(times.reduce((a,b)=>a+b,0)/times.length);
@@ -1161,7 +1396,7 @@ async function crawlSiteRun(root, opts){
   const crossPage=Object.assign(cpEarly, content, { redirectChains:graph.chains, brokenLinks, redirectLinks, orphans,
     sitemapRedirects:redirected.filter(x=>smKeys.has(keyOf(x.url))), sitemapBroken:broken.filter(x=>smKeys.has(keyOf(x.url))) });
   ok.forEach(p=>{ p.linkCount=(p.links||[]).length; delete p.links; delete p._blocks; delete p._bh; delete p._sh; delete p._ownText; delete p._simWith; delete p._place; }); // working data, not results (crawl results get saved)
-  return { root:disc.base, siteScore, pageAverage, siteBreakdown, siteChecks:aux.checks, speed:speedRuns, perf, local, crossPage, pages,
+  return { root:disc.base, siteScore, pageAverage, siteBreakdown, siteChecks:aux.checks, siteFindings:findingsOut, speed:speedRuns, perf, local, crossPage, pages,
     coverage:{ discovered:queued.size, inSitemap:(disc.sitemapUrls||[]).length, audited:ok.length, failed:pages.length-ok.length, redirected:redirected.length, broken:broken.length,
       capped, cap:max, via:disc.via==='sitemap'?'sitemap + links':disc.via, rendered, renderAvailable:!!render } };
 }
@@ -1520,7 +1755,9 @@ const API={ BRAND, PROXIES, TAGS, AI_BOTS, AISEARCH, PROJECT_FIXES, sleep, esc, 
   loadIndustry, discoverPages, sitemapSummary, crossPageIssues, crawlSite, siteReportHTML, siteTopIssues, siteComparisonHTML, speedRunsHTML, aiExplainerHTML, ctaBlockHTML, PSI_RUNS,
   reportHTML, findingsHTML, emailHTML, emailText, comparisonHTML,
   // building blocks, exposed for tests
-  classifyPage, mainContent, localEntities, countClaims, h1Glued, smsLabelTelLinks, businessSchema, ldNodes, AI_SEARCH_BOTS, AI_TRAINING_BOTS };
+  classifyPage, mainContent, localEntities, countClaims, h1Glued, smsLabelTelLinks, businessSchema, ldNodes, AI_SEARCH_BOTS, AI_TRAINING_BOTS,
+  // individual checks, for unit tests
+  _x:{ soft404Check, viewportZoomCheck, headingHierarchyCheck, imageCheck, weightCheck, pageAssets, robotsRulesFor, robotsAllowed, chainOf, technicalFindings, applyDeductions } };
 root.SEO=API;
 if(typeof module!=="undefined"&&module.exports) module.exports=API;
 })(typeof window!=="undefined"?window:globalThis);
