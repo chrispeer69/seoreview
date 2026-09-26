@@ -368,6 +368,8 @@ async function snapshotOne(url, i, n, psi){
     try{ await addAux(r); }catch(e){}
     setProgress(i,n,'reading the sitemap');
     try{ r.sitemap=await SEO.sitemapSummary(r.origin||r.url); }catch(e){}
+    setProgress(i,n,'measuring images & scripts');
+    try{ await SEO.measureAssets([r], 120); }catch(e){}
     if(scanCtrl.signal.aborted) return null;
     if(psi.on){ setProgress(i,n,'PageSpeed (3 runs × mobile + desktop)…'); try{ await addSpeed(r, psi.key); }catch(e){} }
     r.engine='Homepage snapshot';
@@ -667,7 +669,7 @@ function buildReportEmail(clientName, arr, opts){
     const speedLine=(r.speed&&r.speed.mobile&&!r.speed.mobile.error&&r.speed.mobile.score!=null)
       ? `<div style="font-size:13px;color:#475569;margin:0 0 12px">📱 Mobile speed: <b style="color:${r.speed.mobile.score>=90?'#16a34a':r.speed.mobile.score>=50?'#ea580c':'#dc2626'}">${r.speed.mobile.score}/100</b> — slow pages bounce customers straight to a competitor.</div>` : '';
     const cats=Object.keys(sc.byCat);
-    const catRows=cats.map(cat=>{const p=Math.round(100*sc.byCat[cat].e/sc.byCat[cat].t);const cc=p>=80?'#16a34a':p>=60?'#f59e0b':'#dc2626';
+    const catRows=cats.map(cat=>{const p=SEO.catPercent(cat,sc.byCat[cat]);const cc=p>=80?'#16a34a':p>=60?'#f59e0b':'#dc2626';
       return `<tr><td style="color:#475569;padding:4px 10px 4px 0;font-size:13px;white-space:nowrap;vertical-align:middle">${esc(cat)}</td><td style="padding:4px 0;vertical-align:middle;width:100%"><table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:separate;background:#e2e8f0;border-radius:999px"><tr><td style="height:10px;background:${cc};border-radius:999px;font-size:0;line-height:0;width:${p}%">&nbsp;</td>${p<100?'<td style="font-size:0;line-height:0">&nbsp;</td>':''}</tr></table></td><td style="text-align:right;font-weight:700;color:${cc};padding:4px 0 4px 10px;font-size:13px;white-space:nowrap;vertical-align:middle">${p}%</td></tr>`;}).join('');
     const breakdown=cats.length?`<div style="font-weight:800;font-size:12px;text-transform:uppercase;letter-spacing:.06em;margin:0 0 6px">Category breakdown</div><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse">${catRows}</table>`:'';
     return `<div style="border:1px solid #e5e7eb;border-radius:10px;margin:0 0 20px;overflow:hidden">
@@ -1175,7 +1177,7 @@ function reportSection(r){
   </section>`;
 
   const catBreakdown = `<div class="rH2">Category Breakdown</div>
-  ${cats.map(c=>{const p=Math.round(100*sc.byCat[c].e/sc.byCat[c].t);const col=p>=80?'#16a34a':p>=60?'#f59e0b':'#dc2626';
+  ${cats.map(c=>{const p=SEO.catPercent(c,sc.byCat[c]);const col=p>=80?'#16a34a':p>=60?'#f59e0b':'#dc2626';
     return `<div class="catbar"><span class="lbl">${esc(c)}</span><span class="track"><span class="fill" style="width:${p}%;background:${col}"></span></span><span style="flex:0 0 38px;text-align:right;font-weight:700;color:${col}">${p}%</span></div>`;}).join('')}`;
 
   let actionPlan;
@@ -1281,7 +1283,7 @@ function renderReport(){
   const spCell = s => { if(s==null) return '<td>—</td>'; const col=s>=90?'#16a34a':s>=50?'#f59e0b':'#dc2626'; return `<td style="font-weight:700;color:${col}">${s}</td>`; };
   // ---- Competitor comparison (scales to 30+ sites) ----
   const CAT_LOCAL='Local SEO', CAT_AI='AI Search & Answer Engines', CAT_CONTENT='On-Page Content', CAT_TECH='Technical & Mobile';
-  const catPct=(sc,name)=>{ const b=sc.byCat[name]; return (b&&b.t)?Math.round(100*b.e/b.t):null; };
+  const catPct=(sc,name)=>SEO.catPercent(name, sc.byCat[name]);
   const cRows = reports.map((r,i)=>{ const sc=score(r); return {
     i, primary:i===0, err:!!r.error, domain:r.domain,
     overall:sc.score, grade:sc.grade, color:sc.color,
@@ -1363,12 +1365,12 @@ function renderReport(){
     </div>${reportSection(r)}</div>`).join('');
 
   document.getElementById('printArea').innerHTML=`
+    ${SNAPSHOT_BANNER}
     <div class="rHeader">
       <div><h1 style="margin:0;font-size:30px;font-weight:800;color:#0f172a">${compareOn?'SEO &amp; AI Search Comparison':'SEO &amp; AI Search Audit'}</h1>
       <p style="margin:6px 0 0;font-size:15px;color:#64748b">${compareOn?reports.length+' websites compared':(multi?reports.length+' websites':esc(reports[0].domain))}</p></div>
       ${brand}
     </div>
-    ${SNAPSHOT_BANNER}
     ${compareOn?comparisonMeat:sites}
     ${aiExplainer()}
     ${ctaBlock()}

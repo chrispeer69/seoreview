@@ -204,7 +204,8 @@ function summarize(res) {
   // Category percentages across the site (same math as the branded report).
   const catAgg = {};
   ok.forEach(p => { const bc = (p._score && p._score.byCat) || {}; Object.keys(bc).forEach(c => { catAgg[c] = catAgg[c] || { e: 0, t: 0 }; catAgg[c].e += bc[c].e; catAgg[c].t += bc[c].t; }); });
-  const pct = c => (catAgg[c] && catAgg[c].t ? Math.round(100 * catAgg[c].e / catAgg[c].t) : null);
+  // AI Search never shows above 95 (same rule as the engine's catPercent).
+  const pct = c => (catAgg[c] && catAgg[c].t ? Math.min(c === 'AI Search & Answer Engines' ? 95 : 100, Math.round(100 * catAgg[c].e / catAgg[c].t)) : null);
   const categories = {}; Object.keys(catAgg).forEach(c => { categories[c] = pct(c); });
 
   // Homepage-level checks feed the optional local + AI blocks.

@@ -179,6 +179,7 @@ async function auditPage(deps, url, opts) {
     try { await w.SEO.addAux(r); } catch (e) { /* best effort, as in the tool */ }
     try { r.sitemap = await w.SEO.sitemapSummary(r.origin || url); } catch (e) { /* sitemap columns are optional */ }
     r.engine = 'Homepage snapshot';
+    try { await w.SEO.measureAssets([r], 120); } catch (e) { /* weight/image checks fall back to HTML only */ }
     if (opts.speed) { try { await w.SEO.addSpeed(r, opts.psiKey || ''); } catch (e) {} }
     r._score = w.SEO.score(r);
     w.__pageResult = r;

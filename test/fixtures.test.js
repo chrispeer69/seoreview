@@ -64,3 +64,22 @@ test('Roadside: 24/7 claims listed with URLs', () => {
 test('Every failing/warning site finding carries evidence', () => {
   [bj, rs].forEach(res => res.siteFindings.filter(f => (f.status === 'fail' || f.status === 'warn') && f.points).forEach(f => assert.ok((f.evidence || []).length, 'no evidence: ' + f.label)));
 });
+
+// Single-page mode (the public tool's Run Audit, API mode "page", the CRM's audits) runs every page-level check.
+test('Single-page audit: all Phase 2–8 page checks, banner first, AI never above 95%', async () => {
+  const fx = JSON.parse(zlib.gunzipSync(fs.readFileSync(path.join(__dirname, 'fixtures', 'columbusroadsidetowing.com.json.gz'))).toString('utf8'));
+  const get = k => { if (k in fx.calls) return fx.calls[k]; throw Object.assign(new Error('miss'), { code: 502 }); };
+  const deps = { proxyFetch: async t => get('proxy:' + t), linkCheck: async t => get('check:' + t), directFetch: async u => get('direct:' + String(u).replace(/([?&])key=[^&]*/, '$1key=_')),
+    renderFetch: async () => null, placesLookup: async () => null };
+  const out = await headless.auditPage(deps, 'https://www.columbusroadsidetowing.com/', { speed: false, industry: 'towing' });
+  const labels = out.result.checks.map(c => c.label);
+  ['Title quality', 'Specific H1', 'Years-in-business claims current', 'No placeholder text', 'Schema NAP matches the page', 'One business entity with a stable @id',
+    'FAQ schema matches the visible FAQ', // Breadcrumb (non-home) and Service schema (service pages) are page-type checks 'License / registration numbers shown', 'Pricing transparency', 'Insurance mentioned',
+    'Question headings with direct answers', 'Citable facts', 'Click-to-call at the top (mobile)', 'Image efficiency', 'Viewport allows zoom', 'Soft 404', 'Heading hierarchy',
+    'JSON-LD syntax valid', 'Valid schema.org types', 'Reasonable page weight'].forEach(l => assert.ok(labels.includes(l), 'missing in single-page mode: ' + l));
+  assert.ok(out.result.checks.length >= 55, out.result.checks.length + ' checks');
+  assert.match(out.result.checks.find(c => c.label === 'Reasonable page weight').detail, /^Total /, 'asset sizes measured in single-page mode');
+  const text = out.html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  assert.ok(text.startsWith('Homepage snapshot — full-site audit available'), 'banner is the first thing: ' + text.slice(0, 60));
+  (text.match(/AI Search[^%]{0,40}%/g) || []).forEach(m => assert.ok(+(m.match(/(\d+)%$/) || [0, 0])[1] <= 95, m));
+});
