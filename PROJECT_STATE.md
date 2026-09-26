@@ -95,3 +95,15 @@ CRM = `C:\Users\chris\OneDrive\Desktop\CRMColumbus`. Railway auto-deploys on pus
 ## Current commit heads
 - CRM `CRMColumbus`: `6ce8c57`
 - Public `seoreview`: `da6b506`
+
+## Engine expansion (2026-09-27) — phases 0–9
+- Checks carry `evidence` (URL + snippet). Page checks add points; **site findings** (`res.siteFindings`) deduct
+  from one component each (fail = full points, warn = half) — `site_breakdown.<component>.deducted/findings`.
+- Industry config: `config/industries/<name>.json` (seeded `towing.json`), served at `/config/industries/` (CORS;
+  the CRM redirects there). Audit input `industry` (UI selector, API `industry`, `crawlSite(opts.industry)`),
+  default `general` = no industry checks; optional `market` {cities, area_codes}.
+- Report: Top 10 fixes, findings by category, service coverage matrix (also in the deep comparison), Stack & agency.
+- API adds `industry`, `site_breakdown`, `top_fixes`, `findings`, `stack` (columns `industry`, `market` added with
+  ADD COLUMN IF NOT EXISTS).
+- Tests: `npm test` = unit (engine/checks), fixture assertions, calibration bands (Roadside 88–95, B&J 45–65,
+  Whitehall 60–80, Lewis Center 90+), jsdom UI smoke. Refresh fixtures with `node test/calibrate.js --record-missing`.

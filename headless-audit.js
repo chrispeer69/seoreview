@@ -143,6 +143,8 @@ async function crawlSite(deps, root, opts) {
     const html = w.SEO.siteReportHTML(res);
     // The crawl result carries its own site-level checks (robots.txt, sitemap, AI crawlers, llms.txt): res.siteChecks.
     const result = JSON.parse(JSON.stringify(res));
+    // Every finding, grouped and ranked (severity x pages affected), with evidence — for the API's top_fixes/findings.
+    try { result.findings = JSON.parse(JSON.stringify(w.SEO.allFindings(res))).slice(0, 60); } catch (e) { result.findings = []; }
     return { result, html, engineErrors: errors.slice(0, 5) };
   } finally {
     try { w.close(); } catch (e) {}
@@ -162,6 +164,7 @@ async function auditPage(deps, url, opts) {
       throw new Error('audit engine did not load' + (errors.length ? ' — ' + errors[0] : ''));
     }
     const render = deps.renderEnabled ? (u => w.fetch('/api/render?url=' + encodeURIComponent(u)).then(r => (r.ok ? r.text() : null)).catch(() => null)) : null;
+    try { await w.SEO.loadIndustry(opts.industry || 'general', opts.market || null); } catch (e) { /* general */ }
     let r;
     try { r = await w.SEO.auditOne(url); }
     catch (e1) {                                   // one retry, then the rendered page - as the crawl does

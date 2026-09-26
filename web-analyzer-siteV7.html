@@ -183,6 +183,7 @@
         <label><input type="checkbox" id="psiOn" checked /> Include Google PageSpeed (mobile + desktop, median of 3 runs) — adds ~30–60s per site</label>
         <label><input type="checkbox" id="compareOn" onchange="onCompareChange()" /> Compare sites side-by-side (competitor view)</label>
         <label id="deepRow" style="display:none;margin-left:22px"><input type="checkbox" id="deepOn" checked /> Full-site crawl of every site — the deep comparison (~2–4 min per site)</label>
+        <label>Industry: <select id="industrySel" style="padding:4px 6px;border:1px solid #cbd5e1;border-radius:6px"><option value="general">General (no industry checks)</option><option value="towing">Towing &amp; roadside</option></select></label>
         <input type="hidden" id="psiKey" />
       </div>
       <div class="runRow" style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
@@ -316,6 +317,7 @@ function isTeamUser(){ try{ return !!(TEAM && TEAM.user); }catch(e){ return fals
 function isUnlocked(){ return leadUnlocked || isTeamUser(); }
 const SNAPSHOT_BANNER='<div style="background:#fef3c7;border:1px solid #fcd34d;color:#78350f;border-radius:8px;padding:8px 12px;margin:0 0 12px;font-size:13px;font-weight:600">Homepage snapshot — full-site audit available.</div>';
 function scanList(){ return document.getElementById('urls').value.split(/[\n,]+/).map(u=>u.trim()).filter(Boolean); }
+function industryOf(){ const el=document.getElementById('industrySel'); return (el&&el.value)||'general'; }
 function psiSettings(){ const psiEl=document.getElementById('psiOn'), keyEl=document.getElementById('psiKey');
   return { on:!(psiEl&&!psiEl.checked), key:(keyEl&&keyEl.value.trim())||window.BCAI_PSI_KEY||'' }; }
 // "Site 2 of 3 · crawling pages (42/87)" plus the time estimate given up front.
@@ -359,6 +361,7 @@ function endRun(){
 async function snapshotOne(url, i, n, psi){
   try{
     setProgress(i,n,'fetching homepage · '+esc(url));
+    try{ await SEO.loadIndustry(industryOf()); }catch(e){}
     const r=await auditOne(url);
     if(scanCtrl.signal.aborted) return null;
     setProgress(i,n,'checking crawlability & AI readiness');
@@ -378,7 +381,7 @@ async function snapshotOne(url, i, n, psi){
 const PHASE_TEXT={ discovering:'finding pages (sitemap + links)', links:'checking links', pagespeed:'PageSpeed (3 runs × mobile + desktop on 3 key pages)…', scoring:'scoring' };
 async function crawlOne(root, i, n, psi){
   try{
-    return await crawlSite(root,{ max:150, concurrency:6, render:(window.__RENDER?renderPage:null), speed:psi.on, psiKey:psi.key,
+    return await crawlSite(root,{ max:150, concurrency:6, render:(window.__RENDER?renderPage:null), speed:psi.on, psiKey:psi.key, industry:industryOf(),
       places:(q)=>fetch('/api/places?q='+encodeURIComponent(q)).then(r=>r.ok?r.json():null).catch(()=>null),
       onPhase:(ph)=>{ if(PHASE_TEXT[ph]) setProgress(i,n,PHASE_TEXT[ph]); },
       onProgress:(d,t)=>setProgress(i,n,'crawling pages ('+d+'/'+t+')') });

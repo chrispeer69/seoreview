@@ -44,6 +44,12 @@ curl -s https://seoreview-production.up.railway.app/api/v1/ping -H "X-API-Key: $
 * `external_id` — echoed back in every response for this audit.
 * `callback_url` — optional; must be a public `http(s)` URL. The finished audit is POSTed there (see Callback).
 * `force` — `true` re-crawls even if a recent audit exists.
+* `industry` — optional, default `"general"` (no industry checks). A config name from `config/industries/`
+  (seeded: `"towing"`) turns on the service-taxonomy coverage matrix, licence-number checks and industry tools.
+  Unknown names → `400 {"error":"invalid_industry","industries":[…]}`. A finished audit is only reused for the
+  same industry.
+* `market` — optional `{ "name": "Columbus", "cities": ["Columbus","Dublin",…], "area_codes": ["614","380"] }` for
+  the location-coverage and local-area-code checks (else the industry's default market; cities → info only).
 * `mode` — `"site"` (default): the whole-site crawl, every page. `"page"`: page 1 only — the homepage, the public
   tool's regular **Run Audit** (its site checks: robots.txt, sitemap, AI-crawler access, llms.txt; plus Google
   PageSpeed mobile + desktop when `PSI_API_KEY` is set). A page audit's `grade`/`score` is the homepage's own,
@@ -123,6 +129,19 @@ page-level issue across all graded pages plus site-wide findings.
 checks are `null` when the engine could not verify them. `ai_visibility` reflects the engine's AI-search
 readiness checks (robots.txt crawler access, llms.txt, FAQ/Organization schema, readable content); it does **not**
 query AI assistants for live citations.
+
+**Added 2026-09 (all additive):**
+* `grade`/`score` for a site audit is now 50% average page score + 50% site level — see `site_breakdown`.
+* `industry` — echoed from the request.
+* `site_breakdown` — `pageAverage`, `siteLevel`, each component (`coverage`, `freshness`, `linkHealth`, `duplication`,
+  `technical`) with its `score`, `base`, `deducted` and the site findings that deducted, plus `penalties`, `caps`
+  and `aiSearch` (capped at 95).
+* `top_fixes` — the 10 highest-ranked fixes (severity × pages affected): `title`, `category`, `severity`
+  (critical/high/medium/low), `status`, `scope` (page/site), `pages_affected`, `urls` (first 5), `evidence`
+  (`{url, snippet}`), `fix`.
+* `findings` — every finding in the same shape (plus `detail`); omitted from slim responses.
+* `stack` — info-only fingerprint: `cms`, `theme`, `builders`, `frameworks`, `plugins` (version / latest /
+  outdated), `tracking`, `chat`, `payments`, `opsTools`, `agency` (credits, GBP UTM), `hosting`, `licenses`.
 
 ## Callback
 

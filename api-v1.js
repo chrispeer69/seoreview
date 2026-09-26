@@ -25,6 +25,7 @@ const CONCURRENCY = Math.max(1, parseInt(process.env.SEO_API_CONCURRENCY || '2',
 // PageSpeed Insights key for page-mode speed checks (the tool's "Measure page speed"); unset = keyless, rate-limited.
 const PSI_KEY = process.env.PSI_API_KEY || process.env.PAGESPEED_API_KEY || '';
 const MODES = ['site', 'page'];
+const INDUSTRIES = () => { try { return require('fs').readdirSync(require('path').join(__dirname, 'config', 'industries')).filter(f => f.endsWith('.json')).map(f => f.slice(0, -5)); } catch (e) { return []; } };
 const JOB_TIMEOUT_MS = Math.max(60, parseInt(process.env.SEO_API_TIMEOUT_SEC || '600', 10) || 600) * 1000;
 
 let deps = null;
@@ -48,7 +49,7 @@ function validDomain(s) {
 }
 
 // ---------- storage ----------
-const COLS = 'id,mode,domain,external_id,callback_url,status,error,result,report_html,view_token,progress,created_at,started_at,finished_at';
+const COLS = 'id,mode,industry,market,domain,external_id,callback_url,status,error,result,report_html,view_token,progress,created_at,started_at,finished_at';
 const PATCHABLE = new Set(['external_id', 'status', 'error', 'result', 'report_html', 'progress', 'started_at', 'finished_at']);
 
 function memStore() {
@@ -89,11 +90,14 @@ function pgStore(pool) {
       await pool.query('CREATE INDEX IF NOT EXISTS idx_seo_audits_domain ON seo_audits (domain, created_at DESC);');
       // mode came after the table: every earlier audit is a whole-site crawl
       await pool.query("ALTER TABLE seo_audits ADD COLUMN IF NOT EXISTS mode TEXT NOT NULL DEFAULT 'site';");
+      // industry (config/industries/<name>.json; 'general' = no industry checks) and market came later still
+      await pool.query("ALTER TABLE seo_audits ADD COLUMN IF NOT EXISTS industry TEXT NOT NULL DEFAULT 'general';");
+      await pool.query('ALTER TABLE seo_audits ADD COLUMN IF NOT EXISTS market JSONB;');
     },
     async create(j) {
-      await pool.query(`INSERT INTO seo_audits (id,domain,external_id,callback_url,status,view_token,progress,created_at,mode)
-                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-        [j.id, j.domain, j.external_id, j.callback_url, j.status, j.view_token, j.progress ? JSON.stringify(j.progress) : null, j.created_at, j.mode || 'site']);
+      await pool.query(`INSERT INTO seo_audits (id,domain,external_id,callback_url,status,view_token,progress,created_at,mode,industry,market)
+                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+        [j.id, j.domain, j.external_id, j.callback_url, j.status, j.view_token, j.progress ? JSON.stringify(j.progress) : null, j.created_at, j.mode || 'site', j.industry || 'general', j.market ? JSON.stringify(j.market) : null]);
       return j;
     },
     async get(id) { const { rows } = await pool.query(`SELECT ${COLS} FROM seo_audits WHERE id=$1`, [id]); return rows[0] || null; },
@@ -265,6 +269,11 @@ function summarize(res) {
     coverage: { discovered: cov.discovered, audited: cov.audited, failed: cov.failed, capped: !!cov.capped, cap: cov.cap, discovered_via: cov.via, js_rendered: cov.rendered || 0, render_available: !!cov.renderAvailable },
     // How the score was built: 50% page average + 50% site level (coverage, freshness, link health, duplication, technical), caps.
     site_breakdown: res.siteBreakdown || null,
+    // Ranked fixes (severity x pages affected) and every finding with evidence (URL + snippet) and a one-line fix.
+    top_fixes: (res.findings || []).slice(0, 10).map(f => ({ title: f.title, category: f.category, severity: f.severity.toLowerCase(), status: f.status, scope: f.scope, pages_affected: f.pagesAffected, urls: f.urls, evidence: f.evidence, fix: f.fix || null })),
+    findings: (res.findings || []).map(f => ({ title: f.title, category: f.category, severity: f.severity.toLowerCase(), status: f.status, scope: f.scope, pages_affected: f.pagesAffected, urls: f.urls, evidence: f.evidence, detail: f.detail, fix: f.fix || null })),
+    // Stack & agency fingerprint (info only).
+    stack: res.stack || null,
   };
 }
 
@@ -289,6 +298,7 @@ function contractBody(j, opts) {
   const body = {
     audit_id: j.id,
     mode: j.mode || 'site',
+    industry: j.industry || 'general',
     external_id: opts.external_id || j.external_id || null,
     domain: j.domain,
     status: j.status,
@@ -308,6 +318,10 @@ function contractBody(j, opts) {
     server_speed: r.server_speed || null,
     coverage: r.coverage || null,
     page_speed: r.page_speed || null,
+    site_breakdown: r.site_breakdown || null,
+    top_fixes: r.top_fixes || [],
+    findings: opts.slim ? undefined : (r.findings || []),
+    stack: r.stack || null,
     report_url: j.status === 'done' ? `${deps.BASE_URL}/report/${j.id}?t=${j.view_token}` : null,
   };
   if (j.status === 'running' && j.progress) body.progress = j.progress;
@@ -352,7 +366,7 @@ async function runJob(id) {
     const root = await resolveRoot(job.domain);
     if ((job.mode || 'site') === 'page') return await runPageJob(id, root);
     const work = headless.crawlSite(deps, root, {
-      maxPages: MAX_PAGES, concurrency: 4, psiKey: PSI_KEY,
+      maxPages: MAX_PAGES, concurrency: 4, psiKey: PSI_KEY, industry: job.industry || 'general', market: job.market || null,
       onProgress: (done, total, current) => {
         const now = Date.now();
         if (now - lastSave > 1500) { lastSave = now; store.update(id, { progress: { done, total, current: String(current || '').slice(0, 200) } }).catch(() => {}); }
@@ -376,9 +390,9 @@ async function runJob(id) {
 
 // The homepage audit. Never writes the CRM's columns - those are the whole-site grade.
 async function runPageJob(id, root) {
-  let job;
+  let job = await store.get(id);
   try {
-    const work = headless.auditPage(deps, root + '/', { speed: true, psiKey: PSI_KEY });
+    const work = headless.auditPage(deps, root + '/', { speed: true, psiKey: PSI_KEY, industry: (job && job.industry) || 'general', market: (job && job.market) || null });
     const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error('audit timed out after ' + Math.round(JOB_TIMEOUT_MS / 1000) + 's')), JOB_TIMEOUT_MS));
     const out = await Promise.race([work, timeout]);
     const result = summarizePage(out.result);
@@ -458,6 +472,13 @@ function mount(app, d) {
     const force = b.force === true || b.force === 'true';
     const mode = b.mode == null || b.mode === '' ? 'site' : String(b.mode);
     if (!MODES.includes(mode)) return res.status(400).json({ error: 'invalid_mode', modes: MODES });
+    // industry: a config in config/industries/ (e.g. "towing"); default "general" skips industry checks.
+    const industry = b.industry == null || b.industry === '' ? 'general' : String(b.industry).toLowerCase().replace(/[^a-z0-9_-]/g, '');
+    if (industry !== 'general' && !INDUSTRIES().includes(industry)) return res.status(400).json({ error: 'invalid_industry', industries: ['general'].concat(INDUSTRIES()) });
+    // market (optional): { name, cities: [...], area_codes: [...] } — the location coverage and area-code checks use it.
+    const m = b.market && typeof b.market === 'object' ? b.market : null;
+    const market = m ? { name: m.name ? String(m.name).slice(0, 80) : null, cities: Array.isArray(m.cities) ? m.cities.map(String).slice(0, 200) : null,
+      areaCodes: Array.isArray(m.area_codes || m.areaCodes) ? (m.area_codes || m.areaCodes).map(x => String(x).replace(/D/g, '').slice(0, 3)).filter(Boolean) : null } : null;
     let callback_url = null;
     if (b.callback_url) {
       try {
@@ -475,11 +496,11 @@ function mount(app, d) {
     }
     if (!force && REUSE_DAYS > 0) {
       const done = await store.latest(domain, ['done'], mode);
-      if (done && Date.now() - new Date(done.created_at).getTime() < REUSE_DAYS * 86400000) {
+      if (done && (done.industry || 'general') === industry && Date.now() - new Date(done.created_at).getTime() < REUSE_DAYS * 86400000) {
         return res.status(200).json(contractBody(done, { reused: true, external_id }));
       }
     }
-    const job = { id: newId(), mode, domain, external_id, callback_url, status: 'queued', error: null, result: null, report_html: null,
+    const job = { id: newId(), mode, industry, market, domain, external_id, callback_url, status: 'queued', error: null, result: null, report_html: null,
       view_token: newToken(), progress: null, created_at: new Date(), started_at: null, finished_at: null };
     await store.create(job);
     enqueue(job.id);
