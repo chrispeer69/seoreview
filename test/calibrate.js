@@ -16,7 +16,7 @@ const SITES = [
   // Site bands, plus page bands for pages whose score is a known reference point.
   { domain: 'columbusroadsidetowing.com', root: 'https://www.columbusroadsidetowing.com', target: [88, 95],
     pages: { '/service-area/whitehall': [60, 80], '/service-area/lewis-center': [90, 100] } },
-  { domain: 'broadandjames.com', root: 'https://broadandjames.com', target: [45, 60] },
+  { domain: 'broadandjames.com', root: 'https://broadandjames.com', target: [45, 65] },
 ];
 const RECORD = process.argv.includes('--record');
 const VERBOSE = process.argv.includes('--verbose');

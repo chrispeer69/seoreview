@@ -57,7 +57,7 @@ function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;',
 const PROJECT_FIXES = new Set([
   'Unique content','Unique vs sibling pages','Local detail','Served over HTTPS','No mixed (insecure) content','LocalBusiness structured data',
   'Reasonable page weight','Limited render-blocking scripts','Q&A / FAQ structured data',
-  'Semantic main-content region','Review / rating schema (stars)',
+  'Semantic main-content region','Review / rating schema',
   'Mobile speed score','Desktop speed score','Largest Contentful Paint (mobile)','Layout stability (mobile CLS)'
 ]);
 function isQuick(label){ return !PROJECT_FIXES.has(label); }
@@ -570,10 +570,10 @@ async function auditOne(raw, prefetchedHtml){
     'This is the behind-the-scenes data that powers the Google Map pack and "near me" results — the single biggest win there is for a local service business. It only counts as a local business when it is a LocalBusiness type (or subtype such as AutoRepair) with the address, phone and opening hours filled in.',
     biz.kind==='local' ? ('Add '+biz.missing.join(', ')+' to the '+biz.type+' JSON-LD.')
       : 'Add JSON-LD LocalBusiness (or the closest subtype, e.g. AutoRepair) with name, address, telephone, openingHoursSpecification and geo coordinates.');
-  add(LOCAL,'Review / rating schema (stars)',0, selfReview?'warn':'info',
+  add(LOCAL,'Review / rating schema',0, selfReview?'warn':'info',
     selfReview?'aggregateRating / review is marked up on the business itself (self-serving)':(hasReview?'Review markup found (not on the business entity)':'No review or rating schema'),
-    'Google does not show review stars for a business\'s own reviews marked up on its own site (LocalBusiness / Organization), and can treat it as spammy structured data. Your stars come from your Google Business Profile reviews.',
-    selfReview?'Remove aggregateRating / review from the LocalBusiness / Organization JSON-LD; keep earning reviews on your Google Business Profile.':'');
+    'Review markup about your own business does not earn stars in Google (not eligible since 2019) and can be treated as spammy structured data. Show your real Google reviews on your website — that’s what builds trust with visitors and AI.',
+    selfReview?'Remove aggregateRating / review from the LocalBusiness / Organization JSON-LD. Show your real Google reviews on your website — that’s what builds trust with visitors and AI.':'');
   add(LOCAL,'Click-to-call phone link',4, tel>0?'pass':'warn', tel>0?(tel+' tel: link(s)'):'None found','A tappable phone number turns a phone visitor into a phone call with one tap. Missing it quietly costs you leads.','Wrap the phone number in <a href="tel:+1...">.');
   add(LOCAL,'Map / location reference',3, hasMap?'pass':'warn', hasMap?'Map detected':'No map embed found','A map and visible address prove to Google (and customers) exactly where you serve.','Embed a Google Map and show the full address (matching your Google Business Profile).');
 
@@ -693,28 +693,45 @@ async function fetchPSI(url, strategy, key){
   }catch(e){ return {error:e.name==='AbortError'?'timeout':'fetch failed'}; }
   finally{ clearTimeout(t); }
 }
+// Lighthouse scores swing run to run, so each URL + form factor is measured PSI_RUNS times and the median is
+// scored; the min–max range is kept for the detail view.
+const PSI_RUNS=3;
+const median=a=>{ const v=a.filter(x=>x!=null).sort((x,y)=>x-y); if(!v.length) return null; const m=Math.floor(v.length/2); return v.length%2?v[m]:(v[m-1]+v[m])/2; };
+async function fetchPSIMedian(url, strategy, key){
+  const runs=await Promise.all(Array.from({length:PSI_RUNS},()=>fetchPSI(url,strategy,key)));
+  const ok=runs.filter(x=>x&&!x.error);
+  if(!ok.length) return runs[0]||{error:'no data'};
+  const pick=k=>ok.map(x=>x[k]).filter(v=>v!=null);
+  const range=k=>{ const v=pick(k); return v.length?[Math.min(...v),Math.max(...v)]:null; };
+  const sc=median(pick('score')), lcp=median(pick('lcp')), cls=median(pick('cls'));
+  return { score:sc==null?null:Math.round(sc), lcp, cls,
+    lcpTxt:lcp==null?null:(lcp/1000).toFixed(1)+' s', clsTxt:cls==null?null:String(Math.round(cls*1000)/1000),
+    field:(ok.find(x=>x.field)||{}).field||null, runs:ok.length, range:{ score:range('score'), lcp:range('lcp'), cls:range('cls') } };
+}
+const psiRange=(m,k,fmt)=>{ const r=m.range&&m.range[k]; if(!r||m.runs<2) return ''; return ' · range '+fmt(r[0])+'–'+fmt(r[1])+' over '+m.runs+' runs'; };
 async function addSpeed(r, key){
   const SPEED='Page Speed & Core Web Vitals';
-  const [m,d]=await Promise.all([fetchPSI(r.url,'mobile',key), fetchPSI(r.url,'desktop',key)]);
+  const [m,d]=await Promise.all([fetchPSIMedian(r.url,'mobile',key), fetchPSIMedian(r.url,'desktop',key)]);
   r.speed={mobile:m, desktop:d};
   const scoreStatus=s=> s==null?'info' : s>=90?'pass' : s>=50?'warn':'fail';
+  const num=x=>String(Math.round(x)), secs=x=>(x/1000).toFixed(1)+'s', cl=x=>String(Math.round(x*1000)/1000);
   // Mobile score (weighted highest — Google is mobile-first)
   if(m.error){
     r.checks.push({cat:SPEED,label:'Mobile speed score',points:0,status:'info',detail:'Could not measure ('+m.error+')',why:'',fix:''});
   }else{
     r.checks.push({cat:SPEED,label:'Mobile speed score',points:6,status:scoreStatus(m.score),
-      detail:(m.score!=null?m.score+'/100':'n/a')+(m.field?' · real users: '+m.field.toLowerCase().replace('_',' '):''),
+      detail:(m.score!=null?m.score+'/100 (median)':'n/a')+psiRange(m,'score',num)+(m.field?' · real users: '+m.field.toLowerCase().replace('_',' '):''),
       why:'Google measures your site by its phone version first, and most local searches happen on phones. A slow mobile site quietly loses customers and rankings.',
       fix:'Compress and lazy-load images, enable caching / a CDN, and defer non-critical scripts. PageSpeed Insights lists the exact opportunities.'});
     if(m.lcp!=null){ const s= m.lcp<=2500?'pass':m.lcp<=4000?'warn':'fail';
       r.checks.push({cat:SPEED,label:'Largest Contentful Paint (mobile)',points:4,status:s,
-        detail:(m.lcpTxt||Math.round(m.lcp)+' ms')+' (good ≤ 2.5s)',
+        detail:(m.lcpTxt||Math.round(m.lcp)+' ms')+' median (good ≤ 2.5s)'+psiRange(m,'lcp',secs),
         why:'LCP is how long until the main content actually appears. Over 2.5 seconds feels slow and hurts both conversions and ranking.',
         fix:'Optimize the largest image / hero, use modern formats (WebP/AVIF), and remove render-blocking CSS and scripts.'});
     }
     if(m.cls!=null){ const s= m.cls<=0.1?'pass':m.cls<=0.25?'warn':'fail';
       r.checks.push({cat:SPEED,label:'Layout stability (mobile CLS)',points:2,status:s,
-        detail:(m.clsTxt!=null?String(m.clsTxt):String(m.cls))+' (good ≤ 0.1)',
+        detail:(m.clsTxt!=null?String(m.clsTxt):String(m.cls))+' median (good ≤ 0.1)'+psiRange(m,'cls',cl),
         why:'CLS measures how much the page jumps around while loading. Jumpy pages frustrate visitors and are penalized by Google.',
         fix:'Set width and height on images and reserve space for ads, banners, and embeds.'});
     }
@@ -724,7 +741,7 @@ async function addSpeed(r, key){
     r.checks.push({cat:SPEED,label:'Desktop speed score',points:0,status:'info',detail:'Could not measure ('+d.error+')',why:'',fix:''});
   }else{
     r.checks.push({cat:SPEED,label:'Desktop speed score',points:3,status:scoreStatus(d.score),
-      detail:(d.score!=null?d.score+'/100':'n/a'),
+      detail:(d.score!=null?d.score+'/100 (median)':'n/a')+psiRange(d,'score',num),
       why:'Desktop speed still matters for the office and at-home customers researching your services on a computer.',
       fix:'Same wins as mobile: optimize images, enable caching, and defer non-critical scripts.'});
   }
@@ -742,6 +759,8 @@ function score(r){
     if(!byCat[c.cat])byCat[c.cat]={e:0,t:0};
     byCat[c.cat].e+=c.points*w; byCat[c.cat].t+=c.points;
   });
+  // AI Search never reads 100 in any mode: live AI answers are not observed, so the category tops out at 95%.
+  const ai=byCat[AISEARCH]; if(ai && ai.e>0.95*ai.t){ earned-=ai.e-0.95*ai.t; ai.e=0.95*ai.t; }
   const penalty=r.checks.reduce((a,c)=>a+(c.penalty||0),0);
   const s= Math.max(0,(total? Math.round(100*earned/total):0)-penalty);
   let grade,color;
@@ -826,6 +845,20 @@ function crossPageIssues(pages){
     smsTelLinks:pages.filter(p=>p.smsTel&&p.smsTel.length).map(p=>({url:p.url, labels:p.smsTel})),
     thin:pages.filter(p=>p.pageType!=='utility'&&p.pageType!=='archive'&&(p.uniqueWords!=null?p.uniqueWords:p.words)<250).map(p=>({url:p.url,words:p.uniqueWords!=null?p.uniqueWords:p.words})),
     jsRendered:pages.filter(p=>p.jsShell).map(p=>p.url), missingH1:pages.filter(p=>!p.h1text).map(p=>p.url) };
+}
+// What the sitemap says about a site, without crawling it: page count, service / location pages (by URL), newest
+// lastmod. Used by homepage snapshots and snapshot comparisons.
+async function sitemapSummary(root){
+  let disc; try{ disc=await discoverPages(root, 5000, null); }catch(e){ return { found:false }; }
+  const urls=(disc&&disc.sitemapUrls)||[];
+  if(!urls.length) return { found:false };
+  const paths=urls.map(u=>{ try{ return new URL(u).pathname.replace(/\/+$/,'').toLowerCase(); }catch(e){ return ''; } });
+  let service=0, location=0;
+  urls.forEach((u,i)=>{ const t=classifyPage(u,[]); if(t!=='service'&&t!=='location') return;
+    const kids=paths.filter((q,j)=>j!==i && paths[i] && q.indexOf(paths[i]+'/')===0).length; if(kids>=2) return; // a hub, not a page of its own
+    if(t==='service') service++; else location++; });
+  const times=Object.values(disc.lastmod||{}).map(d=>Date.parse(d)).filter(t=>!isNaN(t)&&t<Date.now()+2*864e5);
+  return { found:true, total:urls.length, service, location, newest:times.length?new Date(Math.max(...times)).toISOString().slice(0,10):null };
 }
 // Cross-page content analysis — what one page alone cannot show:
 //  - hub pages (a directory page with its own sub-pages) are told apart from the pages under them;
@@ -936,6 +969,9 @@ async function crawlSite(root, opts){
 async function crawlSiteRun(root, opts){
   const max=opts.max||150, conc=opts.concurrency||5, onProgress=opts.onProgress||function(){};
   const render=typeof opts.render==='function'?opts.render:null;
+  // onPhase(name, info) lets a UI say what the crawl is doing: discovering, crawling, links, pagespeed, scoring.
+  const phase=(name,info)=>{ try{ if(typeof opts.onPhase==='function') opts.onPhase(name,info||{}); }catch(e){} };
+  phase('discovering');
   const disc=await discoverPages(root, max, render);
   if(!disc.urls.length) return { error:'No pages discovered (no sitemap and no crawlable links — the site may be a JavaScript app with no sitemap).', root:disc.base };
   const baseKey=siteKey(new URL(disc.base).hostname);
@@ -977,6 +1013,7 @@ async function crawlSiteRun(root, opts){
     if(r.jsShell && render){ try{ const html=await render(u); if(html){ r=await auditOne(u, html); r._rendered=true; rendered++; } }catch(e){} }
     return r;
   }
+  phase('crawling',{queued:queue.length});
   const pool=[]; for(let w=0; w<conc; w++) pool.push(worker()); await Promise.all(pool);
   pages.sort((a,b)=>a.url<b.url?-1:a.url>b.url?1:0); // stable order, whatever order the workers finished in
   const ok=pages.filter(p=>!p.error);
@@ -988,6 +1025,7 @@ async function crawlSiteRun(root, opts){
   const pageAverage=scored.length?Math.round(scored.reduce((a,p)=>a+p._score.score,0)/scored.length):null;
 
   // Link health: every internal link target on the audited pages, status-checked (cached from the crawl queue).
+  phase('links');
   const sources={};
   ok.forEach(p=>(p.links||[]).forEach(l=>{ if(keyOf(l)===keyOf(p.url)) return; (sources[l]=sources[l]||[]).push(p.url); }));
   const targets=Object.keys(sources).slice(0,400), statusOf={};
@@ -1009,6 +1047,7 @@ async function crawlSiteRun(root, opts){
   const aux={ origin:home.origin, checks:[] };
   try{ await addAux(aux); }catch(e){}
   let speedRuns=[];
+  if(opts.speed!==false) phase('pagespeed',{pages:3, runs:PSI_RUNS});
   if(opts.speed!==false){
     // Money pages = the service (then location) pages the site links to most.
     const inbound={}; Object.keys(sources).forEach(t=>{ inbound[keyOf(t)]=(inbound[keyOf(t)]||0)+sources[t].length; });
@@ -1024,6 +1063,7 @@ async function crawlSiteRun(root, opts){
       return { url:p.url, score:blend, mobile:s.speed&&s.speed.mobile||null, desktop:s.speed&&s.speed.desktop||null, checks:s.checks };
     }));
   }
+  phase('scoring');
   const technical=technicalScore(aux.checks, speedRuns);
   const coverage=coverageScore(ok);
   const freshness=freshnessScore(ok, disc.lastmod||{}, _nowMs());
@@ -1035,7 +1075,7 @@ async function crawlSiteRun(root, opts){
   let siteScore=pageAverage==null?null:Math.round(0.5*pageAverage+0.5*siteLevel);
   // Site-wide penalties — once per site, however many pages repeat the problem.
   const cpEarly=crossPageIssues(ok);
-  const selfReview=ok.some(p=>p.checks.some(c=>c.label==='Review / rating schema (stars)'&&c.status==='warn'));
+  const selfReview=ok.some(p=>p.checks.some(c=>c.label==='Review / rating schema'&&c.status==='warn'));
   const penalties=[
     (cpEarly.countClaims||[]).length && {points:2, reason:'Hard-coded count claims that don’t match the site'},
     (cpEarly.h1Spacing||[]).length && {points:2, reason:'H1 words run together in the page code'},
@@ -1091,6 +1131,64 @@ function siteBreakdownHTML(b, scol){
     +'</table>'
     +((b.penalties||[]).length?'<div style="font-size:13px;color:#b45309;margin-top:6px"><b>Site-wide penalties:</b> '+b.penalties.map(x=>esc(x.reason)+' −'+x.points).join(' · ')+'</div>':'')
     +((b.caps||[]).length?'<div style="font-size:13px;color:#b91c1c;margin-top:6px"><b>Score capped:</b> '+b.caps.map(x=>esc(x.reason)+' → max '+x.max).join(' · ')+'</div>':'')
+  +'</div>';
+}
+// PageSpeed for the homepage + money pages: the median of PSI_RUNS runs, with the range seen.
+function speedRunsHTML(runs, root){
+  runs=(runs||[]).filter(x=>x&&(x.mobile||x.desktop));
+  if(!runs.length) return '';
+  const cell=m=>{ if(!m||m.error||m.score==null) return '<span style="color:#94a3b8">not measured</span>';
+    const c=m.score>=90?'#16a34a':m.score>=50?'#ea580c':'#dc2626', r=m.range&&m.range.score;
+    return '<b style="color:'+c+'">'+m.score+'</b>'+(r&&m.runs>1?' <span style="color:#64748b;font-size:12px">('+r[0]+'–'+r[1]+')</span>':''); };
+  const th=t=>'<th style="text-align:left;padding:5px 8px;border-bottom:2px solid #e2e8f0;font-size:12px;color:#64748b">'+t+'</th>';
+  return '<h3 style="margin:18px 0 8px;font-size:15px">Google PageSpeed — median of '+PSI_RUNS+' runs (range in brackets)</h3>'
+    +'<div style="overflow:auto"><table style="border-collapse:collapse;width:100%;font-size:13px"><tr>'+th('Page')+th('Mobile')+th('Desktop')+th('Mobile LCP')+'</tr>'
+    +runs.map(x=>'<tr style="border-bottom:1px solid #eef2f7"><td style="padding:5px 8px">'+esc(String(x.url).replace(root,'')||'/')+'</td><td style="padding:5px 8px">'+cell(x.mobile)+'</td><td style="padding:5px 8px">'+cell(x.desktop)+'</td><td style="padding:5px 8px">'+(x.mobile&&x.mobile.lcpTxt?esc(x.mobile.lcpTxt):'—')+'</td></tr>').join('')
+    +'</table></div><div style="font-size:12px;color:#64748b;margin-top:4px">Mobile counts 70% and desktop 30% of each page\'s speed score. Lighthouse varies run to run, which is why the median is used.</div>';
+}
+// The three problems most worth a prospect's attention, in plain words — the summary shown before the full report.
+function siteTopIssues(res, n){
+  if(!res||res.error) return [];
+  const cp=res.crossPage||{}, b=res.siteBreakdown||{}, rel=u=>String(u||'').replace(res.root,'')||'/', out=[];
+  const add=(w,title,detail)=>out.push({w,title,detail});
+  const mob=(res.speed||[]).map(x=>x.mobile&&!x.mobile.error?x.mobile.score:null).filter(v=>v!=null);
+  (b.caps||[]).forEach(c=>add(100,'Score capped at '+c.max,c.reason));
+  if(mob.length && Math.min(...mob)<50) add(95,'Slow on phones: mobile PageSpeed '+Math.min(...mob)+'/100','Most local searches happen on phones; Google ranks the mobile version.');
+  if((cp.jsRendered||[]).length) add(92,cp.jsRendered.length+' page'+(cp.jsRendered.length===1?' is':'s are')+' invisible to AI search','Their content only appears after JavaScript runs.');
+  if((cp.brokenLinks||[]).length) add(90,cp.brokenLinks.length+' broken internal link'+(cp.brokenLinks.length===1?'':'s'),'e.g. '+rel(cp.brokenLinks[0].url)+' returns '+cp.brokenLinks[0].status);
+  if(b.freshness&&b.freshness.score<50&&b.freshness.newest) add(85,'No fresh content since '+b.freshness.newest,'Search and AI tools favour sites that keep publishing.');
+  if(b.coverage&&b.coverage.score<50) add(84,'Few service or location pages ('+b.coverage.service+' service, '+b.coverage.location+' location)','Each service and each town you serve needs its own page to rank for it.');
+  if((cp.nearDuplicates||[]).length) add(80,(cp.nearDuplicates.length)+' near-duplicate page pair'+(cp.nearDuplicates.length===1?'':'s'),'Pages sharing 80%+ of their text compete with each other.');
+  if(cp.nap&&(cp.nap.inconsistent||[]).length) add(80,'Business '+cp.nap.inconsistent.join(' / ')+' differs across pages','Inconsistent NAP confuses Google and AI about who you are.');
+  if((cp.thin||[]).length) add(70,(cp.thin.length)+' thin page'+(cp.thin.length===1?'':'s'),'Under 250 words of their own content.');
+  if((cp.countClaims||[]).length) add(55,'Page copy contradicts the site','"'+cp.countClaims[0].claim+'" — the site has '+cp.countClaims[0].actual+' '+cp.countClaims[0].kind+' pages.');
+  if((cp.missingH1||[]).length) add(50,(cp.missingH1.length)+' page'+(cp.missingH1.length===1?'':'s')+' without an H1 headline','');
+  if((cp.orphans||[]).length) add(45,(cp.orphans.length)+' orphan page'+(cp.orphans.length===1?'':'s'),'In the sitemap but linked from nowhere.');
+  if((cp.redirectLinks||[]).length) add(40,(cp.redirectLinks.length)+' internal link'+(cp.redirectLinks.length===1?'':'s')+' that redirect','e.g. '+rel(cp.redirectLinks[0].url));
+  if((b.penalties||[]).some(p=>/review/i.test(p.reason))) add(35,'Self-serving review markup','Not eligible for Google stars; show your real Google reviews on the site instead.');
+  if((cp.duplicateTitles||[]).length) add(30,'Duplicate page titles','"'+cp.duplicateTitles[0].value+'" on '+cp.duplicateTitles[0].urls.length+' pages.');
+  return out.sort((a,b)=>b.w-a.w).slice(0,n||3).map(x=>({title:x.title,detail:x.detail}));
+}
+// Ranked side-by-side of full-site crawls (the deep competitor comparison).
+function siteComparisonHTML(results){
+  const F="font-family:'Inter',system-ui,Arial,sans-serif;color:#0f172a";
+  const rows=(results||[]).filter(r=>r&&!r.error&&r.siteScore!=null).sort((a,b)=>b.siteScore-a.siteScore);
+  const failed=(results||[]).filter(r=>!r||r.error||r.siteScore==null);
+  const gcol=s=> s==null?'#94a3b8':s>=90?'#16a34a':s>=80?'#65a30d':s>=70?'#f59e0b':s>=55?'#f97316':'#dc2626';
+  const grade=s=> s>=90?'A':s>=80?'B':s>=70?'C':s>=55?'D':'F';
+  const medal=i=> i===0?'🥇':i===1?'🥈':i===2?'🥉':(i+1)+'.';
+  const th=t=>'<th style="text-align:left;padding:8px 8px;font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:.04em;border-bottom:2px solid #e2e8f0;white-space:nowrap">'+t+'</th>';
+  const td=(v,c)=>'<td style="padding:8px 8px;font-weight:700;color:'+(c||gcol(v))+'">'+(v==null?'—':v)+'</td>';
+  const body=rows.map((r,i)=>{ const b=r.siteBreakdown||{}; const home=(r.speed||[])[0]; const mob=home&&home.mobile&&!home.mobile.error?home.mobile.score:null; const top=siteTopIssues(r,1)[0];
+    return '<tr style="border-bottom:1px solid #eef2f7;'+(i===0?'background:#f0fdf4':'')+'"><td style="padding:8px;font-weight:800">'+medal(i)+'</td>'
+      +'<td style="padding:8px;font-weight:700;white-space:nowrap">'+esc(String(r.root).replace(/^https?:\/\/(www\.)?/,''))+'<div style="font-size:11px;color:#94a3b8;font-weight:400">'+((r.coverage||{}).audited||0)+' pages audited</div></td>'
+      +td(grade(r.siteScore)+' · '+r.siteScore,gcol(r.siteScore))+td(b.pageAverage)+td(b.coverage&&b.coverage.score)+td(b.freshness&&b.freshness.score)+td(b.linkHealth&&b.linkHealth.score)+td(b.duplication&&b.duplication.score)+td(mob)+td(b.aiSearch)
+      +'<td style="padding:8px;font-size:12px;color:#475569">'+(top?esc(top.title):'—')+'</td></tr>'; }).join('');
+  return '<div style="'+F+'">'
+    +'<div style="border-bottom:3px solid #0f172a;padding-bottom:12px;margin-bottom:14px"><div style="font-size:20px;font-weight:800">Full-site comparison — '+rows.length+' site'+(rows.length===1?'':'s')+' ranked</div><div style="color:#64748b;font-size:13px">'+esc(BRAND.name)+' · every page of every site crawled and scored the same way</div></div>'
+    +'<div style="overflow:auto"><table style="border-collapse:collapse;width:100%;font-size:13px"><tr>'+th('#')+th('Site')+th('Score')+th('Pages')+th('Coverage')+th('Freshness')+th('Links')+th('Duplication')+th('Mobile speed')+th('AI search')+th('Biggest issue')+'</tr>'+body+'</table></div>'
+    +(failed.length?'<div style="font-size:12px;color:#b91c1c;margin-top:8px">Could not crawl: '+failed.map(r=>esc((r&&r.root)||'?')+(r&&r.error?' ('+esc(r.error)+')':'')).join(' · ')+'</div>':'')
+    +'<div style="font-size:12px;color:#64748b;margin-top:8px">Score = 50% average page score + 50% site level (coverage, freshness, link health, duplication, technical). Mobile speed is the homepage\'s median of '+PSI_RUNS+' PageSpeed runs.</div>'
   +'</div>';
 }
 function aiExplainerHTML(){
@@ -1157,6 +1255,7 @@ function siteReportHTML(res){
     +'<div style="font-size:13px;color:#334155;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:10px 12px;margin-bottom:14px"><b>Coverage:</b> audited <b>'+cov.audited+'</b> of <b>'+cov.discovered+'</b> pages found'+(cov.capped?(' (capped at '+cov.cap+' — more exist)'):'')+' · discovery via <b>'+esc(cov.via||'?')+'</b>'+(cov.failed?(' · '+cov.failed+' failed to load'):'')+(cov.renderAvailable?(' · '+cov.rendered+' JS pages rendered'):' · JS-rendering off (raw HTML only)')+'.</div>'
     +'<div style="font-size:15px;margin-bottom:6px"><b>Site score:</b> <span style="font-size:26px;font-weight:800;color:'+scol(res.siteScore)+'">'+(res.siteScore==null?'—':res.siteScore)+'</span> / 100'+(res.siteBreakdown?'':' (average across audited pages)')+'</div>'
     +siteBreakdownHTML(res.siteBreakdown, scol)
+    +speedRunsHTML(res.speed, res.root)
     +speedHTML
     +'<h3 style="margin:18px 0 8px;font-size:15px">Readiness by search engine</h3><div style="display:flex;gap:10px;flex-wrap:wrap">'
       +engine('Google', res.siteScore, 'Overall on-page + technical (Google renders JS).')
@@ -1215,6 +1314,7 @@ function reportHTML(r){
       +'<div><div style="font-size:20px;font-weight:800;color:#0f172a">'+esc(BRAND.name)+'</div><div style="color:#64748b;font-size:13px">'+esc(BRAND.tagline)+'</div></div>'
       +'<div style="text-align:right;font-size:12px;color:#64748b">SEO &amp; AI Search Audit<br>'+esc(r.domain)+' · '+esc(r.timestamp||'')+'</div>'
     +'</div>'
+    +SNAPSHOT_BANNER_HTML+sitemapLineHTML(r.sitemap)
     +'<div style="border:2px solid '+col+';border-radius:10px;padding:18px 20px;margin-bottom:16px">'
       +'<div style="font-size:12px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#64748b">Executive summary — '+esc(r.domain)+'</div>'
       +'<div style="font-size:30px;font-weight:800;color:'+col+'">'+sc.score+'/100 · Grade '+sc.grade+'</div>'
@@ -1306,17 +1406,30 @@ async function audit(url, opts){
   resetLinkCache();
   const r=await auditOne(url);
   try{ await addAux(r); }catch(e){}
+  try{ r.sitemap=await sitemapSummary(r.origin||r.url); }catch(e){}
   if(opts.speed!==false){ try{ await addSpeed(r, opts.psiKey||''); }catch(e){} }
+  r.engine='Homepage snapshot';
   return r;
 }
+// Homepage-only results say so, and point at the full-site audit.
+const SNAPSHOT_BANNER_HTML='<div style="background:#fef3c7;border:1px solid #fcd34d;color:#78350f;border-radius:8px;padding:8px 12px;margin:0 0 12px;font-size:13px;font-weight:600">Homepage snapshot — full-site audit available.</div>';
+function sitemapLineHTML(sm){ if(!sm) return ''; return '<div style="font-size:13px;color:#475569;margin:0 0 12px">'+(sm.found?'Sitemap: <b>'+sm.total+'</b> pages · <b>'+sm.service+'</b> service · <b>'+sm.location+'</b> location · newest content <b>'+esc(sm.newest||'not dated')+'</b>':'No XML sitemap found')+'</div>'; }
 // Side-by-side comparison of many businesses (ranked leaderboard from stored audits).
 // items: [{ name, report }]. Ranks best-to-worst; color-codes score, speed and each category.
 function comparisonHTML(items){
   const F="font-family:'Inter',system-ui,Arial,sans-serif;color:#0f172a";
-  const rows=(items||[]).filter(x=>x&&x.report).map(x=>{
-    const sc=score(x.report); const sp=x.report.speed||{};
+  const rows=(items||[]).filter(x=>x&&x.report&&!x.report.error).map(x=>{
+    const rep=x.report;
+    if(rep.coverage && rep.siteScore!=null){ // a saved full-site crawl
+      const s=rep.siteScore, b=rep.siteBreakdown||{}, home=(rep.speed||[])[0], cv=b.coverage||{};
+      const byCat={}; (rep.pages||[]).forEach(p=>{ const bc=p._score&&p._score.byCat||{}; Object.keys(bc).forEach(c=>{ byCat[c]=byCat[c]||{e:0,t:0}; byCat[c].e+=bc[c].e; byCat[c].t+=bc[c].t; }); });
+      return { name:x.name||String(rep.root).replace(/^https?:\/\//,''), domain:String(rep.root).replace(/^https?:\/\//,''), engine:'Full-site crawl',
+        sc:{score:s, grade:s>=90?'A':s>=80?'B':s>=70?'C':s>=55?'D':'F', byCat}, mobile:home&&home.mobile&&!home.mobile.error?home.mobile.score:null,
+        sm:{found:true, total:(rep.coverage||{}).audited, service:cv.service, location:cv.location, newest:(b.freshness||{}).newest||null} };
+    }
+    const sc=score(rep); const sp=rep.speed||{};
     const mob=(sp.mobile&&!sp.mobile.error&&sp.mobile.score!=null)?sp.mobile.score:null;
-    return { name:x.name||x.report.domain, domain:x.report.domain, sc:sc, mobile:mob };
+    return { name:x.name||rep.domain, domain:rep.domain, sc:sc, mobile:mob, engine:'Homepage snapshot', sm:rep.sitemap||null };
   });
   if(!rows.length) return '<p style="'+F+'">Select two or more audited companies to compare. (Companies without a saved audit can\'t be ranked yet — run their audit first.)</p>';
   rows.sort((a,b)=>(b.sc.score||0)-(a.sc.score||0));
@@ -1327,26 +1440,30 @@ function comparisonHTML(items){
   const CATSHORT={'Indexability & Crawlability':'Index','On-Page Content':'On-Page','Technical & Mobile':'Technical','Local SEO':'Local SEO','Social Sharing':'Social','Images & Accessibility':'Images','Performance Hygiene':'Perf.','AI Search & Answer Engines':'AI Search','Page Speed & Core Web Vitals':'Speed'};
   const th=t=>'<th style="text-align:left;padding:8px 10px;font-size:12px;color:#64748b;text-transform:uppercase;letter-spacing:.05em;border-bottom:2px solid #e2e8f0;white-space:nowrap">'+esc(t)+'</th>';
   const thc=(c)=>'<th title="'+esc(c)+'" style="text-align:left;padding:8px 6px;font-size:12px;color:#64748b;text-transform:uppercase;letter-spacing:.03em;border-bottom:2px solid #e2e8f0">'+esc(CATSHORT[c]||c)+'</th>';
-  const head='<tr>'+th('#')+th('Company')+th('Grade')+th('Score')+th('Mobile')+cats.map(thc).join('')+'</tr>';
+  const hasSm=rows.some(r=>r.sm);
+  const smTd=v=>'<td style="padding:8px 10px">'+(v==null?'—':esc(String(v)))+'</td>';
+  const head='<tr>'+th('#')+th('Company')+th('Audit')+th('Grade')+th('Score')+th('Mobile')+cats.map(thc).join('')+(hasSm?th('Pages')+th('Service pages')+th('Location pages')+th('Newest content'):'')+'</tr>';
   const body=rows.map((r,i)=>{
     const cells=cats.map(c=>{ const b=r.sc.byCat[c]; if(!b||!b.t) return '<td style="padding:8px 10px;color:#94a3b8">—</td>'; const p=Math.round(100*b.e/b.t); return '<td style="padding:8px 10px;font-weight:700;color:'+pcol(p)+'">'+p+'%</td>'; }).join('');
     const mob=r.mobile==null?'<td style="padding:8px 10px;color:#94a3b8">—</td>':'<td style="padding:8px 10px;font-weight:700;color:'+gcol(r.mobile)+'">'+r.mobile+'</td>';
     return '<tr style="border-bottom:1px solid #eef2f7;'+(i===0?'background:#f0fdf4':'')+'">'
       +'<td style="padding:8px 10px;font-weight:800">'+medal(i)+'</td>'
       +'<td style="padding:8px 10px;font-weight:700;white-space:nowrap">'+esc(r.name)+'<div style="font-size:11px;color:#94a3b8;font-weight:400">'+esc(r.domain)+'</div></td>'
+      +'<td style="padding:8px 10px;font-size:11px;color:#64748b;white-space:nowrap">'+esc(r.engine)+'</td>'
       +'<td style="padding:8px 10px;font-weight:800;color:'+gcol(r.sc.score)+'">'+r.sc.grade+'</td>'
       +'<td style="padding:8px 10px;font-weight:800;color:'+gcol(r.sc.score)+'">'+r.sc.score+'</td>'
-      +mob+cells+'</tr>';
+      +mob+cells+(hasSm?(r.sm&&r.sm.found?smTd(r.sm.total)+smTd(r.sm.service)+smTd(r.sm.location)+smTd(r.sm.newest):'<td colspan="4" style="padding:8px 10px;color:#94a3b8">'+(r.sm?'no sitemap':'—')+'</td>'):'')+'</tr>';
   }).join('');
   return '<div style="'+F+'">'
     +'<div style="border-bottom:3px solid #0f172a;padding-bottom:12px;margin-bottom:16px"><div style="font-size:20px;font-weight:800">SEO &amp; AI Search — Side-by-Side</div><div style="color:#64748b;font-size:13px">'+esc(BRAND.name)+' · '+rows.length+' businesses ranked</div></div>'
+    +(rows.some(r=>r.engine==='Homepage snapshot')?SNAPSHOT_BANNER_HTML:'')
     +'<div style="overflow:auto"><table style="border-collapse:collapse;width:100%;font-size:13px">'+head+body+'</table></div>'
     +'<div style="font-size:12px;color:#64748b;margin-top:10px">Ranked best to worst by overall score. Green ≥80% · amber 60–79% · red under 60%. The lowest-ranked businesses are your strongest sales prospects.</div>'
   +'</div>';
 }
 const API={ BRAND, PROXIES, TAGS, AI_BOTS, AISEARCH, PROJECT_FIXES, sleep, esc, isQuick, setAbort,
   fetchHtml, fetchAux, aiCrawlerStatus, auditOne, addAux, fetchPSI, addSpeed, score, audit,
-  discoverPages, crossPageIssues, crawlSite, siteReportHTML, aiExplainerHTML, ctaBlockHTML,
+  discoverPages, sitemapSummary, crossPageIssues, crawlSite, siteReportHTML, siteTopIssues, siteComparisonHTML, speedRunsHTML, aiExplainerHTML, ctaBlockHTML, PSI_RUNS,
   reportHTML, findingsHTML, emailHTML, emailText, comparisonHTML,
   // building blocks, exposed for tests
   classifyPage, mainContent, localEntities, countClaims, h1Glued, smsLabelTelLinks, businessSchema, ldNodes, AI_SEARCH_BOTS, AI_TRAINING_BOTS };

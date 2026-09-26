@@ -24,6 +24,7 @@ function engine(routes) {
       const urls = JSON.parse(init.body).urls;
       return resp(200, JSON.stringify({ results: urls.map(x => Object.assign({ url: x, status: (routes[x] && routes[x].status) || 404, location: routes[x] && routes[x].location || null, noindex: !!(routes[x] && /noindex/.test(routes[x].body || '')) })) }));
     }
+    if (/pagespeedonline/.test(u) && routes.psi) return resp(200, routes.psi(u));
     return resp(502, '');
   };
   w.eval(fs.readFileSync(path.join(__dirname, '..', 'seo-engine.js'), 'utf8'));
@@ -64,7 +65,7 @@ test('LocalBusiness: subtype with address+telephone+openingHoursSpecification pa
 test('Review schema: 0 points; warns only when on the business entity', async () => {
   const u = 'https://t.example/';
   const SEO = engine({ [u]: { body: page({ head: ld({ '@type': 'LocalBusiness', name: 'T', aggregateRating: { '@type': 'AggregateRating', ratingValue: 5 } }), body: words(300) }) } });
-  const c = check(await SEO.auditOne(u), 'Review / rating schema (stars)');
+  const c = check(await SEO.auditOne(u), 'Review / rating schema');
   assert.strictEqual(c.points, 0); assert.strictEqual(c.status, 'warn');
 });
 
@@ -139,4 +140,23 @@ test('H1 words run together and SMS labels on tel: links', () => {
   assert.strictEqual(SEO.h1Glued(h[0]), 'TowingColumbus');
   assert.strictEqual(SEO.h1Glued(h[1]), null);
   same(SEO.smsLabelTelLinks(d), ['Text us']);
+});
+
+test('PageSpeed: median of 3 runs per form factor, range kept for the detail view', async () => {
+  const seq = { mobile: [40, 80, 60], desktop: [90, 70, 95] }, n = { mobile: 0, desktop: 0 };
+  const SEO = engine({ psi: u => { const f = /strategy=mobile/.test(u) ? 'mobile' : 'desktop'; const v = seq[f][n[f]++ % 3];
+    return JSON.stringify({ lighthouseResult: { categories: { performance: { score: v / 100 } }, audits: { 'largest-contentful-paint': { numericValue: v * 50, displayValue: '' } } } }); } });
+  const r = { url: 'https://t.example/', checks: [] };
+  await SEO.addSpeed(r, '');
+  assert.strictEqual(r.speed.mobile.score, 60); assert.strictEqual(r.speed.desktop.score, 90);
+  same(r.speed.mobile.range.score, [40, 80]);
+  assert.match(check(r, 'Mobile speed score').detail, /60\/100 \(median\) · range 40–80 over 3 runs/);
+});
+
+test('AI Search category never reads above 95%', async () => {
+  const u = 'https://t.example/';
+  const SEO = engine({ [u]: { body: page({ head: ld({ '@type': 'FAQPage' }) + ld({ '@type': 'Organization', name: 'T', sameAs: ['x'] }), body: '<h1>x</h1>' + words(300) }) } });
+  const sc = SEO.score(await SEO.auditOne(u));
+  const ai = sc.byCat['AI Search & Answer Engines'];
+  assert.ok(ai.e / ai.t <= 0.95 + 1e-9, 'AI ' + ai.e / ai.t);
 });

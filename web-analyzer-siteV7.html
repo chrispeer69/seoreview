@@ -180,17 +180,20 @@
     <div class="panel">
       <textarea id="urls" rows="3" placeholder="Enter one or more sites, one per line:&#10;example.com&#10;anothershop.com"></textarea>
       <div class="opts">
-        <label><input type="checkbox" id="psiOn" checked /> Include Google PageSpeed (mobile + desktop) — adds ~20–40s per site</label>
-        <label><input type="checkbox" id="compareOn" onchange="if(typeof reports!=='undefined'&&reports.length)renderResults()" /> Compare sites side-by-side (competitor view)</label>
+        <label><input type="checkbox" id="psiOn" checked /> Include Google PageSpeed (mobile + desktop, median of 3 runs) — adds ~30–60s per site</label>
+        <label><input type="checkbox" id="compareOn" onchange="onCompareChange()" /> Compare sites side-by-side (competitor view)</label>
+        <label id="deepRow" style="display:none;margin-left:22px"><input type="checkbox" id="deepOn" checked /> Full-site crawl of every site — the deep comparison (~2–4 min per site)</label>
         <input type="hidden" id="psiKey" />
       </div>
       <div class="runRow" style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
         <button id="scanBtn" onclick="runScan()">Run Audit</button>
-        <button id="crawlBtn" onclick="runCrawl()" style="background:#0b8043;color:#fff;border:none;padding:12px 18px;border-radius:6px;font-weight:700;cursor:pointer">🌐 Crawl entire site (1st URL)</button>
+        <button id="crawlBtn" onclick="runCrawl()" style="background:#0b8043;color:#fff;border:none;padding:12px 18px;border-radius:6px;font-weight:700;cursor:pointer">🌐 Full-site crawl (first site only)</button>
         <button id="stopBtn" onclick="stopScan()" style="display:none;background:#dc2626;color:#fff;border:none;padding:12px 18px;border-radius:6px;font-weight:700;cursor:pointer">Stop</button>
         <button id="resetBtn" class="btnGhost" onclick="resetScan()" style="display:none">Start over</button>
       </div>
-      <p class="hint">Comparing competitors? Tick <strong>Compare</strong> above, then enter your client first and each competitor on its own line — the report opens with a ranked side-by-side comparison. Leave it unchecked to get separate reports for each site.</p>
+      <p class="hint" style="margin-top:6px"><strong>Full-site crawl:</strong> audits every page of the first site (~2–4 min). Other sites get a homepage snapshot.</p>
+      <div id="progress" style="display:none;margin:4px 0 12px;padding:10px 12px;border:1px solid #bfdbfe;background:#eff6ff;border-radius:8px;font-size:14px;color:#1e3a8a"></div>
+      <p class="hint" id="compareHint">Comparing competitors? Tick <strong>Compare</strong> above, then enter your client first and each competitor on its own line — the report opens with a ranked side-by-side comparison. Leave it unchecked to get separate reports for each site.</p>
 
       <div id="errorBox" style="display:none"></div>
       <div id="actionRow" class="actionRow" style="display:none">
@@ -199,19 +202,21 @@
         <button class="btnGhost" id="saveBtn" onclick="saveCurrent()">Save to this browser</button>
         <button class="btnGhost" id="saveTeamBtn" onclick="saveToTeam()" style="display:none">Save to team</button>
       </div>
-
-      <div id="leadBox" style="display:none;margin-top:14px;padding:14px;border:1px solid #e2e8f0;border-radius:8px;background:#f8fafc">
-        <div style="font-weight:700;margin-bottom:6px">Want the full report + a free consult?</div>
-        <div class="muted" style="margin-bottom:8px">Leave your email and Blue Collar AI will follow up.</div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <input type="email" id="leadEmail" placeholder="you@business.com" style="flex:1;min-width:200px;padding:9px 11px;border:1px solid #cbd5e1;border-radius:6px" />
-          <button class="primaryDark" onclick="submitLead()">Send me the report</button>
-        </div>
-        <div id="leadMsg" class="muted" style="margin-top:8px"></div>
-      </div>
     </div>
 
+    <div id="siteResults"></div>
     <div id="results"></div>
+
+    <!-- Email gate: visitors see grades + top issues first; the full report unlocks with an email. -->
+    <div id="leadBox" style="display:none;margin-top:14px;padding:16px;border:2px solid #2563eb;border-radius:10px;background:#eff6ff">
+      <div style="font-weight:800;font-size:17px;margin-bottom:4px">See every issue — and exactly how to fix it</div>
+      <div class="muted" style="margin-bottom:10px">The full report lists every finding with the fix, page by page. Enter your email to unlock it now; we'll send you a copy too.</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <input type="email" id="leadEmail" placeholder="you@business.com" style="flex:1;min-width:200px;padding:10px 12px;border:1px solid #cbd5e1;border-radius:6px" />
+        <button class="primaryDark" onclick="submitLead()">Email me the full report</button>
+      </div>
+      <div id="leadMsg" class="muted" style="margin-top:8px"></div>
+    </div>
   </main>
 </div>
 
@@ -304,88 +309,174 @@ let reports=[];
 let scanning=false;   // a scan loop is currently running
 let resetting=false;  // Start-over pressed mid-scan; suppress the "stopped" banner
 
-async function runScan(){
+let siteResults=[];   // full-site crawls: the first site (Full-site crawl) or every site (deep compare)
+// Public visitors see grades + top issues first; the full report unlocks once they leave an email (team: always).
+let leadUnlocked=false; try{ leadUnlocked=sessionStorage.getItem('bcai_unlocked')==='1'; }catch(e){}
+function isTeamUser(){ try{ return !!(TEAM && TEAM.user); }catch(e){ return false; } }
+function isUnlocked(){ return leadUnlocked || isTeamUser(); }
+const SNAPSHOT_BANNER='<div style="background:#fef3c7;border:1px solid #fcd34d;color:#78350f;border-radius:8px;padding:8px 12px;margin:0 0 12px;font-size:13px;font-weight:600">Homepage snapshot — full-site audit available.</div>';
+function scanList(){ return document.getElementById('urls').value.split(/[\n,]+/).map(u=>u.trim()).filter(Boolean); }
+function psiSettings(){ const psiEl=document.getElementById('psiOn'), keyEl=document.getElementById('psiKey');
+  return { on:!(psiEl&&!psiEl.checked), key:(keyEl&&keyEl.value.trim())||window.BCAI_PSI_KEY||'' }; }
+// "Site 2 of 3 · crawling pages (42/87)" plus the time estimate given up front.
+let progressEstimate='';
+function setProgress(i,n,step){ const p=document.getElementById('progress'); if(!p) return;
+  if(i==null){ p.style.display='none'; p.innerHTML=''; return; }
+  p.style.display=''; p.innerHTML='<b>Site '+(i+1)+' of '+n+'</b> · '+step+(progressEstimate?'<div style="font-size:12px;color:#475569;margin-top:3px">'+esc(progressEstimate)+'</div>':''); }
+function estimateText(n, crawls, snapshots, psi){
+  const lo=crawls*2+snapshots*(psi?0.5:0.2), hi=crawls*4+snapshots*(psi?1:0.4);
+  return 'Estimated time: '+(crawls?'~2–4 min per full-site crawl':'')+(crawls&&snapshots?', ':'')+(snapshots?'~'+(psi?'30–60 s':'10–25 s')+' per homepage snapshot':'')
+    +(n>1?' — about '+Math.max(1,Math.round(lo))+'–'+Math.max(1,Math.ceil(hi))+' min in total.':'.');
+}
+function onCompareChange(){
+  const on=document.getElementById('compareOn').checked;
+  document.getElementById('deepRow').style.display=on?'':'none';
+  if(on) document.getElementById('psiOn').checked=true;   // speed is one of the clearest wins to show a prospect
+  document.getElementById('compareHint').innerHTML=on
+    ? 'Enter your client first, then each competitor on its own line. <strong>Full-site crawl of every site</strong> ranks each site on all of its pages (slower — the report that sells); untick it and the comparison uses homepage snapshots.'
+    : 'Comparing competitors? Tick <strong>Compare</strong> above, then enter your client first and each competitor on its own line — the report opens with a ranked side-by-side comparison. Leave it unchecked to get separate reports for each site.';
+  if(typeof reports!=='undefined'&&reports.length) renderResults();
+}
+function beginRun(){
   const eb=document.getElementById('errorBox'); eb.style.display='none';
-  const list=document.getElementById('urls').value.split(/[\n,]+/).map(u=>u.trim()).filter(Boolean);
-  if(!list.length){eb.textContent='Enter at least one URL.';eb.style.display='block';return;}
-  const btn=document.getElementById('scanBtn');
-  const stopBtn=document.getElementById('stopBtn');
-  const resetBtn=document.getElementById('resetBtn');
-  const psiOn=document.getElementById('psiOn').checked;
-  const psiKey=document.getElementById('psiKey').value.trim();
-  try{ localStorage.setItem('bcai_psiKey', psiKey); }catch(e){}
-  reports=[]; document.getElementById('actionRow').style.display='none'; document.getElementById('results').innerHTML='';
   scanning=true; resetting=false; scanCtrl=new AbortController(); SEO.setAbort(scanCtrl);
-  btn.disabled=true; resetBtn.style.display='none';
-  stopBtn.style.display=''; stopBtn.disabled=false; stopBtn.textContent='Stop';
+  document.getElementById('scanBtn').disabled=true; document.getElementById('crawlBtn').disabled=true;
+  document.getElementById('resetBtn').style.display='none';
+  const stopBtn=document.getElementById('stopBtn'); stopBtn.style.display=''; stopBtn.disabled=false; stopBtn.textContent='Stop';
+  document.getElementById('actionRow').style.display='none';
+}
+function endRun(){
+  const stopped=scanCtrl && scanCtrl.signal.aborted;
+  scanning=false; setProgress(null);
+  document.getElementById('scanBtn').textContent='Run Audit'; document.getElementById('scanBtn').disabled=false; document.getElementById('crawlBtn').disabled=false;
+  document.getElementById('stopBtn').style.display='none';
+  if(resetting){ resetting=false; }
+  else { document.getElementById('resetBtn').style.display=(reports.length||siteResults.length||stopped)?'':'none'; }
+  renderResults(); renderSiteResults();
+  return stopped;
+}
+// One homepage snapshot: the page's checks + site files + sitemap summary (+ PageSpeed).
+async function snapshotOne(url, i, n, psi){
+  try{
+    setProgress(i,n,'fetching homepage · '+esc(url));
+    const r=await auditOne(url);
+    if(scanCtrl.signal.aborted) return null;
+    setProgress(i,n,'checking crawlability & AI readiness');
+    try{ await addAux(r); }catch(e){}
+    setProgress(i,n,'reading the sitemap');
+    try{ r.sitemap=await SEO.sitemapSummary(r.origin||r.url); }catch(e){}
+    if(scanCtrl.signal.aborted) return null;
+    if(psi.on){ setProgress(i,n,'PageSpeed (3 runs × mobile + desktop)…'); try{ await addSpeed(r, psi.key); }catch(e){} }
+    r.engine='Homepage snapshot';
+    return r;
+  }catch(e){
+    if(scanCtrl.signal.aborted) return null;
+    let domain=url; try{domain=new URL(/^https?:\/\//i.test(url)?url:'https://'+url).hostname;}catch(_){}
+    return {url,domain,engine:'Homepage snapshot',error:(e&&e.blocked&&e.reason)?e.reason:'Could not fetch — the site may block automated audits (e.g., Cloudflare bot protection), or the URL is invalid / temporarily unavailable.'};
+  }
+}
+const PHASE_TEXT={ discovering:'finding pages (sitemap + links)', links:'checking links', pagespeed:'PageSpeed (3 runs × mobile + desktop on 3 key pages)…', scoring:'scoring' };
+async function crawlOne(root, i, n, psi){
+  try{
+    return await crawlSite(root,{ max:150, concurrency:6, render:(window.__RENDER?renderPage:null), speed:psi.on, psiKey:psi.key,
+      places:(q)=>fetch('/api/places?q='+encodeURIComponent(q)).then(r=>r.ok?r.json():null).catch(()=>null),
+      onPhase:(ph)=>{ if(PHASE_TEXT[ph]) setProgress(i,n,PHASE_TEXT[ph]); },
+      onProgress:(d,t)=>setProgress(i,n,'crawling pages ('+d+'/'+t+')') });
+  }catch(e){ return { root, error:(e&&e.message)||'crawl failed' }; }
+}
+async function runScan(){
+  if(scanning) return;
+  const list=scanList(); const eb=document.getElementById('errorBox');
+  if(!list.length){eb.textContent='Enter at least one URL.';eb.style.display='block';return;}
+  const compare=list.length>1 && document.getElementById('compareOn').checked;
+  if(compare && document.getElementById('deepOn').checked) return runDeepCompare(list);
+  const psi=psiSettings();
+  try{ localStorage.setItem('bcai_psiKey', document.getElementById('psiKey').value.trim()); }catch(e){}
+  reports=[]; siteResults=[]; document.getElementById('results').innerHTML=''; document.getElementById('siteResults').innerHTML='';
+  beginRun(); progressEstimate=estimateText(list.length,0,list.length,psi.on);
+  document.getElementById('scanBtn').textContent='Auditing…';
   try{
     for(let i=0;i<list.length;i++){
       if(scanCtrl.signal.aborted) break;
-      btn.textContent=`Auditing ${i+1} of ${list.length}: ${list[i]}`;
-      try{
-        const r=await auditOne(list[i]);
-        if(scanCtrl.signal.aborted) break;
-        btn.textContent=`Checking crawlability & AI readiness ${i+1}/${list.length}…`;
-        try{ await addAux(r); }catch(e){}
-        if(scanCtrl.signal.aborted) break;
-        if(psiOn){ btn.textContent=`Measuring page speed (mobile + desktop) ${i+1}/${list.length}…`; try{ await addSpeed(r, psiKey); }catch(e){} }
-        if(scanCtrl.signal.aborted) break;
-        reports.push(r);
-      }catch(e){
-        if(scanCtrl.signal.aborted) break;
-        let domain=list[i]; try{domain=new URL(/^https?:\/\//i.test(list[i])?list[i]:'https://'+list[i]).hostname;}catch(_){}
-        reports.push({url:list[i],domain,error:(e&&e.blocked&&e.reason)?e.reason:'Could not fetch — the site may block automated audits (e.g., Cloudflare bot protection), or the URL is invalid / temporarily unavailable.'});
-      }
-      renderResults();
-      if(scanCtrl.signal.aborted) break;
+      const r=await snapshotOne(list[i], i, list.length, psi);
+      if(!r) break;
+      reports.push(r); renderResults();
       if(list.length>1&&i<list.length-1) await sleep(900);
     }
   } finally {
-    const stopped=scanCtrl && scanCtrl.signal.aborted;
-    scanning=false;
-    btn.textContent='Run Audit'; btn.disabled=false;
-    stopBtn.style.display='none';
-    if(resetting){ resetting=false; renderResults(); }
-    else {
-      renderResults();
-      resetBtn.style.display=(reports.length||stopped)?'':'none';
-      if(stopped){ eb.textContent=`Audit stopped — ${reports.length} site${reports.length===1?'':'s'} completed. You can open, save, or start over.`; eb.style.display='block'; }
-      else if(reports.length&&reports.every(r=>r.error)){eb.textContent='None of the sites could be audited. They may block automated access (e.g., Cloudflare bot protection), or a proxy was temporarily unavailable — try again shortly.';eb.style.display='block';}
-    }
+    const stopped=endRun();
+    if(stopped&&!resetting){ eb.textContent=`Audit stopped — ${reports.length} site${reports.length===1?'':'s'} completed. You can open, save, or start over.`; eb.style.display='block'; }
+    else if(reports.length&&reports.every(r=>r.error)){eb.textContent='None of the sites could be audited. They may block automated access (e.g., Cloudflare bot protection), or a proxy was temporarily unavailable — try again shortly.';eb.style.display='block';}
   }
 }
 
 // server-side render adapter (used only when RENDER_API_KEY is set in Railway)
 function renderPage(u){ return fetch('/api/render?url='+encodeURIComponent(u)).then(function(r){ return r.ok?r.text():null; }).catch(function(){ return null; }); }
+// Full-site crawl of the FIRST site; any other sites listed get a homepage snapshot.
 async function runCrawl(){
-  if(scanning) return;                 // don't stomp an in-flight scan/crawl
-  const list=document.getElementById('urls').value.split(/[\n,]+/).map(u=>u.trim()).filter(Boolean);
+  if(scanning) return;
+  const list=scanList();
   if(!list.length){ alert('Enter a website first.'); return; }
-  // Fresh AbortController: a prior Stop/Start-over left scanCtrl aborted, which would otherwise
-  // make every fetch short-circuit and the crawl silently discover 0 pages.
-  scanCtrl=new AbortController(); SEO.setAbort(scanCtrl); scanning=true; resetting=false;
-  const root=list[0]; const out=document.getElementById('results');
-  document.getElementById('actionRow') && (document.getElementById('actionRow').style.display='none');
-  out.innerHTML='<div style="padding:16px;color:#64748b">Discovering pages on '+esc(root)+'…</div>';
-  out.scrollIntoView({behavior:'smooth',block:'nearest'});
+  const psi=psiSettings();
+  reports=[]; siteResults=[]; document.getElementById('results').innerHTML=''; document.getElementById('siteResults').innerHTML='';
+  beginRun(); progressEstimate=estimateText(list.length,1,list.length-1,psi.on);
+  document.getElementById('scanBtn').textContent='Crawling…';
+  document.getElementById('progress').scrollIntoView({behavior:'smooth',block:'nearest'});
   try{
-    const psiEl=document.getElementById('psiOn'), keyEl=document.getElementById('psiKey');
-    const res=await crawlSite(root,{ max:150, concurrency:6, render:(window.__RENDER?renderPage:null),
-      speed:!(psiEl&&!psiEl.checked), psiKey:(keyEl&&keyEl.value.trim())||window.BCAI_PSI_KEY||'',
-      places:(q)=>fetch('/api/places?q='+encodeURIComponent(q)).then(r=>r.ok?r.json():null).catch(()=>null),
-      onProgress:(d,t,u)=>{ out.innerHTML='<div style="padding:16px;color:#64748b">Crawling… audited <b>'+d+'</b> of '+t+' pages<br><span style="font-size:12px">'+esc(String(u||'').slice(0,80))+'</span></div>'; } });
-    lastSiteResult=res;
-    out.innerHTML='<div style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:20px">'+siteReportHTML(res)+'</div>'
-      +'<div style="margin-top:10px"><button class="primaryDark" onclick="printSiteReport()">🖨 Print full-site report</button></div>';
-  }catch(e){ out.innerHTML='<div style="padding:16px;color:#dc2626">Crawl failed — '+esc(e&&e.message||'error')+'</div>'; }
-  finally{ scanning=false; }
+    const res=await crawlOne(list[0], 0, list.length, psi);
+    if(res) siteResults=[res]; renderSiteResults();
+    for(let i=1;i<list.length && !scanCtrl.signal.aborted;i++){
+      const r=await snapshotOne(list[i], i, list.length, psi); if(!r) break;
+      reports.push(r); renderResults();
+    }
+  } finally { endRun(); }
 }
-var lastSiteResult=null;
+// Compare with a full-site crawl of every site — slower, but the comparison that sells.
+async function runDeepCompare(list){
+  const psi=psiSettings();
+  reports=[]; siteResults=[]; document.getElementById('results').innerHTML=''; document.getElementById('siteResults').innerHTML='';
+  beginRun(); progressEstimate=estimateText(list.length,list.length,0,psi.on);
+  document.getElementById('scanBtn').textContent='Crawling…';
+  try{
+    for(let i=0;i<list.length && !scanCtrl.signal.aborted;i++){
+      const res=await crawlOne(list[i], i, list.length, psi);
+      siteResults.push(res||{root:list[i],error:'crawl failed'}); renderSiteResults();
+    }
+  } finally { endRun(); }
+}
+// Crawl results: the ranked comparison (2+ sites), then each site — summary + top 3 issues until unlocked.
+function siteSummaryCard(res){
+  if(!res||res.error) return '<div class="card"><h2>'+esc((res&&res.root)||'Site')+'</h2><p style="color:#dc2626;font-weight:600">⚠ Crawl failed — '+esc((res&&res.error)||'error')+'</p></div>';
+  const s=res.siteScore, g=s>=90?'A':s>=80?'B':s>=70?'C':s>=55?'D':'F', q=qualityColor(s);
+  const top=SEO.siteTopIssues(res,3);
+  return '<div class="card"><div class="cardHead"><div><h2>'+esc(String(res.root).replace(/^https?:\/\//,''))+'</h2><span class="muted">Full-site crawl · '+((res.coverage||{}).audited||0)+' pages audited</span></div>'
+    +'<div style="min-width:86px;border:1px solid #e2e8f0;border-top:4px solid '+q.c+';border-radius:6px;padding:9px 13px;text-align:center"><div style="font-size:33px;font-weight:800;color:'+q.c+';line-height:1">'+(s==null?'—':s)+'</div><div style="font-size:10px;color:#64748b;letter-spacing:.08em;text-transform:uppercase;margin-top:4px">Grade '+g+'</div></div></div>'
+    +'<div class="sectionTitle">Top issues</div>'+(top.length?top.map((t,k)=>'<div class="findRow"><span class="dot" style="background:#dc2626"></span><div><div class="findLabel">'+(k+1)+'. '+esc(t.title)+'</div>'+(t.detail?'<div class="findFix">'+esc(t.detail)+'</div>':'')+'</div></div>').join(''):'<p class="muted">No major site-wide issues.</p>')
+    +'</div>';
+}
+function renderSiteResults(){
+  const out=document.getElementById('siteResults'); if(!out) return;
+  if(!siteResults.length){ out.innerHTML=''; updateLeadBox(); return; }
+  const unlocked=isUnlocked(), multi=siteResults.length>1;
+  let html=multi?'<div style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:20px;margin-bottom:14px">'+SEO.siteComparisonHTML(siteResults)+'</div>':'';
+  siteResults.forEach(res=>{
+    html+= unlocked && res && !res.error
+      ? '<div style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:20px;margin-bottom:14px">'+siteReportHTML(res)+'</div>'
+      : siteSummaryCard(res);
+  });
+  if(unlocked && siteResults.some(r=>r&&!r.error)) html+='<div style="margin:0 0 16px"><button class="primaryDark" onclick="printSiteReport()">🖨 Print full-site report'+(multi?'s':'')+'</button></div>';
+  out.innerHTML=html; updateLeadBox();
+}
 function printSiteReport(){
-  if(!lastSiteResult) return;
+  const ok=siteResults.filter(r=>r&&!r.error); if(!ok.length) return;
+  const body=(siteResults.length>1?SEO.siteComparisonHTML(siteResults)+'<div style="page-break-after:always"></div>':'')+ok.map(siteReportHTML).join('<div style="page-break-after:always"></div>');
   const w=window.open('','_blank'); if(!w){ alert('Allow pop-ups to print'); return; }
-  w.document.write('<html><head><title>Full-site SEO Audit</title><meta charset="utf-8"><style>@page{margin:12mm}body{font-family:Inter,Arial,sans-serif;margin:0;color:#0f172a}table{border-collapse:collapse;width:100%}</style></head><body>'+siteReportHTML(lastSiteResult)+'<'+'script>window.onload=function(){setTimeout(function(){window.print();},250);}<'+'/script></body></html>');
+  w.document.write('<html><head><title>Full-site SEO Audit</title><meta charset="utf-8"><style>@page{margin:12mm}body{font-family:Inter,Arial,sans-serif;margin:0;color:#0f172a}table{border-collapse:collapse;width:100%}</style></head><body>'+body+'<'+'script>window.onload=function(){setTimeout(function(){window.print();},250);}<'+'/script></body></html>');
   w.document.close();
+}
+function updateLeadBox(){
+  const lb=document.getElementById('leadBox');
+  if(lb) lb.style.display=((reports.length||siteResults.length) && !isUnlocked())?'block':'none';
 }
 
 function stopScan(){
@@ -396,8 +487,8 @@ function stopScan(){
 function resetScan(){
   resetting=true;
   if(scanCtrl) scanCtrl.abort();
-  reports=[];
-  document.getElementById('results').innerHTML='';
+  reports=[]; siteResults=[]; setProgress(null);
+  document.getElementById('results').innerHTML=''; document.getElementById('siteResults').innerHTML=''; updateLeadBox();
   document.getElementById('actionRow').style.display='none';
   document.getElementById('errorBox').style.display='none';
   document.getElementById('resetBtn').style.display='none';
@@ -466,8 +557,16 @@ function cardHtml(r){
   const sc=score(r);
   const issues=r.checks.filter(c=>c.status==='fail'||c.status==='warn').sort((a,b)=>(a.status===b.status?b.points-a.points:(a.status==='fail'?-1:1)));
   const passes=r.checks.filter(c=>c.status==='pass');
-  return `<div class="card">
-    <div class="cardHead"><div><h2>${esc(r.domain)}</h2><span class="muted">${esc(r.timestamp)}</span></div>${badge(r,72)}</div>
+  if(!isUnlocked()) return `<div class="card">${SNAPSHOT_BANNER}
+    <div class="cardHead"><div><h2>${esc(r.domain)}</h2><span class="muted">Homepage snapshot · ${esc(r.timestamp)}</span></div>${badge(r,72)}</div>
+    ${sitemapLine(r)}
+    <div class="sectionTitle">Top 3 issues</div>
+    ${issues.length?issues.slice(0,3).map(findRowBrief).join(''):'<p class="muted">Nothing major — nice site.</p>'}
+    <p class="muted" style="margin:10px 0 0">${issues.length>3?(issues.length-3)+' more issue'+(issues.length-3===1?'':'s')+' and every fix are in the full report below.':'The full report with every fix is below.'}</p>
+  </div>`;
+  return `<div class="card">${SNAPSHOT_BANNER}
+    <div class="cardHead"><div><h2>${esc(r.domain)}</h2><span class="muted">Homepage snapshot · ${esc(r.timestamp)}</span></div>${badge(r,72)}</div>
+    ${sitemapLine(r)}
     <div class="tally">
       <span class="pill ok">✓ ${sc.counts.pass} passing</span>
       <span class="pill warn">! ${sc.counts.warn} to improve</span>
@@ -480,18 +579,20 @@ function cardHtml(r){
     ${r.tracking.length?`<div class="sectionTitle">Tracking detected</div><p class="muted">${r.tracking.map(esc).join(' · ')}${r.tracking.includes('Google Tag Manager')?' — note: Tag Manager can load more tags than are visible here.':''}</p>`:''}
   </div>`;
 }
+// "Sitemap: 87 pages · 30 service · 35 location · newest content 2026-09-20" — from one sitemap read, no crawl.
+function sitemapLine(r){ const s=r&&r.sitemap; if(!s) return '';
+  return '<div class="muted" style="font-size:13px;margin:4px 0 6px">'+(s.found?'Sitemap: <b>'+s.total+'</b> pages · <b>'+s.service+'</b> service · <b>'+s.location+'</b> location · newest content <b>'+esc(s.newest||'not dated')+'</b>':'No XML sitemap found')+'</div>'; }
+function findRowBrief(c){ return `<div class="findRow"><span class="dot" style="background:${SEV[c.status].color}"></span><div><div class="findLabel">${esc(c.label)} <span class="muted">— ${esc(c.detail)}</span></div></div></div>`; }
 function renderResults(){
   document.getElementById('results').innerHTML=reports.map(cardHtml).join('');
   const row=document.getElementById('actionRow');
-  if(reports.length){
+  if(reports.length && isUnlocked()){
     row.style.display='flex';
     const cmpEl=document.getElementById('compareOn'); const cmp=reports.length>1&&cmpEl&&cmpEl.checked;
     document.getElementById('openReportBtn').textContent=cmp?`Open Comparison Report (${reports.length} sites)`:(reports.length>1?`Open Report (${reports.length} sites)`:'Open Branded Report');
   }
   else row.style.display='none';
-  // Lead-capture prompt for public (non-team) visitors after a report
-  const lb=document.getElementById('leadBox');
-  if(lb) lb.style.display=(reports.length && !(TEAM && TEAM.user))?'block':'none';
+  updateLeadBox();
 }
 
 // ---------- TEAM ZONE (server-backed, shared) + LEAD CAPTURE ----------
@@ -724,12 +825,20 @@ async function submitLead(){
   const email=(document.getElementById('leadEmail').value||'').trim();
   const msg=document.getElementById('leadMsg');
   if(!/.+@.+\..+/.test(email)){ msg.textContent='Please enter a valid email.'; return; }
-  const urls=reports.map(r=>r.url||r.domain).filter(Boolean);
+  const crawled=siteResults.filter(r=>r&&!r.error);
+  const urls=crawled.map(r=>r.root).concat(reports.map(r=>r.url||r.domain)).filter(Boolean);
+  const summary=crawled.map(r=>({domain:String(r.root).replace(/^https?:\/\//,''),error:false,score:r.siteScore,grade:r.siteScore>=90?'A':r.siteScore>=80?'B':r.siteScore>=70?'C':r.siteScore>=55?'D':'F',fullSite:true})).concat(scoreSummary());
   try{
-    const res=await fetch('/api/lead',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email,url:urls[0]||'',meta:{urls,summary:scoreSummary()}})});
+    const res=await fetch('/api/lead',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email,url:urls[0]||'',meta:{urls,summary}})});
     const data=await res.json().catch(()=>({}));
-    msg.textContent = res.ok ? (data&&data.emailed ? 'Thanks! Check your inbox — we’ll be in touch shortly.' : 'Thanks! We’ll be in touch shortly.') : 'Could not submit — please try again.';
-    if(res.ok) document.getElementById('leadEmail').value='';
+    if(res.ok){
+      leadUnlocked=true; try{ sessionStorage.setItem('bcai_unlocked','1'); }catch(e){}
+      document.getElementById('leadEmail').value='';
+      renderResults(); renderSiteResults();
+      const first=document.getElementById('siteResults').firstElementChild||document.getElementById('results').firstElementChild;
+      if(first) first.scrollIntoView({behavior:'smooth',block:'start'});
+      msg.textContent = data&&data.emailed ? 'Unlocked — your full report is below, and a copy is on its way to your inbox.' : 'Unlocked — your full report is below.';
+    } else msg.textContent = res.status===429 ? 'Too many requests — please try again in a few minutes.' : 'Could not submit — please try again.';
   }catch(e){ msg.textContent='Could not submit — please try again.'; }
 }
 
@@ -1122,8 +1231,8 @@ function comparisonMetrics(){
   <div class="aiBox" style="font-size:13.5px;line-height:1.6">
     <p style="margin:0 0 8px"><strong>Overall Score (0–100)</strong> — a single grade from a multi-point inspection of the homepage across Google SEO, local visibility, page speed, and AI-search readiness. It's the clearest snapshot of how well a site is built to be <em>found</em> and to <em>convert</em>.</p>
     <p style="margin:0 0 8px"><strong>Mobile &amp; Desktop Speed</strong> — real Google PageSpeed scores. Most local searches happen on phones, and when a page takes more than ~3 seconds to load, over half of visitors give up and leave for a competitor. Google also ranks slow sites lower — so a slow site is found less <em>and</em> converts less.</p>
-    <p style="margin:0 0 8px"><strong>Local SEO</strong> — LocalBusiness schema, click-to-call, map/address, and review stars. This is what lands a business in the Google Map Pack and in "near me" results — the highest-intent local traffic there is.</p>
-    <p style="margin:0 0 8px"><strong>AI Search</strong> — whether ChatGPT, Google AI Overviews, and Perplexity can read and recommend the business (crawler access, FAQ/entity data, llms.txt). It's the fastest-growing way people find local services, and most sites aren't set up for it at all — an easy way to get ahead.</p>
+    <p style="margin:0 0 8px"><strong>Local SEO</strong> — LocalBusiness schema, click-to-call, map/address, and real Google reviews shown on the site. This is what lands a business in the Google Map Pack and in "near me" results — the highest-intent local traffic there is.</p>
+    <p style="margin:0 0 8px"><strong>AI Search</strong> — whether ChatGPT, Google AI Overviews, and Perplexity can read and recommend the business (search-crawler access, FAQ/entity data, content readable without JavaScript; never scored above 95). It's the fastest-growing way people find local services, and most sites aren't set up for it at all — an easy way to get ahead.</p>
     <p style="margin:0 0 8px"><strong>On-Page</strong> — titles, headings, descriptions, and content. The foundation search engines and AI use to understand what a page is about and when to show it.</p>
     <p style="margin:0 0 8px"><strong>Technical</strong> — HTTPS, mobile viewport, and crawlability. If these are broken, nothing else can rank.</p>
     <p style="margin:0"><strong>Critical</strong> — the count of high-impact problems actively costing the business search visibility right now.</p>
@@ -1175,8 +1284,11 @@ function renderReport(){
     overall:sc.score, grade:sc.grade, color:sc.color,
     mob:mob(r), dsk:dsk(r),
     local:catPct(sc,CAT_LOCAL), ai:catPct(sc,CAT_AI), onpage:catPct(sc,CAT_CONTENT), tech:catPct(sc,CAT_TECH),
-    crit:r.error?null:sc.counts.fail,
+    crit:r.error?null:sc.counts.fail, sm:r.sitemap||null, engine:r.engine||'Homepage snapshot',
   };});
+  const hasSm=reports.some(r=>r.sitemap);
+  const smCells=x=>{ if(!hasSm) return ''; const s=x.sm; if(!s||!s.found) return '<td style="text-align:center;color:#cbd5e1" colspan="4">'+(s?'no sitemap':'—')+'</td>';
+    return `<td style="text-align:center">${s.total}</td><td style="text-align:center">${s.service}</td><td style="text-align:center">${s.location}</td><td style="text-align:center;white-space:nowrap">${esc(s.newest||'—')}</td>`; };
   const ranked=[...cRows].sort((a,b)=>((b.overall==null?-1:b.overall)-(a.overall==null?-1:a.overall))||(a.i-b.i));
   ranked.forEach((x,idx)=>x.rank=idx+1);
   // Traffic-light by score: 91+ OK (green), 80-90 needs attention (orange), <=79 urgent (red)
@@ -1184,14 +1296,15 @@ function renderReport(){
   const pctCell=v=>{ if(v==null) return '<td style="text-align:center;color:#cbd5e1">—</td>'; return `<td style="text-align:center;font-weight:700;color:${sColor(v)}">${v}%</td>`; };
   const spCell2=v=>{ if(v==null) return '<td style="text-align:center;color:#cbd5e1">—</td>'; return `<td style="text-align:center;font-weight:700;color:${sColor(v)}">${v}</td>`; };
   const compRows=ranked.map(x=>{
-    const nameCell=`<td>${esc(x.domain)}</td>`;
-    if(x.err) return `<tr><td style="text-align:center;color:#94a3b8">${x.rank}</td>${nameCell}<td colspan="${(hasSpeed?2:0)+6}" style="color:#dc2626">⚠ Could not audit</td></tr>`;
+    const nameCell=`<td>${esc(x.domain)}</td><td style="font-size:11px;color:#64748b;white-space:nowrap">${esc(x.engine)}</td>`;
+    if(x.err) return `<tr><td style="text-align:center;color:#94a3b8">${x.rank}</td>${nameCell}<td colspan="${(hasSpeed?2:0)+6+(hasSm?4:0)}" style="color:#dc2626">⚠ Could not audit</td></tr>`;
     return `<tr>
       <td style="text-align:center;font-weight:700">${x.rank}</td>${nameCell}
       <td style="text-align:center;font-weight:800;color:${sColor(x.overall)}">${x.grade} (${x.overall})</td>
       ${hasSpeed?spCell2(x.mob)+spCell2(x.dsk):''}
       ${pctCell(x.local)}${pctCell(x.ai)}${pctCell(x.onpage)}${pctCell(x.tech)}
       <td style="text-align:center;font-weight:700;color:${x.crit===0?'#16a34a':(x.crit==null?'#94a3b8':'#dc2626')}">${x.crit==null?'—':x.crit}</td>
+      ${smCells(x)}
     </tr>`;
   }).join('');
 
@@ -1230,19 +1343,20 @@ function renderReport(){
   const compareOn = multi && document.getElementById('compareOn') && document.getElementById('compareOn').checked;
   const rankingsTable=`
     <div class="rH2">The Rankings — ${reports.length} Sites Compared</div>
-    <p style="font-size:12px;color:#64748b;margin:-6px 0 10px">Ranked by overall score. Colors reflect the score: <span style="color:#16a34a;font-weight:700">91+ OK</span> · <span style="color:#ea580c;font-weight:700">80–90 needs attention</span> · <span style="color:#dc2626;font-weight:700">79 &amp; below urgent</span>.</p>
+    <p style="font-size:12px;color:#64748b;margin:-6px 0 10px">Every row is a <strong>homepage snapshot</strong> (the Audit column says which engine scored it; tick Full-site crawl for the deep comparison). Page counts come from each site's sitemap. Ranked by overall score. Colors reflect the score: <span style="color:#16a34a;font-weight:700">91+ OK</span> · <span style="color:#ea580c;font-weight:700">80–90 needs attention</span> · <span style="color:#dc2626;font-weight:700">79 &amp; below urgent</span>.</p>
     <div style="overflow-x:auto">
     <table class="doc"><thead><tr>
-      <th style="text-align:center">#</th><th>Website</th><th style="text-align:center">Overall</th>
+      <th style="text-align:center">#</th><th>Website</th><th>Audit</th><th style="text-align:center">Overall</th>
       ${hasSpeed?'<th style="text-align:center">Mobile</th><th style="text-align:center">Desktop</th>':''}
       <th style="text-align:center">Local SEO</th><th style="text-align:center">AI Search</th><th style="text-align:center">On-Page</th><th style="text-align:center">Technical</th><th style="text-align:center">Critical</th>
+      ${hasSm?'<th style="text-align:center">Pages (sitemap)</th><th style="text-align:center">Service pages</th><th style="text-align:center">Location pages</th><th style="text-align:center">Newest content</th>':''}
     </tr></thead><tbody>${compRows}</tbody></table></div>`;
   const comparisonMeat = fieldInsights + rankingsTable + comparisonMetrics() + perCompany;
 
   const sites=reports.map((r,i)=>`<div class="${(multi||i>0)?'page-break':''}" style="margin-top:${i>0?'34px':'0'}">
     <div style="display:flex;justify-content:space-between;align-items:center;gap:14px;border-bottom:1px solid #e2e8f0;padding-bottom:12px;margin-bottom:18px">
       <div><h2 style="margin:0;font-size:22px;color:#0f172a">${esc(r.domain)}</h2>
-      <div style="font-size:12px;color:#94a3b8;word-break:break-all">${esc(r.url)}</div></div>
+      <div style="font-size:12px;color:#94a3b8;word-break:break-all">${esc(r.url)}</div>${sitemapLine(r)}</div>
     </div>${reportSection(r)}</div>`).join('');
 
   document.getElementById('printArea').innerHTML=`
@@ -1251,6 +1365,7 @@ function renderReport(){
       <p style="margin:6px 0 0;font-size:15px;color:#64748b">${compareOn?reports.length+' websites compared':(multi?reports.length+' websites':esc(reports[0].domain))}</p></div>
       ${brand}
     </div>
+    ${SNAPSHOT_BANNER}
     ${compareOn?comparisonMeat:sites}
     ${aiExplainer()}
     ${ctaBlock()}

@@ -168,6 +168,8 @@ async function auditPage(deps, url, opts) {
     }
     if (r.jsShell && render) { try { const html = await render(url); if (html) { r = await w.SEO.auditOne(url, html); r._rendered = true; } } catch (e) {} }
     try { await w.SEO.addAux(r); } catch (e) { /* best effort, as in the tool */ }
+    try { r.sitemap = await w.SEO.sitemapSummary(r.origin || url); } catch (e) { /* sitemap columns are optional */ }
+    r.engine = 'Homepage snapshot';
     if (opts.speed) { try { await w.SEO.addSpeed(r, opts.psiKey || ''); } catch (e) {} }
     r._score = w.SEO.score(r);
     w.__pageResult = r;
