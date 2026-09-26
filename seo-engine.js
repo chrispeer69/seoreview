@@ -834,7 +834,14 @@ function score(r){
   // AI Search never reads 100 in any mode: live AI answers are not observed, so the category tops out at 95%.
   const ai=byCat[AISEARCH]; if(ai && ai.e>0.95*ai.t){ earned-=ai.e-0.95*ai.t; ai.e=0.95*ai.t; }
   const penalty=r.checks.reduce((a,c)=>a+(c.penalty||0),0);
-  const s= Math.max(0,(total? Math.round(100*earned/total):0)-penalty);
+  let s= Math.max(0,(total? Math.round(100*earned/total):0)-penalty);
+  // Thin location pages are capped after every check: <150 unique words -> max 70, <300 -> max 80 (a city page that
+  // is mostly template can't score well however clean its code is). Crawl = boilerplate-stripped words.
+  let cap=null;
+  if(r.pageType==='location'){ const uw=r.uniqueWords!=null?r.uniqueWords:r.mainWords;
+    if(uw!=null&&uw<150) cap={max:70, reason:'Thin location page ('+uw+' unique words, under 150)'};
+    else if(uw!=null&&uw<300) cap={max:80, reason:'Thin location page ('+uw+' unique words, under 300)'};
+    if(cap&&s>cap.max) s=cap.max; else if(cap&&s<=cap.max) cap.applied=false; }
   let grade,color;
   if(s>=90){grade='A';color='#16a34a';} else if(s>=80){grade='B';color='#65a30d';}
   else if(s>=70){grade='C';color='#f59e0b';} else if(s>=55){grade='D';color='#f97316';} else {grade='F';color='#dc2626';}
@@ -843,7 +850,7 @@ function score(r){
     : s>=70?'Several important gaps are holding this site back in search.'
     : s>=55?'Significant SEO problems are limiting how often this site is found.'
     : 'Major SEO issues — the site is likely losing substantial search traffic.';
-  return {score:s,grade,color,counts,byCat,verdict,scored,penalty};
+  return {score:s,grade,color,counts,byCat,verdict,scored,penalty,cap};
 }
 
 // ---------- Whole-site crawl (SEO Analyzer v2) — mirrors CRMColumbus/public/seo-engine.js ----------
@@ -2003,6 +2010,10 @@ function allFindings(res){
     if(!e.evidence){ const ev=(c.evidence||[])[0]; e.evidence=ev?{ url:ev.url||p.url, snippet:ev.snippet }:{ url:p.url, snippet:c.detail }; } }));
   const page=Object.values(byLabel).map(e=>{ const st=e.fails>=e.warns?'fail':'warn', sev=(st==='fail'?1:0.5)*Math.max(e.points,1)+(e.penalty?e.penalty/2:0);
     return { title:e.title, category:e.category, scope:'page', status:st, severity:sevLabel(sev), sev, pagesAffected:e.pages.length, urls:e.pages.slice(0,5), evidence:e.evidence, detail:e.detail, fix:e.fix, rank:sev*e.pages.length }; });
+  const capped=ok.filter(p=>p._score&&p._score.cap&&p._score.cap.applied!==false);
+  if(capped.length) page.push({ title:'Thin location pages (score capped)', category:'On-Page Content', scope:'page', status:'fail', severity:'High', sev:5,
+    pagesAffected:capped.length, urls:capped.slice(0,5).map(p=>p.url), evidence:{ url:capped[0].url, snippet:capped[0]._score.cap.reason+' → capped at '+capped[0]._score.cap.max },
+    detail:capped.length+' location page'+(capped.length===1?'':'s')+' capped at 70 (<150 unique words) or 80 (<300)', fix:'Write 300+ words that only this town\'s page has: its roads, exits, landmarks, local FAQs.', rank:5*capped.length });
   const site=(res.siteFindings||[]).filter(f=>f.status==='fail'||f.status==='warn').map(f=>{ const sev=(f.status==='fail'?1:0.5)*Math.max(f.points,1);
     const urls=[...new Set((f.evidence||[]).map(e=>e.url).filter(Boolean))];
     return { title:f.label, category:COMPONENT_NAMES[f.component]||f.component, scope:'site', status:f.status, severity:sevLabel(sev), sev, pagesAffected:Math.max(1,urls.length), urls:urls.slice(0,5),

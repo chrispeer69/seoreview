@@ -14,7 +14,7 @@ const headless = require('../headless-audit');
 
 const SITES = [
   // Site bands, plus page bands for pages whose score is a known reference point.
-  { domain: 'columbusroadsidetowing.com', root: 'https://www.columbusroadsidetowing.com', target: [88, 95], industry: 'towing',
+  { domain: 'columbusroadsidetowing.com', root: 'https://www.columbusroadsidetowing.com', target: [85, 95], industry: 'towing',
     pages: { '/service-area/whitehall': [60, 80], '/service-area/lewis-center': [90, 100] } },
   { domain: 'broadandjames.com', root: 'https://broadandjames.com', target: [45, 65], industry: 'towing' },
 ];

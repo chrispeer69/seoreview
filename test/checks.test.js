@@ -365,3 +365,15 @@ test('Stack fingerprint: WordPress theme/plugins/builder, payments, call trackin
   const plain = await SEO._x.stackFingerprint([{ url: 'https://t/', _html: '<p>Hello</p>', _pageText: 'Hello', headers: null }], { home: { url: 'https://t/', title: 'Co', _html: '<p>Hello</p>' }, local: null });
   assert.strictEqual(plain.cms, null); same([plain.builders, plain.plugins, plain.payments, plain.opsTools, plain.agency.credits, plain.tracking], [[], [], [], [], [], []]);
 });
+
+// ---------------- Thin-location caps ----------------
+test('Thin location caps: <150 unique words caps at 70, <300 at 80; other page types and rich pages uncapped', () => {
+  const { score } = engine();
+  const perfect = extra => Object.assign({ checks: [{ cat: 'x', label: 'a', points: 10, status: 'pass' }] }, extra);
+  assert.strictEqual(score(perfect({ pageType: 'location', uniqueWords: 120 })).score, 70);
+  assert.strictEqual(score(perfect({ pageType: 'location', uniqueWords: 250 })).score, 80);
+  assert.strictEqual(score(perfect({ pageType: 'location', uniqueWords: 400 })).score, 100);
+  assert.strictEqual(score(perfect({ pageType: 'service', uniqueWords: 120 })).score, 100);
+  const low = score({ pageType: 'location', uniqueWords: 120, checks: [{ cat: 'x', label: 'a', points: 10, status: 'fail' }] });
+  assert.strictEqual(low.score, 0, 'a cap never raises a score');
+});
