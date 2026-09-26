@@ -364,12 +364,46 @@ app.get('/api/proxy', rateLimit({ windowMs: 60000, max: 60 }), async (req, res) 
   try {
     const r = await proxyFetch(target, ctrl.signal);
     res.set('Access-Control-Allow-Origin', '*');
+    res.set('X-Final-Url', r.finalUrl);  // lets the engine tell a clean 200 from a followed redirect
     if (r.challenged) res.set('X-Proxy-Reason', 'bot-protection');
     res.status(r.challenged ? 502 : r.status).type('text/plain; charset=utf-8').send(r.body);
   } catch (e) {
     const code = e && e.code ? e.code : 502;
     res.status(code).send(code === 403 ? 'blocked host' : code === 400 ? 'bad url' : 'fetch failed: ' + (e && e.name ? e.name : 'error'));
   } finally { clearTimeout(t); }
+});
+
+// ---------- URL status checks for the engine (canonical targets, internal links) ----------
+// Redirects are NOT followed — a redirecting URL is reported as the redirect it is. The body is read only to spot
+// a robots noindex; the X-Robots-Tag header is checked too.
+async function linkCheck(target) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 12000);
+  try {
+    const r = await guardedFetch(target, { signal: ctrl.signal, headers: BROWSER_HEADERS, redirect: 'manual' });
+    const status = r.status;
+    let location = r.headers.get('location') || null;
+    if (location) { try { location = new URL(location, target).href; } catch (e) { /* keep raw */ } }
+    let noindex = /noindex/i.test(r.headers.get('x-robots-tag') || '');
+    let challenged = false;
+    if (status === 200 || status === 403 || status === 503) {
+      const body = (await r.text()).slice(0, 400000);
+      if (status === 200 && /<meta[^>]+name=["']?(robots|googlebot)["']?[^>]*content=["'][^"']*noindex/i.test(body)) noindex = true;
+      challenged = status !== 200 && /just a moment|cf-chl|challenge-platform|cf-mitigated|enable javascript and cookies/i.test(body);
+    } else { try { await r.body?.cancel(); } catch (e) { /* ignore */ } }
+    return { url: target, status, location, noindex, challenged };
+  } catch (e) {
+    return { url: target, status: 0, location: null, noindex: false, challenged: false, error: (e && e.code) === 403 ? 'blocked host' : 'fetch failed' };
+  } finally { clearTimeout(t); }
+}
+async function linkCheckMany(urls, check) {
+  const list = [...new Set((Array.isArray(urls) ? urls : []).map(String).filter(u => /^https?:\/\//i.test(u)))].slice(0, 60);
+  const out = []; let i = 0;
+  await Promise.all(Array.from({ length: 6 }, async () => { while (i < list.length) { const u = list[i++]; out.push(await check(u)); } }));
+  return out;
+}
+app.post('/api/linkcheck', rateLimit({ windowMs: 60000, max: 40 }), async (req, res) => {
+  res.json({ results: await linkCheckMany(req.body && req.body.urls, linkCheck) });
 });
 
 // ---------- Headless rendering (JS sites) — key stays server-side; off until RENDER_API_KEY is set ----------
@@ -893,7 +927,7 @@ app.get('/healthz/db', async (req, res) => {
 
 // ---------- Machine-auth audit API (/api/v1) + hosted API reports (/report/:id) ----------
 apiV1.mount(app, {
-  pool, BASE_URL, guardedFetch, proxyFetch, renderFetch, placesLookup, isPrivateHost, rateLimit,
+  pool, BASE_URL, guardedFetch, proxyFetch, renderFetch, placesLookup, linkCheck, isPrivateHost, rateLimit,
   renderEnabled: !!process.env.RENDER_API_KEY, placesEnabled: cfg.places,
 });
 

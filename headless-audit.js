@@ -54,13 +54,23 @@ function makeFetch(deps) {
         try {
           const r = await deps.proxyFetch(target, signal);
           if (r.challenged) return textResponse(502, r.body, { 'x-proxy-reason': 'bot-protection' });
-          return textResponse(r.status, r.body);
+          return textResponse(r.status, r.body, { 'x-final-url': r.finalUrl || target });
         } catch (e) { return textResponse((e && e.code) || 502, ''); }
       }
       if (p === '/api/render') {
         const target = rel.searchParams.get('url');
         try { const r = await deps.renderFetch(target); return r && r.ok ? textResponse(200, r.body) : textResponse(502, ''); }
         catch (e) { return textResponse((e && e.code) || 502, ''); }
+      }
+      if (p === '/api/linkcheck') {
+        if (!deps.linkCheck) return jsonResponse(404, { error: 'not_found' });
+        let urls = []; try { urls = JSON.parse(init.body || '{}').urls || []; } catch (e) { /* empty */ }
+        const list = [...new Set(urls.map(String))].slice(0, 60);
+        const results = [];
+        for (let i = 0; i < list.length; i += 6) {
+          results.push(...await Promise.all(list.slice(i, i + 6).map(u => deps.linkCheck(u).then(r => Object.assign({ url: u }, r)).catch(() => ({ url: u, status: 0 })))));
+        }
+        return jsonResponse(200, { results });
       }
       if (p === '/api/places') {
         const q = rel.searchParams.get('q') || rel.searchParams.get('name') || '';

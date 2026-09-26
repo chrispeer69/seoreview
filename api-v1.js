@@ -203,7 +203,8 @@ function summarize(res) {
     phone: loc && loc.found ? (loc.phone || null) : null,
     maps_url: loc && loc.found ? (loc.mapsUrl || null) : null,
     schema_localbusiness: passed(chk(/LocalBusiness structured data/i)),
-    review_schema: passed(chk(/Review \/ rating schema/i)),
+    // Review markup is no longer scored; false = aggregateRating/review on the business itself (self-serving).
+    review_schema: (c => (c ? (c.status === 'warn' ? false : /markup found/i.test(c.detail || '') ? true : null) : null))(chk(/Review \/ rating schema/i)),
     click_to_call: passed(chk(/Click-to-call/i)),
     map_reference: passed(chk(/Map \/ location reference/i)),
     local_seo_score: pct('Local SEO'),
@@ -219,7 +220,7 @@ function summarize(res) {
   const ai_visibility = {
     score: pct('AI Search & Answer Engines'),
     crawlers_blocked,
-    llms_txt: passed(chk(/llms\.txt/i)),
+    llms_txt: (c => (c && !/could not/i.test(c.detail || '') ? /^Found/.test(c.detail || '') : null))(chk(/llms\.txt/i)), // reported, not scored
     faq_schema: passed(chk(/FAQ structured data/i)),
     organization_schema: passed(chk(/Organization \/ entity data/i)),
     readable_without_js: passed(chk(/readable without JavaScript/i)),

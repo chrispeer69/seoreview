@@ -40,14 +40,17 @@ const TAGS = {
   'TikTok Pixel':['analytics.tiktok.com','ttq.'],
   'LinkedIn Insight':['snap.licdn.com'],
 };
-// AI / answer-engine crawlers worth allowing for AI-search visibility
-const AI_BOTS = ['GPTBot','OAI-SearchBot','ChatGPT-User','ClaudeBot','anthropic-ai','Claude-Web','PerplexityBot','Perplexity-User','Google-Extended','CCBot','Applebot-Extended','Amazonbot','Bytespider','Meta-ExternalAgent'];
+// Crawlers that fetch pages for live search / AI answers — blocking these removes the site from those answers (scored).
+const AI_SEARCH_BOTS = ['OAI-SearchBot','ChatGPT-User','PerplexityBot','Perplexity-User','ClaudeBot','Bingbot','Googlebot'];
+// Crawlers that only collect model-training data — blocking them is a legitimate choice (reported, never penalized).
+const AI_TRAINING_BOTS = ['GPTBot','Google-Extended','CCBot','Bytespider','Applebot-Extended','Meta-ExternalAgent','anthropic-ai','Amazonbot'];
+const AI_BOTS = AI_SEARCH_BOTS.concat(AI_TRAINING_BOTS);
 
 const AISEARCH = 'AI Search & Answer Engines';
 const sleep = ms => new Promise(r=>setTimeout(r,ms));
 // Whole-scan AbortController (the public tool's Stop button). The page hands it over with SEO.setAbort(ctrl).
 let scanCtrl=null;
-function setAbort(ctrl){ scanCtrl=ctrl||null; }
+function setAbort(ctrl){ scanCtrl=ctrl||null; resetLinkCache(); } // a new scan also starts with fresh URL checks
 function linkAbort(ctrl){ if(scanCtrl){ if(scanCtrl.signal.aborted){ try{ctrl.abort();}catch(e){} } else scanCtrl.signal.addEventListener('abort',()=>{try{ctrl.abort();}catch(e){}},{once:true}); } }
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 // Fixes that are bigger projects (need content, dev work, or third-party setup) vs. quick wins.
@@ -65,6 +68,7 @@ async function fetchHtml(targetUrl){
     const ctrl=new AbortController(); const t=setTimeout(()=>ctrl.abort(),12000); linkAbort(ctrl);
     try{
       const res=await fetch(p.build(targetUrl),{signal:ctrl.signal});
+      if(p.name==='self') _fetchMeta.set(targetUrl,{status:res.status, finalUrl:res.headers.get('x-final-url')||null});
       if(!res.ok){lastErr=new Error(p.name+' HTTP '+res.status);continue;}
       const html=p.json?(await res.json()).contents:await res.text();
       if(html&&html.length>50)return html;
@@ -85,22 +89,125 @@ async function fetchAux(u){
   return null;
 }
 
-// Parse robots.txt into user-agent groups and report which AI crawlers are blocked from the whole site.
-function aiCrawlerStatus(robots){
-  const lines=String(robots).split(/\r?\n/);
-  let groups=[]; let cur=null;
-  for(const raw of lines){
+// Parse robots.txt into user-agent groups. A bot obeys the group naming it (else the "*" group); it is blocked from
+// the whole site when that group disallows "/" and does not also allow "/".
+function robotsGroups(robots){
+  const groups=[]; let cur=null;
+  for(const raw of String(robots).split(/\r?\n/)){
     const line=raw.replace(/#.*/,'').trim(); if(!line)continue;
     const ua=line.match(/^user-agent:\s*(.+)$/i);
-    if(ua){ if(!cur||cur.hasRules){cur={agents:[],hasRules:false,disallowAll:false};groups.push(cur);} cur.agents.push(ua[1].trim().toLowerCase()); continue; }
-    const dis=line.match(/^disallow:\s*(.*)$/i);
-    if(dis&&cur){ cur.hasRules=true; if(dis[1].trim()==='/') cur.disallowAll=true; }
-    if(/^allow:/i.test(line)&&cur) cur.hasRules=true;
+    if(ua){ if(!cur||cur.hasRules){cur={agents:[],hasRules:false,allow:[],disallow:[]};groups.push(cur);} cur.agents.push(ua[1].trim().toLowerCase()); continue; }
+    const rule=line.match(/^(allow|disallow):\s*(.*)$/i);
+    if(rule&&cur){ cur.hasRules=true; cur[rule[1].toLowerCase()].push(rule[2].trim()); }
   }
-  const globalBlocked = groups.some(g=>g.agents.includes('*')&&g.disallowAll);
-  const blocked=[];
-  AI_BOTS.forEach(bot=>{ const lb=bot.toLowerCase(); if(groups.some(g=>g.agents.includes(lb)&&g.disallowAll)) blocked.push(bot); });
-  return {blocked, globalBlocked};
+  return groups;
+}
+function botBlocked(groups, bot){
+  const lb=bot.toLowerCase();
+  let mine=groups.filter(g=>g.agents.includes(lb));
+  if(!mine.length) mine=groups.filter(g=>g.agents.includes('*'));
+  const dis=mine.some(g=>g.disallow.includes('/')), allow=mine.some(g=>g.allow.includes('/'));
+  return dis&&!allow;
+}
+function aiCrawlerStatus(robots){
+  const groups=robotsGroups(robots);
+  const blocked=AI_SEARCH_BOTS.filter(b=>botBlocked(groups,b));
+  const trainingBlocked=AI_TRAINING_BOTS.filter(b=>botBlocked(groups,b));
+  const globalBlocked=groups.some(g=>g.agents.includes('*')&&g.disallow.includes('/')&&!g.allow.includes('/'));
+  return {blocked, trainingBlocked, globalBlocked};
+}
+
+// ---------- Structured data (JSON-LD) ----------
+// LocalBusiness and its schema.org subtypes. Organization (and its non-local subtypes) is NOT a local business.
+const LB_TYPES = new Set(('LocalBusiness AnimalShelter ArchiveOrganization AutomotiveBusiness AutoBodyShop AutoDealer AutoPartsStore AutoRental '
+  +'AutoRepair AutoWash GasStation MotorcycleDealer MotorcycleRepair ChildCare Dentist DryCleaningOrLaundry EmergencyService FireStation '
+  +'Hospital PoliceStation EmploymentAgency EntertainmentBusiness AdultEntertainment AmusementPark ArtGallery Casino ComedyClub MovieTheater '
+  +'NightClub FinancialService AccountingService AutomatedTeller BankOrCreditUnion InsuranceAgency FoodEstablishment Bakery BarOrPub Brewery '
+  +'CafeOrCoffeeShop Distillery FastFoodRestaurant IceCreamShop Restaurant Winery GovernmentOffice PostOffice HealthAndBeautyBusiness '
+  +'BeautySalon DaySpa HairSalon HealthClub NailSalon TattooParlor HomeAndConstructionBusiness Electrician GeneralContractor HVACBusiness '
+  +'HousePainter Locksmith MovingCompany Plumber RoofingContractor InternetCafe LegalService Attorney Notary Library LodgingBusiness '
+  +'BedAndBreakfast Campground Hostel Hotel Motel Resort VacationRental MedicalBusiness MedicalClinic Optician Pharmacy Physician '
+  +'ProfessionalService RadioStation RealEstateAgent RecyclingCenter SelfStorage ShoppingCenter SportsActivityLocation BowlingAlley '
+  +'ExerciseGym GolfCourse PublicSwimmingPool SkiResort SportsClub StadiumOrArena TennisComplex Store TelevisionStation '
+  +'TouristInformationCenter TravelAgency').split(' '));
+const ORG_TYPES = /^(Organization|Corporation|NGO|OnlineBusiness|OnlineStore|NewsMediaOrganization|EducationalOrganization|MedicalOrganization|SportsOrganization|WorkersUnion|Airline|Consortium|FundingScheme|GovernmentOrganization|LibrarySystem|PerformingGroup|PoliticalParty|Project|ResearchOrganization|SearchRescueOrganization)$/;
+const typesOf = n => [].concat(n && n['@type'] || []).map(t => String(t).replace(/^.*[/#]/, ''));
+const isLocalType = t => LB_TYPES.has(t) || /Store$/.test(t);
+// Every typed node in the page's JSON-LD (top level, @graph, and nested values), so a business nested under a
+// WebPage or listed in a graph is found the same as a top-level one.
+function ldNodes(doc){
+  const out=[];
+  const walk=(v,depth)=>{ if(!v||typeof v!=='object'||depth>8) return;
+    if(Array.isArray(v)){ v.forEach(x=>walk(x,depth+1)); return; }
+    if(v['@type']) out.push(v);
+    Object.keys(v).forEach(k=>{ if(k!=='@context') walk(v[k],depth+1); }); };
+  doc.querySelectorAll('script[type="application/ld+json"]').forEach(n=>{ try{ walk(JSON.parse(n.textContent),0); }catch(e){} });
+  return out;
+}
+const hasVal = v => v!=null && !(Array.isArray(v)&&!v.length) && String(typeof v==='object'?JSON.stringify(v):v).trim()!=='' && String(v)!=='{}';
+// Best LocalBusiness node and which of Google's key local fields it lacks.
+function businessSchema(nodes){
+  const local=nodes.filter(n=>typesOf(n).some(isLocalType));
+  const org=nodes.filter(n=>typesOf(n).some(t=>ORG_TYPES.test(t)));
+  const REQ=['address','telephone','openingHoursSpecification'];
+  if(local.length){
+    const scored=local.map(n=>({n, missing:REQ.filter(f=>!hasVal(n[f]))})).sort((a,b)=>a.missing.length-b.missing.length);
+    return { kind:'local', type:typesOf(scored[0].n).find(isLocalType), missing:scored[0].missing };
+  }
+  if(org.length) return { kind:'org', type:typesOf(org[0]).find(t=>ORG_TYPES.test(t)), missing:REQ };
+  return { kind:'none', missing:REQ };
+}
+// aggregateRating / review attached to the site's own business entity = "self-serving" reviews, which Google does
+// not show as stars for LocalBusiness / Organization and can treat as spammy structured data.
+function selfServingReview(nodes){
+  const biz=nodes.filter(n=>typesOf(n).some(t=>isLocalType(t)||ORG_TYPES.test(t)));
+  const ids=new Set(biz.map(n=>n['@id']).filter(Boolean));
+  if(biz.some(n=>hasVal(n.aggregateRating)||hasVal(n.review))) return true;
+  return nodes.some(n=>typesOf(n).some(t=>t==='AggregateRating'||t==='Review') && n.itemReviewed &&
+    (typesOf(n.itemReviewed).some(t=>isLocalType(t)||ORG_TYPES.test(t)) || ids.has(n.itemReviewed['@id'])));
+}
+
+// ---------- URL status checks (canonical targets, internal links) ----------
+// Batched through the server's /api/linkcheck (no redirect-following, so redirects are seen as redirects).
+// Resolves to {url,status,location,noindex,challenged} or null when it could not be checked.
+const _linkCache=new Map(); let _lcQueue=[], _lcTimer=null, _lcAvailable=true;
+const _fetchMeta=new Map(); // page URL → {finalUrl,status} as seen by our own proxy
+function resetLinkCache(){ _linkCache.clear(); _fetchMeta.clear(); _lcAvailable=true; }
+function checkUrl(u){
+  if(_linkCache.has(u)) return _linkCache.get(u);
+  const p=new Promise(res=>{ _lcQueue.push({u,res}); if(!_lcTimer) _lcTimer=setTimeout(flushLinkChecks,40); });
+  _linkCache.set(u,p); return p;
+}
+async function flushLinkChecks(){
+  _lcTimer=null;
+  const batch=_lcQueue.splice(0,40); if(_lcQueue.length) _lcTimer=setTimeout(flushLinkChecks,40);
+  if(!batch.length) return;
+  let out=null;
+  for(let attempt=0; attempt<3 && _lcAvailable && !out; attempt++){
+    try{
+      const res=await fetch('/api/linkcheck',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({urls:batch.map(b=>b.u)})});
+      if(res.ok) out=await res.json();
+      else if(res.status===404||res.status===405) _lcAvailable=false;
+      else if(res.status===429) await sleep(4000*(attempt+1));
+      else break;
+    }catch(e){ break; }
+  }
+  const byUrl={}; ((out&&out.results)||[]).forEach(x=>{ byUrl[x.url]=x; });
+  batch.forEach(b=>b.res(byUrl[b.u]||null));
+}
+const sameUrl=(a,b)=>{ try{ return new URL(a).href===new URL(b).href; }catch(e){ return a===b; } };
+async function canonicalCheck(href, pageUrl, pageNoindex){
+  let target; try{ target=new URL(href, pageUrl).href; }catch(e){ return {status:'fail', detail:'Canonical is not a valid URL: '+href}; }
+  const self=sameUrl(target,pageUrl);
+  const meta=_fetchMeta.get(pageUrl);
+  if(self && meta && meta.status===200 && meta.finalUrl && sameUrl(meta.finalUrl,pageUrl))
+    return pageNoindex ? {status:'fail', detail:'→ this page, which is noindex'} : {status:'pass', detail:'→ this page (200, indexable)'};
+  const c=await checkUrl(target);
+  if(!c||c.challenged||!c.status) return {status:'pass', detail:'→ '+target+' (target could not be verified)'};
+  if(c.status>=300&&c.status<400) return {status:'fail', detail:'→ '+target+' redirects ('+c.status+(c.location?' to '+c.location:'')+')'};
+  if(c.status!==200) return {status:'fail', detail:'→ '+target+' returns HTTP '+c.status};
+  if(c.noindex) return {status:'fail', detail:'→ '+target+', which is noindex'};
+  return {status:'pass', detail:'→ '+(self?'this page (200, indexable)':target+' (200, indexable)')};
 }
 
 async function auditOne(raw, prefetchedHtml){
@@ -138,7 +245,7 @@ async function auditOne(raw, prefetchedHtml){
   const titleCount=doc.querySelectorAll('title').length;
   const desc=(doc.querySelector('meta[name="description"]')?.getAttribute('content')||'').trim();
   const h1=doc.querySelectorAll('h1'); const h2=doc.querySelectorAll('h2');
-  const robotsMeta=(doc.querySelector('meta[name="robots"]')?.getAttribute('content')||'').toLowerCase();
+  const robotsMeta=[...doc.querySelectorAll('meta[name="robots" i],meta[name="googlebot" i]')].map(m=>m.getAttribute('content')||'').join(',').toLowerCase();
   const noindex=robotsMeta.includes('noindex');
   const canonical=doc.querySelector('link[rel="canonical"]');
   const viewport=doc.querySelector('meta[name="viewport"]');
@@ -164,7 +271,9 @@ async function auditOne(raw, prefetchedHtml){
   if(doc.querySelector('[itemtype]')) schemaTypes.push((doc.querySelector('[itemtype]').getAttribute('itemtype')||'').split('/').pop());
   schemaTypes=[...new Set(schemaTypes.filter(Boolean))];
   const schemaStr=schemaTypes.join(' ');
-  const localSchema=schemaTypes.some(t=>/LocalBusiness|AutoRepair|AutomotiveBusiness|Store|Organization|ProfessionalService|HomeAndConstructionBusiness|EmergencyService/i.test(t));
+  const ld=ldNodes(doc);
+  const biz=businessSchema(ld);
+  const selfReview=selfServingReview(ld);
   // AI-search / rich-result signals
   const hasFaq = /FAQPage|QAPage|Question/i.test(schemaStr) || /"@type"\s*:\s*"(FAQPage|QAPage|Question)"/i.test(html);
   const hasOrg = schemaTypes.some(t=>/Organization|LocalBusiness|AutoRepair|AutomotiveBusiness|Store|ProfessionalService|HomeAndConstructionBusiness|EmergencyService/i.test(t));
@@ -181,10 +290,11 @@ async function auditOne(raw, prefetchedHtml){
     noindex?'A "noindex" directive is present':'No noindex directive',
     'A "noindex" tag is a stop sign telling Google to hide this page completely. If it is there by mistake, nothing else you do matters — you are invisible in search.',
     'Remove the "noindex" value from the robots meta tag so search engines can list the page.');
-  add(INDEX,'Canonical URL set',6, canonical?'pass':'fail',
-    canonical?('→ '+canonical.getAttribute('href')):'No canonical link',
-    'This tells Google which version of your web address is the real one, so your ranking power is not split between www / non-www or trailing-slash duplicates.',
-    'Add <link rel="canonical" href="'+esc(origin)+'/"> in the page head pointing to the preferred URL.');
+  const canon=canonical?await canonicalCheck(canonical.getAttribute('href')||'', url, noindex):{status:'fail',detail:'No canonical link'};
+  add(INDEX,'Canonical URL set',6, canon.status, canon.detail,
+    'This tells Google which version of your web address is the real one, so your ranking power is not split between www / non-www or trailing-slash duplicates. A canonical that points at a redirect, an error page or a noindex page tells Google to index nothing.',
+    canonical?'Point the canonical at the final, indexable URL of this page (the address that returns 200 with no redirect and no noindex).'
+             :'Add <link rel="canonical" href="'+esc(origin)+'/"> in the page head pointing to the preferred URL.');
 
   add(CONTENT,'Title tag present',12, title?'pass':'fail',
     title?('"'+title+'"'):'Missing',
@@ -217,14 +327,18 @@ async function auditOne(raw, prefetchedHtml){
   add(TECH,'Language declared',2, lang?'pass':'warn', lang?('lang="'+lang+'"'):'Missing','Tells search engines what language your site is in so it reaches the right people.','Add lang="en" to the <html> tag.');
   add(TECH,'Favicon present',1, favicon?'pass':'warn', favicon?'Present':'Missing','The little icon in the browser tab and search results — small, but it makes you look established.','Add a favicon link in the head.');
 
-  add(LOCAL,'LocalBusiness structured data',12, localSchema?'pass':'fail',
-    schemaTypes.length?('Schema: '+schemaTypes.join(', ')):'No schema found',
-    'This is the behind-the-scenes data that powers the Google Map pack and "near me" results — the single biggest win there is for a local service business.',
-    'Add JSON-LD LocalBusiness (or AutoRepair) schema with name, address, phone, hours, and geo coordinates.');
-  add(LOCAL,'Review / rating schema (stars)',4, hasReview?'pass':'warn',
-    hasReview?'Rating / review markup found':'No review or rating schema',
-    'Review and rating schema is what puts the gold star rating under your Google listing — it dramatically boosts clicks and is a strong trust signal for AI answers too.',
-    'Add AggregateRating / Review JSON-LD reflecting your real Google reviews.');
+  const bizStatus = biz.kind==='local' ? (biz.missing.length?'warn':'pass') : biz.kind==='org' ? 'warn' : 'fail';
+  add(LOCAL,'LocalBusiness structured data',12, bizStatus,
+    biz.kind==='local' ? (biz.type+' schema'+(biz.missing.length?' — missing '+biz.missing.join(', '):' with address, telephone and opening hours'))
+      : biz.kind==='org' ? (biz.type+' schema only — not a LocalBusiness type')
+      : (schemaTypes.length?('No LocalBusiness schema (found: '+schemaTypes.join(', ')+')'):'No schema found'),
+    'This is the behind-the-scenes data that powers the Google Map pack and "near me" results — the single biggest win there is for a local service business. It only counts as a local business when it is a LocalBusiness type (or subtype such as AutoRepair) with the address, phone and opening hours filled in.',
+    biz.kind==='local' ? ('Add '+biz.missing.join(', ')+' to the '+biz.type+' JSON-LD.')
+      : 'Add JSON-LD LocalBusiness (or the closest subtype, e.g. AutoRepair) with name, address, telephone, openingHoursSpecification and geo coordinates.');
+  add(LOCAL,'Review / rating schema (stars)',0, selfReview?'warn':'info',
+    selfReview?'aggregateRating / review is marked up on the business itself (self-serving)':(hasReview?'Review markup found (not on the business entity)':'No review or rating schema'),
+    'Google does not show review stars for a business\'s own reviews marked up on its own site (LocalBusiness / Organization), and can treat it as spammy structured data. Your stars come from your Google Business Profile reviews.',
+    selfReview?'Remove aggregateRating / review from the LocalBusiness / Organization JSON-LD; keep earning reviews on your Google Business Profile.':'');
   add(LOCAL,'Click-to-call phone link',4, tel>0?'pass':'warn', tel>0?(tel+' tel: link(s)'):'None found','A tappable phone number turns a phone visitor into a phone call with one tap. Missing it quietly costs you leads.','Wrap the phone number in <a href="tel:+1...">.');
   add(LOCAL,'Map / location reference',3, hasMap?'pass':'warn', hasMap?'Map detected':'No map embed found','A map and visible address prove to Google (and customers) exactly where you serve.','Embed a Google Map and show the full address (matching your Google Business Profile).');
 
@@ -285,28 +399,32 @@ async function addAux(r){
     let sm=null;
     if(smUrl) sm=await fetchAux(smUrl);
     if(!sm) sm=await fetchAux(r.origin+'/sitemap.xml');
-    const smOk= sm!==null && /<urlset|<sitemapindex/i.test(sm);
+    const smOk= sm!==null && /<urlset|<sitemapindex/i.test(sm) && /<loc>\s*https?:\/\//i.test(sm);
     r.checks.push({cat:INDEX,label:'XML sitemap present',points:5,status: sm===null?'info':(smOk?'pass':'warn'),
-      detail: sm===null?'Could not verify':(smOk?'Found':'Not found'),
+      detail: sm===null?'Could not verify':(smOk?'Found':'Not found (or no URLs in it)'),
       why:'A sitemap is a table of contents that helps Google find and list all your pages quickly.',
       fix:'Generate /sitemap.xml and reference it in robots.txt.'});
-    // AI crawler access (uses the robots.txt we already fetched)
+    // AI crawler access (uses the robots.txt we already fetched). Only crawlers that fetch pages for live search / AI
+    // answers are scored; training-only crawlers are reported without penalty.
     const ai=aiCrawlerStatus(robots);
+    const coreBlocked=ai.blocked.filter(b=>b==='Googlebot'||b==='Bingbot');
     let st,det;
-    if(ai.globalBlocked){ st='fail'; det='robots.txt blocks all crawlers (Disallow: /)'; }
-    else if(ai.blocked.length){ st='warn'; det='Blocking: '+ai.blocked.join(', '); }
-    else { st='pass'; det='No AI crawlers blocked'; }
+    if(!ai.blocked.length){ st='pass'; det='No AI search crawlers blocked'; }
+    else { st=(coreBlocked.length||ai.blocked.length===AI_SEARCH_BOTS.length)?'fail':'warn'; det='Blocking: '+ai.blocked.join(', '); }
     r.checks.push({cat:AISEARCH,label:'AI search crawlers allowed',points:5,status:st,detail:det,
-      why:'Search is shifting toward AI answers. If robots.txt blocks bots like GPTBot, ClaudeBot, PerplexityBot or Google-Extended, those tools cannot read your site and will not recommend your business.',
-      fix:'In robots.txt, avoid disallowing AI crawlers (GPTBot, OAI-SearchBot, ChatGPT-User, ClaudeBot, PerplexityBot, Google-Extended) unless you have a specific reason to.'});
+      why:'These crawlers fetch pages to answer searches live (ChatGPT search, Perplexity, Claude, Bing/Copilot, Google and AI Overviews). If robots.txt blocks them, those tools cannot read your site and will not recommend your business.',
+      fix:'In robots.txt, do not disallow '+AI_SEARCH_BOTS.join(', ')+'.'});
+    r.checks.push({cat:AISEARCH,label:'AI training crawlers',points:0,status:'info',
+      detail:ai.trainingBlocked.length?('Blocking: '+ai.trainingBlocked.join(', ')+' — training only, no effect on search visibility'):'None blocked',
+      why:'Training crawlers (GPTBot, Google-Extended, CCBot…) only collect data to train AI models. Blocking them does not remove you from AI search answers, so it is not scored.',fix:''});
   }
-  // llms.txt — emerging AI-guide standard
+  // llms.txt — reported only: no search engine or AI answer engine is confirmed to use it, so it earns no points.
   const llms=await fetchAux(r.origin+'/llms.txt');
   const llmsOk = llms!==null && llms.length>20 && !/<html/i.test(llms.slice(0,200));
-  r.checks.push({cat:AISEARCH,label:'llms.txt AI guide file',points:3,status: llms===null?'info':(llmsOk?'pass':'warn'),
+  r.checks.push({cat:AISEARCH,label:'llms.txt AI guide file',points:0,status:'info',
     detail: llms===null?'Could not verify':(llmsOk?'Found':'Not found'),
-    why:'llms.txt is a fast-emerging standard: a plain-text file that tells AI assistants what your site offers and which pages matter most, so they describe and recommend you accurately.',
-    fix:'Add a /llms.txt file summarizing your business, key services, and important page links in plain text / markdown.'});
+    why:'llms.txt is a proposed plain-text summary of your site for AI assistants. No major AI search engine has confirmed it uses the file, so it does not affect the score.',
+    fix:''});
 }
 
 // ---- Google PageSpeed Insights (real load speed, mobile + desktop) ----
@@ -437,6 +555,7 @@ function crossPageIssues(pages){
 }
 async function crawlSite(root, opts){
   opts=opts||{}; const max=opts.max||150, conc=opts.concurrency||5, onProgress=opts.onProgress||function(){};
+  resetLinkCache();
   const render=typeof opts.render==='function'?opts.render:null;
   const disc=await discoverPages(root, max, render);
   if(!disc.urls.length) return { error:'No pages discovered (no sitemap and no crawlable links — the site may be a JavaScript app with no sitemap).', root:disc.base };
@@ -673,6 +792,7 @@ function emailText(clientName,r){
 }
 async function audit(url, opts){
   opts=opts||{};
+  resetLinkCache();
   const r=await auditOne(url);
   try{ await addAux(r); }catch(e){}
   if(opts.speed!==false){ try{ await addSpeed(r, opts.psiKey||''); }catch(e){} }
