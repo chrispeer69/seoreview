@@ -171,6 +171,21 @@ function summarize(res) {
     `${sumUrls(cp.duplicateH1)} pages share the same H1 heading (e.g. "${cp.duplicateH1[0].value}")`);
   if ((cp.titleBodyMismatch || []).length) addSite('title_body_mismatch', 'moderate', cp.titleBodyMismatch.length,
     `${cp.titleBodyMismatch.length} page${cp.titleBodyMismatch.length === 1 ? ' has' : 's have'} a title that does not match the page content`);
+  const len = a => (a || []).length;
+  if (len(cp.brokenLinks)) addSite('broken_internal_links', 'serious', cp.brokenLinks.reduce((a, o) => a + (o.linkedFrom || 1), 0),
+    `${len(cp.brokenLinks)} internal link target${len(cp.brokenLinks) === 1 ? '' : 's'} return an error (e.g. ${relPath(cp.brokenLinks[0].url)} → HTTP ${cp.brokenLinks[0].status})`);
+  if (len(cp.redirectLinks)) addSite('redirecting_internal_links', 'minor', cp.redirectLinks.reduce((a, o) => a + (o.linkedFrom || 1), 0),
+    `${len(cp.redirectLinks)} internal link target${len(cp.redirectLinks) === 1 ? '' : 's'} redirect (e.g. ${relPath(cp.redirectLinks[0].url)} → ${relPath(cp.redirectLinks[0].location || '')})`);
+  if (len(cp.orphans)) addSite('orphan_pages', 'moderate', len(cp.orphans), `${len(cp.orphans)} sitemap page${len(cp.orphans) === 1 ? ' is' : 's are'} not linked from any other page`);
+  if (len(cp.nearDuplicates)) addSite('near_duplicate_pages', 'serious', new Set(cp.nearDuplicates.flatMap(o => [o.a, o.b])).size,
+    `${len(cp.nearDuplicates)} page pair${len(cp.nearDuplicates) === 1 ? ' shares' : 's share'} 80%+ of their text`);
+  if (len(cp.duplicateDescriptions)) addSite('duplicate_meta_descriptions', 'minor', sumUrls(cp.duplicateDescriptions),
+    `${sumUrls(cp.duplicateDescriptions)} pages share a meta description`);
+  if (cp.nap && len(cp.nap.inconsistent)) addSite('nap_inconsistent', 'serious', N,
+    `Business ${cp.nap.inconsistent.join(' / ')} differs across pages (${cp.nap.inconsistent.map(f => (f === 'phone' ? cp.nap.phones : f === 'address' ? cp.nap.streets : cp.nap.names).slice(0, 3).map(v => v.value).join(' vs ')).join('; ')})`);
+  (cp.countClaims || []).forEach(o => addSite('count_claim_mismatch', 'moderate', o.urls.length, `"${o.claim}" but the site has ${o.actual} ${o.kind} pages`));
+  if (len(cp.h1Spacing)) addSite('h1_words_run_together', 'minor', len(cp.h1Spacing), `${len(cp.h1Spacing)} H1${len(cp.h1Spacing) === 1 ? '' : 's'} read as run-together words in the raw HTML (e.g. "${cp.h1Spacing[0].sample}")`);
+  if (len(cp.smsTelLinks)) addSite('sms_label_on_tel_link', 'minor', len(cp.smsTelLinks), `"Text"/"SMS" links use tel: and start a call (e.g. "${cp.smsTelLinks[0].labels[0]}")`);
   (res.siteChecks || []).forEach(c => { const sev = severityOf(c); if (sev) addSite(codeOf(c.label), sev, N, `${c.label}: ${c.detail || 'problem found'}`); });
 
   const perPage = Object.values(agg).map(a => {

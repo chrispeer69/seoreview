@@ -249,6 +249,7 @@ function classifyPage(u, nodes){
 // The page's own content: <main>/<article> when it holds most of the text, else the body — either way without
 // header / nav / footer / aside and their builder look-alikes. Returned as text blocks (one per block element).
 const BLOCK_TAGS=new Set(['ADDRESS','ARTICLE','ASIDE','BLOCKQUOTE','DD','DIV','DL','DT','FIELDSET','FIGCAPTION','FIGURE','FOOTER','FORM','H1','H2','H3','H4','H5','H6','HEADER','HR','LI','MAIN','NAV','OL','P','PRE','SECTION','TABLE','TBODY','THEAD','TFOOT','TR','TD','TH','UL','BR','DETAILS','SUMMARY']);
+const SKIP_TEXT_TAGS=new Set(['SCRIPT','STYLE','NOSCRIPT','TEMPLATE','SVG','svg','IFRAME']);
 const RE_CHROME=/(^|[\s_-])(site[-_]?header|site[-_]?footer|masthead|colophon|navbar|nav|navigation|main-?menu|mobile-?menu|menu|sidebar|widget-?area|cookie[\w-]*|breadcrumbs?|top-?bar|skip-?link|location-header|location-footer)($|[\s_])/i;
 const countWords=t=>(String(t).match(/[A-Za-z0-9][A-Za-z0-9'’&.-]*/g)||[]).length;
 function textBlocks(root){
@@ -256,7 +257,7 @@ function textBlocks(root){
   const flush=()=>{ const t=buf.join(' ').replace(/\s+/g,' ').trim(); buf=[]; if(t) out.push(t); };
   const walk=n=>{ for(let c=n.firstChild;c;c=c.nextSibling){
     if(c.nodeType===3) buf.push(c.nodeValue);
-    else if(c.nodeType===1){ if(BLOCK_TAGS.has(c.tagName)){ flush(); walk(c); flush(); } else walk(c); } } };
+    else if(c.nodeType===1){ if(SKIP_TEXT_TAGS.has(c.tagName)) continue; if(BLOCK_TAGS.has(c.tagName)){ flush(); walk(c); flush(); } else walk(c); } } };
   walk(root); flush();
   return out;
 }
@@ -363,6 +364,58 @@ function pageDates(doc, nodes, url, nowMs){
   return { published:max(pub), modified:max(mod) };
 }
 
+// ---------- Site-wide consistency signals (per page; compared across pages in the crawl) ----------
+const RE_PHONE=/(?:\+?1[\s.-]?)?\(?\b([2-9]\d{2})\)?[\s.-]?([2-9]\d{2})[\s.-]?(\d{4})\b/g;
+const RE_STREET=/\b(\d{2,6}\s+(?:[NSEW]\.?\s+)?(?:[A-Z][A-Za-z0-9'.-]*\s+){1,4}(?:Road|Rd|Street|St|Avenue|Ave|Boulevard|Blvd|Drive|Dr|Lane|Ln|Parkway|Pkwy|Highway|Hwy|Pike|Pk|Way|Court|Ct|Circle|Cir|Place|Pl))\b\.?/g;
+const STREET_ABBR={road:'rd',street:'st',avenue:'ave',boulevard:'blvd',drive:'dr',lane:'ln',parkway:'pkwy',highway:'hwy',pike:'pike',pk:'pike',court:'ct',circle:'cir',place:'pl',north:'n',south:'s',east:'e',west:'w'};
+const normStreet=a=>String(a).toLowerCase().replace(/[.,]/g,'').replace(/\s+/g,' ').trim().split(' ').map(w=>STREET_ABBR[w]||w).join(' ');
+const normPhone=(a,b,c)=>'('+a+') '+b+'-'+c;
+// JSON-LD written by some CMSs carries HTML entities ("Broad &amp; James").
+const decodeEntities=s=>String(s).replace(/&(amp|quot|apos|lt|gt|#0?39|#x27);/gi,(m,e)=>({amp:'&',quot:'"',apos:"'",lt:'<',gt:'>','#039':"'",'#39':"'",'#x27':"'"})[e.toLowerCase()]||m);
+function napSignals(doc, bodyText, nodes){
+  const tel=[], visible=[], streets=[];
+  doc.querySelectorAll('a[href^="tel:"]').forEach(a=>{ const d=(a.getAttribute('href')||'').replace(/\D/g,'').replace(/^1(?=\d{10}$)/,''); if(d.length===10) tel.push(normPhone(d.slice(0,3),d.slice(3,6),d.slice(6))); });
+  let m; RE_PHONE.lastIndex=0; while((m=RE_PHONE.exec(bodyText))) visible.push(normPhone(m[1],m[2],m[3]));
+  RE_STREET.lastIndex=0; while((m=RE_STREET.exec(bodyText))) streets.push(normStreet(m[1]));
+  const biz=nodes.filter(n=>typesOf(n).some(t=>isLocalType(t)||ORG_TYPES.test(t)));
+  const schema={ names:[], phones:[], streets:[] };
+  biz.forEach(n=>{
+    if(typeof n.name==='string') schema.names.push(decodeEntities(n.name).trim());
+    if(n.telephone){ const d=String(n.telephone).replace(/\D/g,'').replace(/^1(?=\d{10}$)/,''); if(d.length===10) schema.phones.push(normPhone(d.slice(0,3),d.slice(3,6),d.slice(6))); }
+    const ad=n.address; [].concat(ad||[]).forEach(a=>{ if(a&&typeof a==='object'&&a.streetAddress) schema.streets.push(normStreet(a.streetAddress)); });
+  });
+  const uniq=a=>[...new Set(a)];
+  return { tel:uniq(tel), visible:uniq(visible), streets:uniq(streets), schema:{ names:uniq(schema.names), phones:uniq(schema.phones), streets:uniq(schema.streets) } };
+}
+// Hard-coded counts ("all 34 service areas", "18 towing services") — checked against the pages the crawl finds.
+const RE_AREA_CLAIM=/\b([Aa]ll|[Oo]ver|[Mm]ore than|[Ss]erving|[Aa]cross|[Oo]ur)?\s*\b(\d{1,3})(\+)?\s+((?:(?:[A-Z][a-z]+|local|nearby|surrounding|different|major)\s+){0,3})([Cc]ities|[Tt]owns|[Ll]ocations|[Cc]ommunities|[Cc]ounties|[Ss]uburbs|[Nn]eighborhoods|[Ss]ervice [Aa]reas|[Aa]reas)\b/g;
+const RE_SERVICE_CLAIM=/\b([Aa]ll|[Oo]ver|[Mm]ore than|[Oo]ffer|[Pp]rovide|[Oo]ur)?\s*\b(\d{1,3})(\+)?\s+((?:(?:[A-Z][a-z]+|towing|repair|roadside|auto|different|specialized|professional|core)\s+){0,2})([Ss]ervices)\b/g;
+function countClaims(text){
+  const out=[];
+  [[RE_AREA_CLAIM,'location'],[RE_SERVICE_CLAIM,'service']].forEach(([re,kind])=>{ re.lastIndex=0; let m;
+    while((m=re.exec(text))){ const n=+m[2]; if(n<3) continue;
+      const q=(m[1]||'').toLowerCase(); out.push({ kind, n, atLeast:!!m[3]||q==='over'||q==='more than', text:m[0].trim().replace(/\s+/g,' ') }); } });
+  return out;
+}
+// H1 words glued together in the raw text: "<span>Towing</span><span>Columbus</span>" reads as "TowingColumbus" to
+// any crawler that takes the text as-is (most AI crawlers). Returns the glued sample or null.
+function h1Glued(h1){
+  if(!h1) return null;
+  const parts=[]; const walk=n=>{ for(let c=n.firstChild;c;c=c.nextSibling){ if(c.nodeType===3){ if(c.nodeValue) parts.push({t:c.nodeValue,p:c.parentNode}); } else if(c.nodeType===1){ if(c.tagName==='BR') parts.push({br:true}); else walk(c); } } };
+  walk(h1);
+  for(let i=1;i<parts.length;i++){
+    let j=i-1, br=false; while(j>=0&&parts[j].br){ br=true; j--; } if(j<0||parts[i].br) continue;
+    const a=parts[j], b=parts[i];
+    if((br||a.p!==b.p) && /[a-z0-9.,!?:)]$/.test(a.t) && /^[A-Z0-9(]/.test(b.t)) return (a.t.trim().split(/\s+/).pop()||'')+(b.t.trim().split(/\s+/)[0]||'');
+  }
+  return null;
+}
+// Links labelled "Text us" / "SMS" that actually dial (tel:) — tapping them starts a call, not a text.
+function smsLabelTelLinks(doc){
+  return [...doc.querySelectorAll('a[href^="tel:"]')].map(a=>(a.textContent||a.getAttribute('aria-label')||'').replace(/\s+/g,' ').trim())
+    .filter(t=>/\b(sms|txt|text(ing)?)\b/i.test(t)).slice(0,5);
+}
+
 // Flat penalties (taken off the page's final score) for the misses that make everything else moot.
 const GATES={ 'Served over HTTPS':20, 'Title tag present':10 };
 function applyGates(r){
@@ -445,6 +498,10 @@ async function auditOne(raw, prefetchedHtml){
   const entities=pageType==='location'?localEntities(mainText):[];
   const links=internalLinks(doc, url);
   const dates=pageDates(doc, ld, url, _nowMs());
+  const nap=napSignals(doc, doc.body?textBlocks(doc.body).join('\n'):'', ld); // whole page incl. header/footer, where NAP lives
+  const claims=countClaims(mainText);
+  const h1Glue=h1Glued(h1[0]);
+  const smsTel=smsLabelTelLinks(doc);
   // AI-search / rich-result signals
   const hasFaq = /FAQPage|QAPage|Question/i.test(schemaStr) || /"@type"\s*:\s*"(FAQPage|QAPage|Question)"/i.test(html);
   const hasOrg = schemaTypes.some(t=>/Organization|LocalBusiness|AutoRepair|AutomotiveBusiness|Store|ProfessionalService|HomeAndConstructionBusiness|EmergencyService/i.test(t));
@@ -554,6 +611,7 @@ async function auditOne(raw, prefetchedHtml){
     title, h1text:(h1[0]&&h1[0].textContent||'').trim(), desc, words, jsShell, loadMs,
     bodySig:bodyText.slice(0,600).replace(/\s+/g,' ').toLowerCase().trim(),
     pageType, mainWords, entities, links, datePublished:dates.published, dateModified:dates.modified,
+    nap, claims, h1Glue, smsTel,
     stats:{images:imgs.length, scripts:doc.querySelectorAll('script').length, stylesheets:doc.querySelectorAll('link[rel="stylesheet"]').length, sizeKb, words},
     aux:{robots:null,sitemap:null}, _origin:origin };
   // Main-content text blocks for the crawl's cross-page analysis — kept out of JSON (saved reports, API results).
@@ -731,13 +789,38 @@ async function discoverPages(root, max, render){
   const urls=[...new Set([base+'/'].concat(sitemapUrls, seeds))];
   return { base, urls, sitemapUrls, lastmod, total:urls.length, capped:false, via };
 }
+// NAP (name / address / phone) as the pages state it. A phone in a tel: link or in schema counts from one page;
+// a phone or street address in plain text only once it appears on 2+ pages (so a number quoted in a blog post
+// is not taken for the business's own).
+function napIssues(pages){
+  const tally=(get,minPages)=>{ const m={}; pages.forEach(p=>[...new Set(get(p)||[])].forEach(v=>{ (m[v]=m[v]||new Set()).add(p.url); }));
+    const out={}; Object.keys(m).forEach(k=>{ if(m[k].size>=minPages) out[k]=m[k].size; }); return out; };
+  const merge=(...ts)=>{ const o={}; ts.forEach(t=>Object.keys(t).forEach(k=>{ o[k]=Math.max(o[k]||0,t[k]); })); return Object.keys(o).map(k=>({value:k,pages:o[k]})).sort((a,b)=>b.pages-a.pages); };
+  const n=p=>p.nap||{tel:[],visible:[],streets:[],schema:{names:[],phones:[],streets:[]}};
+  const phones=merge(tally(p=>n(p).tel,1), tally(p=>n(p).schema.phones,1), tally(p=>n(p).visible,2));
+  const streets=merge(tally(p=>n(p).schema.streets,1), tally(p=>n(p).streets,2));
+  const names=merge(tally(p=>n(p).schema.names,1));
+  const inconsistent=[]; if(phones.length>1) inconsistent.push('phone'); if(streets.length>1) inconsistent.push('address'); if(names.length>1) inconsistent.push('name');
+  return { phones, streets, names, inconsistent };
+}
+// Hard-coded counts vs what the site actually has ("see all 34 service areas" with 35 area pages).
+function claimIssues(pages){
+  const actual={ location:pages.filter(p=>p.pageType==='location').length, service:pages.filter(p=>p.pageType==='service').length };
+  const m={};
+  pages.forEach(p=>(p.claims||[]).forEach(c=>{ const have=actual[c.kind]; const wrong=c.atLeast?have<c.n:have!==c.n; if(!wrong) return;
+    const k=c.kind+'|'+c.text.toLowerCase(); (m[k]=m[k]||{claim:c.text, claimed:c.n, kind:c.kind, actual:have, urls:[]}).urls.push(p.url); }));
+  return Object.values(m).sort((a,b)=>b.urls.length-a.urls.length);
+}
 function crossPageIssues(pages){
   const norm=s=>String(s||'').replace(/\s+/g,' ').trim().toLowerCase();
   const group=(key)=>{ const m={}; pages.forEach(p=>{ const k=norm(p[key]); if(k)(m[k]=m[k]||[]).push(p.url); }); return Object.keys(m).filter(k=>m[k].length>1).map(k=>({value:k.slice(0,80),urls:m[k]})); };
   const bodyGroups=(()=>{ const m={}; pages.forEach(p=>{ const k=p.bodySig; if(k)(m[k]=m[k]||[]).push(p.url); }); return Object.keys(m).filter(k=>m[k].length>1).map(k=>({sample:k.slice(0,80),urls:m[k]})); })();
   const stop=['home','page','service','services','ohio','near','the','and','for','with','your'];
   const mismatch=pages.filter(p=>{ if(!p.title||!p.bodySig)return false; const ws=norm(p.title).split(/[^a-z0-9]+/).filter(w=>w.length>=4&&stop.indexOf(w)<0); if(!ws.length)return false; return ws.filter(w=>p.bodySig.indexOf(w)>=0).length/ws.length < 0.34; }).map(p=>p.url);
-  return { duplicateTitles:group('title'), duplicateH1:group('h1text'), duplicateBodies:bodyGroups, titleBodyMismatch:mismatch,
+  return { duplicateTitles:group('title'), duplicateDescriptions:group('desc'), duplicateH1:group('h1text'), duplicateBodies:bodyGroups, titleBodyMismatch:mismatch,
+    nap:napIssues(pages), countClaims:claimIssues(pages),
+    h1Spacing:pages.filter(p=>p.h1Glue).map(p=>({url:p.url, sample:p.h1Glue})),
+    smsTelLinks:pages.filter(p=>p.smsTel&&p.smsTel.length).map(p=>({url:p.url, labels:p.smsTel})),
     thin:pages.filter(p=>p.pageType!=='utility'&&p.pageType!=='archive'&&(p.uniqueWords!=null?p.uniqueWords:p.words)<250).map(p=>({url:p.url,words:p.uniqueWords!=null?p.uniqueWords:p.words})),
     jsRendered:pages.filter(p=>p.jsShell).map(p=>p.url), missingH1:pages.filter(p=>!p.h1text).map(p=>p.url) };
 }
@@ -1014,7 +1097,7 @@ function siteReportHTML(res){
   const jsCount=(cp.jsRendered||[]).length; const aiPct=catPct('AI Search & Answer Engines');
   const engine=(label,val,note)=>'<div style="flex:1;min-width:150px;border:1px solid #e2e8f0;border-radius:8px;padding:12px"><div style="font-size:12px;color:#64748b;text-transform:uppercase;letter-spacing:.05em">'+label+'</div><div style="font-size:24px;font-weight:800;color:'+scol(val)+'">'+(val==null?'—':val)+(val==null?'':'%')+'</div><div style="font-size:12px;color:#64748b;margin-top:2px">'+note+'</div></div>';
   const issue=(title,arr,fmt)=>{ arr=arr||[]; if(!arr.length) return ''; const items=arr.slice(0,8).map(fmt||(u=>esc(String(u)))).join('<br>'); return '<div style="border:1px solid #fee2e2;background:#fff7f7;border-radius:8px;padding:10px 12px;margin:0 0 8px"><div style="font-weight:800;color:#b91c1c">'+esc(title)+' ('+arr.length+')</div><div style="font-size:12px;color:#475569;margin-top:4px;line-height:1.6">'+items+(arr.length>8?'<br>…and '+(arr.length-8)+' more':'')+'</div></div>'; };
-  const pageRows=ok.slice(0,60).map(p=>{ var s=p._score||{}; return '<tr style="border-bottom:1px solid #eef2f7"><td style="padding:5px 8px;font-weight:700;color:'+scol(s.score)+'">'+(s.grade||'?')+(s.score!=null?' '+s.score:'')+'</td><td style="padding:5px 8px;font-size:12px">'+esc(p.url.replace(res.root,'')||'/')+'</td><td style="padding:5px 8px;font-size:12px;color:#64748b">'+(p.words||0)+'w'+(p.jsShell?' · JS':'')+(p._rendered?' · rendered':'')+'</td></tr>'; }).join('');
+  const pageRows=ok.slice(0,60).map(p=>{ var s=p._score||{}; return '<tr style="border-bottom:1px solid #eef2f7"><td style="padding:5px 8px;font-weight:700;color:'+scol(s.score)+'">'+(s.grade||'?')+(s.score!=null?' '+s.score:'')+'</td><td style="padding:5px 8px;font-size:12px">'+esc(p.url.replace(res.root,'')||'/')+'</td><td style="padding:5px 8px;font-size:12px;color:#64748b">'+(p.pageType?esc(p.pageType)+' · ':'')+(p.uniqueWords!=null?p.uniqueWords+' unique words':(p.words||0)+'w')+(p.jsShell?' · JS':'')+(p._rendered?' · rendered':'')+'</td></tr>'; }).join('');
   const pf=res.perf;
   const speedHTML = !pf ? '' : (function(){
     const v=pf.avg, col= v<800?'#16a34a':v<1800?'#f59e0b':'#dc2626';
@@ -1053,8 +1136,21 @@ function siteReportHTML(res){
     +'</div>'
     +'<h3 style="margin:20px 0 8px;font-size:15px">Site-wide issues (what a single-page scan misses)</h3>'
     +(function(){ var out='';
+      const rel=u=>esc(String(u||'').replace(res.root,'')||'/');
+      const nap=cp.nap||{};
+      out+=issue('Broken internal links', cp.brokenLinks, o=>rel(o.url)+' — HTTP '+o.status+' · linked from '+o.linkedFrom+' page'+(o.linkedFrom===1?'':'s')+' (e.g. '+rel(o.from[0])+')');
+      out+=issue('Internal links that redirect', cp.redirectLinks, o=>rel(o.url)+' → '+rel(o.location||'?')+' ('+o.status+') · linked from '+o.linkedFrom+' page'+(o.linkedFrom===1?'':'s'));
+      out+=issue('Orphan pages (in the sitemap, linked from nowhere)', cp.orphans, rel);
+      out+=issue('Sitemap URLs that redirect or fail', [].concat(cp.sitemapRedirects||[], cp.sitemapBroken||[]), o=>rel(o.url)+' — HTTP '+o.status+(o.location?' → '+rel(o.location):''));
+      out+=issue('Near-duplicate pages (80%+ shared text)', cp.nearDuplicates, o=>rel(o.a)+' ≈ '+rel(o.b)+' ('+Math.round(o.similarity*100)+'%)');
+      if((nap.inconsistent||[]).length) out+=issue('Inconsistent business name / address / phone (NAP)', nap.inconsistent.map(f=>f), f=>{ const list=f==='phone'?nap.phones:f==='address'?nap.streets:nap.names;
+        return '<b>'+esc(f)+'</b>: '+list.slice(0,5).map(v=>esc(v.value)+' ('+v.pages+' page'+(v.pages===1?'':'s')+')').join(' · '); });
+      out+=issue('Hard-coded counts that don’t match the site', cp.countClaims, o=>'"'+esc(o.claim)+'" — the site has '+o.actual+' '+o.kind+' page'+(o.actual===1?'':'s')+' · on '+o.urls.length+' page'+(o.urls.length===1?'':'s'));
+      out+=issue('H1 words run together in the page code', cp.h1Spacing, o=>rel(o.url)+' — reads as "'+esc(o.sample)+'"');
+      out+=issue('"Text"/"SMS" links that dial instead of texting (tel:)', cp.smsTelLinks, o=>rel(o.url)+' — "'+esc(o.labels[0])+'"');
       out+=issue('Pages sharing duplicate body content', cp.duplicateBodies, g=>g.urls.length+' pages: '+esc(g.urls.slice(0,3).map(u=>u.replace(res.root,'')).join(', ')));
       out+=issue('Duplicate page titles', cp.duplicateTitles, g=>'"'+esc(g.value)+'" — '+g.urls.length+' pages');
+      out+=issue('Duplicate meta descriptions', cp.duplicateDescriptions, g=>'"'+esc(g.value)+'" — '+g.urls.length+' pages');
       out+=issue('Duplicate H1 headings', cp.duplicateH1, g=>'"'+esc(g.value)+'" — '+g.urls.length+' pages');
       out+=issue('Title doesn’t match page content', cp.titleBodyMismatch, u=>esc(u.replace(res.root,'')||'/'));
       out+=issue('Thin content (under 250 words)', cp.thin, o=>esc(o.url.replace(res.root,'')||'/')+' — '+o.words+'w');
