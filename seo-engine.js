@@ -623,6 +623,9 @@ async function auditOne(raw, prefetchedHtml){
   checks.push(Object.assign({cat:CONTENT}, genericH1Check(h1[0]&&h1[0].textContent)));
   checks.push(Object.assign({cat:CONTENT}, descEqualsTitleCheck(title, desc)));
   checks.push(Object.assign({cat:CONTENT}, genericAnchorCheck(anchors)));
+  const SD='Structured Data';
+  [jsonLdSyntaxCheck(doc), businessEntityCheck(ld), schemaNapCheck(nap), openingHoursCheck(ld, pageText), serviceSchemaCheck(ld, pageType),
+    breadcrumbCheck(ld, pageType), faqMatchCheck(ld, pageText), schemaTypesCheck(ld)].filter(Boolean).forEach(c=>checks.push(Object.assign({cat:SD}, c)));
   checks.push(Object.assign({cat:LOCAL}, callAboveFoldCheck(doc, pageType)));
   checks.push(Object.assign({cat:LOCAL}, areaCodeCheck(doc, _market)));
   checks.push(Object.assign({cat:CONTENT}, staleClaimsCheck(yClaims, null)));
@@ -1487,6 +1490,103 @@ function localFindings(ok, ctx){
   return out;
 }
 
+// ---------- Phase 6 — structured data ----------
+// schema.org types in common use (plus every LocalBusiness subtype above). A type outside this list is almost always
+// an invented one (e.g. "TowingService"), which search engines ignore.
+const SCHEMA_TYPES=new Set(('Thing Action CreativeWork Article BlogPosting NewsArticle LiveBlogPosting SocialMediaPosting DiscussionForumPosting Report TechArticle ScholarlyArticle '
+  +'WebPage AboutPage ContactPage CollectionPage FAQPage QAPage ItemPage ProfilePage SearchResultsPage CheckoutPage MedicalWebPage RealEstateListing WebSite WebPageElement '
+  +'SiteNavigationElement WPHeader WPFooter WPSideBar WPAdBlock Table ImageObject VideoObject AudioObject MediaObject Photograph ImageGallery VideoGallery MediaGallery Book Movie '
+  +'MusicRecording Recipe Review AggregateRating Rating EmployerAggregateRating ClaimReview Question Answer Comment HowTo HowToStep HowToSection HowToTool HowToSupply '
+  +'HowToDirection HowToTip Course Event BusinessEvent Place Organization Corporation NGO OnlineBusiness OnlineStore Person Product Offer AggregateOffer OfferCatalog Brand '
+  +'Service FinancialProduct BroadcastService CableOrSatelliteService GovernmentService TaxiService Taxi FoodService PostalAddress GeoCoordinates GeoShape GeoCircle ContactPoint '
+  +'OpeningHoursSpecification SpecialAnnouncement BreadcrumbList ListItem ItemList PropertyValue QuantitativeValue MonetaryAmount PriceSpecification UnitPriceSpecification '
+  +'CompoundPriceSpecification DeliveryChargeSpecification PaymentMethod PaymentChargeSpecification SpeakableSpecification EntryPoint SearchAction ReadAction OrderAction ReserveAction '
+  +'ContactAction ViewAction WatchAction InteractionCounter Country State City AdministrativeArea PostalCodeRangeSpecification ServiceChannel Language Audience PeopleAudience '
+  +'BusinessAudience DefinedTerm DefinedTermSet CreativeWorkSeries WebApplication SoftwareApplication MobileApplication Dataset DataCatalog Map Menu MenuItem MenuSection '
+  +'Reservation Ticket Trip JobPosting Occupation Vehicle Car Motorcycle BusOrCoach Duration Distance ProductModel IndividualProduct SomeProducts ProductGroup Accommodation '
+  +'House Apartment Residence CivicStructure Airport Park ParkingFacility TouristAttraction LandmarksOrHistoricalBuildings BodyOfWater PlaceOfWorship Church School '
+  +'CollegeOrUniversity EducationalOrganization MedicalOrganization WarrantyPromise Demand Episode TVSeries Clip Blog Collection Quotation Poster NewsMediaOrganization '
+  +'SportsOrganization GovernmentOrganization ResearchOrganization Consortium LocalBusiness Project VirtualLocation MerchantReturnPolicy ShippingDeliveryTime OfferShippingDetails '
+  +'DefinedRegion Observation StatisticalVariable Grant FundingScheme Legislation Guide Thesis').split(' '));
+const isKnownType=t=>SCHEMA_TYPES.has(t)||isLocalType(t)||ORG_TYPES.test(t)||/:/.test(t);
+function jsonLdSyntaxCheck(doc){
+  const scripts=[...doc.querySelectorAll('script[type="application/ld+json"]')];
+  if(!scripts.length) return { label:'JSON-LD syntax valid', points:0, status:'info', detail:'No JSON-LD on the page', evidence:[], why:'', fix:'' };
+  const bad=[]; scripts.forEach((s,i)=>{ try{ JSON.parse(s.textContent); }catch(e){ bad.push({ snippet:'<script type="application/ld+json"> #'+(i+1)+': '+snip(e.message,60)+' — '+snip(s.textContent,80) }); } });
+  return { label:'JSON-LD syntax valid', points:3, status:bad.length?'fail':'pass', detail:bad.length?(bad.length+' of '+scripts.length+' JSON-LD blocks do not parse'):(scripts.length+' JSON-LD block'+(scripts.length===1?'':'s')+' parse cleanly'),
+    evidence:bad, why:'A JSON-LD block with a syntax error is thrown away whole — none of its structured data counts.', fix:'Fix the JSON (usually a trailing comma or an unescaped quote) and re-test in Google\'s Rich Results Test.' };
+}
+function businessEntityCheck(nodes){
+  const biz=nodes.filter(n=>typesOf(n).some(t=>isLocalType(t)||ORG_TYPES.test(t))&&(n.name||n['@id']));
+  // A nested copy without @id but with the same name as an @id'd entity is the same entity.
+  const idByName={}; biz.forEach(n=>{ if(n['@id']&&n.name) idByName[String(n.name).toLowerCase()]=n['@id']; });
+  let keys=[...new Set(biz.map(n=>n['@id']||idByName[String(n.name).toLowerCase()]||('name:'+String(n.name).toLowerCase())))];
+  // Entities explicitly tied together (parentOrganization / branchOf / subOrganization) count as one business.
+  const refs=v=>[].concat(v||[]).map(x=>x&&typeof x==='object'?x['@id']:x).filter(Boolean);
+  const linked=new Set(); biz.forEach(n=>{ refs(n.parentOrganization).concat(refs(n.branchOf),refs(n.subOrganization)).forEach(id=>{ if(keys.includes(id)&&n['@id']){ linked.add(id); linked.add(n['@id']); } }); });
+  if(linked.size) keys=keys.filter(k=>!linked.has(k)).concat(['linked:'+[...linked].sort().join('|')]);
+  if(!biz.length) return { label:'One business entity with a stable @id', points:0, status:'info', detail:'No business entity in the schema', evidence:[], why:'', fix:'' };
+  const noId=biz.every(n=>!n['@id']);
+  const st=keys.length>1?'warn':noId?'warn':'pass';
+  return { label:'One business entity with a stable @id', points:2, status:st,
+    detail:keys.length>1?(keys.length+' different business entities on the page'):noId?'Business entity has no @id':('One business entity: '+biz[0]['@id']),
+    evidence:st==='pass'?[]:biz.slice(0,3).map(n=>({ snippet:typesOf(n).join('/')+' '+(n['@id']?'@id '+n['@id']:'(no @id)')+' "'+snip(n.name,40)+'"' })),
+    why:'Search engines and AI merge facts about you by entity. Two business entities (or one without an @id) split that profile.', fix:'Describe the business once, with a fixed "@id" (e.g. https://site.com/#business), and reference that @id everywhere else.' };
+}
+function schemaNapCheck(nap){
+  const s=nap&&nap.schema||{};
+  if(!s.phones.length&&!s.streets.length) return { label:'Schema NAP matches the page', points:0, status:'info', detail:'No phone or street address in the schema', evidence:[], why:'', fix:'' };
+  const vis=new Set((nap.tel||[]).concat(nap.visible||[])), streets=new Set(nap.streets||[]), probs=[];
+  s.phones.forEach(p=>{ if(!vis.has(p)) probs.push('schema telephone '+p+' is not on the page'); });
+  s.streets.forEach(a=>{ if(streets.size && !streets.has(a)) probs.push('schema street "'+a+'" differs from the page ("'+[...streets][0]+'")'); });
+  return { label:'Schema NAP matches the page', points:3, status:probs.length?'fail':'pass', detail:probs.length?probs.join(' · '):'Schema phone/address match what visitors see',
+    evidence:probs.length?[{ snippet:'schema: '+s.phones.concat(s.streets).join(' · ')+' | page: '+[...vis].slice(0,2).concat([...streets].slice(0,1)).join(' · ') }]:[],
+    why:'Google trusts structured data only when it matches the visible page; a mismatched phone or address undermines the local listing.', fix:'Make the schema telephone and address identical to the ones printed on the page.' };
+}
+// Is the schema's opening-hours 24/7?
+function schema247(nodes){
+  const biz=nodes.filter(n=>typesOf(n).some(t=>isLocalType(t)||ORG_TYPES.test(t)));
+  let known=false, all=false;
+  biz.forEach(n=>{ const spec=[].concat(n.openingHoursSpecification||[]); const oh=[].concat(n.openingHours||[]).join(' ');
+    if(spec.length||oh){ known=true;
+      const days=new Set(); spec.forEach(sp=>{ const o=String(sp.opens||''), c=String(sp.closes||''); if(/^00:00/.test(o)&&/^(23:59|24:00|00:00)/.test(c)) [].concat(sp.dayOfWeek||[]).forEach(d=>days.add(String(d).replace(/^.*\//,''))); });
+      if(days.size>=7||/Mo-Su\s*00:00-(23:59|24:00)|24\/7|00:00-23:59/i.test(oh)) all=true; } });
+  return { known, all };
+}
+function openingHoursCheck(nodes, pageText){
+  const s=schema247(nodes); if(!s.known) return { label:'Schema hours match the page', points:0, status:'info', detail:'No opening hours in the schema', evidence:[], why:'', fix:'' };
+  const claims=RE_24_7.test(pageText);
+  const bad=claims&&!s.all;
+  return { label:'Schema hours match the page', points:1, status:bad?'warn':'pass', detail:bad?'Page says 24/7 but the schema hours are not 24/7':(s.all?'Schema says 24/7':'Schema lists set hours'),
+    evidence:bad?[{ snippet:snip((pageText.match(new RegExp('.{0,50}'+RE_24_7.source+'.{0,30}','i'))||[''])[0],110) }]:[], why:'Google shows the schema hours; if they contradict the page, customers get the wrong answer.', fix:'Mark 24/7 service as opens 00:00 / closes 23:59 on all seven days (and list office hours separately if needed).' };
+}
+function serviceSchemaCheck(nodes, type){
+  if(type!=='service') return null;
+  const has=nodes.some(n=>typesOf(n).some(t=>t==='Service'||/Service$/.test(t)&&SCHEMA_TYPES.has(t)));
+  return { label:'Service schema', points:2, status:has?'pass':'warn', detail:has?'Service schema present':'No Service schema on this service page', evidence:[],
+    why:'Service schema names the service, the area served and the provider, so AI answers can quote the page precisely.', fix:'Add Service JSON-LD (serviceType, areaServed, provider → your business @id).' };
+}
+function breadcrumbCheck(nodes, type){
+  if(type==='home') return null;
+  const has=nodes.some(n=>typesOf(n).includes('BreadcrumbList'));
+  return { label:'Breadcrumb schema', points:1, status:has?'pass':'warn', detail:has?'BreadcrumbList present':'No BreadcrumbList schema', evidence:[], why:'Breadcrumbs show the page\'s place in the site in Google results.', fix:'Add BreadcrumbList JSON-LD (Home › Services › This page).' };
+}
+function faqMatchCheck(nodes, pageText){
+  const qs=nodes.filter(n=>typesOf(n).includes('Question')&&n.name);
+  if(!qs.length) return null;
+  const norm=t=>String(t||'').toLowerCase().replace(/<[^>]+>/g,' ').replace(/[^a-z0-9]+/g,' ').trim();
+  const page=' '+norm(pageText)+' ';
+  const miss=qs.filter(q=>!page.includes(' '+norm(q.name)+' ') || (q.acceptedAnswer&&q.acceptedAnswer.text&&!page.includes(' '+norm(q.acceptedAnswer.text).slice(0,120))));
+  return { label:'FAQ schema matches the visible FAQ', points:2, status:miss.length?'fail':'pass', detail:miss.length?(miss.length+' of '+qs.length+' FAQ schema questions/answers are not on the page as written'):(qs.length+' FAQ schema questions match the page'),
+    evidence:miss.slice(0,3).map(q=>({ snippet:'Q: '+snip(q.name,90) })), why:'FAQ markup must mirror the visible FAQ word for word; hidden or reworded Q&A is a structured-data violation.', fix:'Generate the FAQ JSON-LD from the same text shown on the page.' };
+}
+function schemaTypesCheck(nodes){
+  const bad=[...new Set(nodes.flatMap(typesOf).filter(t=>t&&!isKnownType(t)))];
+  if(!nodes.length) return null;
+  return { label:'Valid schema.org types', points:1, status:bad.length?'warn':'pass', detail:bad.length?('Not schema.org types: '+bad.join(', ')):'All types are schema.org types',
+    evidence:bad.map(t=>({ snippet:'"@type": "'+t+'"' })), why:'Invented types (e.g. "TowingService") are ignored — the data in them never reaches Google.', fix:'Use the closest real type (e.g. "AutomotiveBusiness" with a "Service" of serviceType "Towing").' };
+}
+
 // Link graph facts per page: click depth from the homepage (BFS over audited pages' links), inlink count and the
 // anchor texts used; plus the full redirect chain for every redirecting URL met (hops, loops, final URL).
 function crawlGraph(pages, base, redirected, keyOf){
@@ -2047,7 +2147,7 @@ const API={ BRAND, PROXIES, TAGS, AI_BOTS, AISEARCH, PROJECT_FIXES, sleep, esc, 
   // building blocks, exposed for tests
   classifyPage, mainContent, localEntities, countClaims, h1Glued, smsLabelTelLinks, businessSchema, ldNodes, AI_SEARCH_BOTS, AI_TRAINING_BOTS,
   // individual checks, for unit tests
-  _x:{ soft404Check, viewportZoomCheck, headingHierarchyCheck, imageCheck, weightCheck, pageAssets, robotsRulesFor, robotsAllowed, chainOf, technicalFindings, applyDeductions, titleQualityCheck, titlePixels, genericH1Check, descEqualsTitleCheck, genericAnchorCheck, onPageLinkFindings, yearClaims, staleClaimsCheck, placeholderCheck, defaultPrivacyCheck, contentFreshnessFindings, contradictionFindings, serviceCoverage, locationCoverage, callAboveFoldCheck, areaCodeCheck, localFindings, loadIndustry, setMarket:(m)=>{ _market=m; } } };
+  _x:{ soft404Check, viewportZoomCheck, headingHierarchyCheck, imageCheck, weightCheck, pageAssets, robotsRulesFor, robotsAllowed, chainOf, technicalFindings, applyDeductions, titleQualityCheck, titlePixels, genericH1Check, descEqualsTitleCheck, genericAnchorCheck, onPageLinkFindings, yearClaims, staleClaimsCheck, placeholderCheck, defaultPrivacyCheck, contentFreshnessFindings, contradictionFindings, serviceCoverage, locationCoverage, callAboveFoldCheck, areaCodeCheck, localFindings, jsonLdSyntaxCheck, businessEntityCheck, schemaNapCheck, openingHoursCheck, serviceSchemaCheck, breadcrumbCheck, faqMatchCheck, schemaTypesCheck, loadIndustry, setMarket:(m)=>{ _market=m; } } };
 root.SEO=API;
 if(typeof module!=="undefined"&&module.exports) module.exports=API;
 })(typeof window!=="undefined"?window:globalThis);

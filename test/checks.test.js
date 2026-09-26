@@ -2,7 +2,7 @@
 // One true positive and one true negative per extended check (node --test test/checks.test.js).
 const test = require('node:test');
 const assert = require('node:assert');
-const { engine, page, words, same, doc } = require('./helpers');
+const { engine, page, ld, words, same, doc } = require('./helpers');
 
 // ---------------- Phase 2 — technical ----------------
 test('Soft 404: "page not found" or <50 words fails; a real service page passes; home is exempt', () => {
@@ -227,4 +227,60 @@ test('Google reviews shown: GBP cid link or widget passes; none warns', () => {
   const base = { home: null, disc: { base: 'https://t' }, local: null };
   assert.strictEqual(_x.localFindings([{ url: 'https://t/', pageType: 'home', _html: '<a href="https://www.google.com/maps?cid=123">Reviews</a>' }], base).find(f => /Google reviews/.test(f.label)).status, 'pass');
   assert.strictEqual(_x.localFindings([{ url: 'https://t/', pageType: 'home', _html: '<p>hi</p>' }], base).find(f => /Google reviews/.test(f.label)).status, 'warn');
+});
+
+// ---------------- Phase 6 — structured data ----------------
+const nodesOf = (SEO, html) => SEO.ldNodes(doc(html));
+test('JSON-LD syntax: a trailing comma fails with evidence; valid JSON passes', () => {
+  const { _x } = engine();
+  const bad = _x.jsonLdSyntaxCheck(doc('<script type="application/ld+json">{"@type":"LocalBusiness","name":"X",}</script>'));
+  assert.strictEqual(bad.status, 'fail'); assert.ok(bad.evidence[0].snippet.includes('LocalBusiness'));
+  assert.strictEqual(_x.jsonLdSyntaxCheck(doc('<script type="application/ld+json">{"@type":"LocalBusiness","name":"X"}</script>')).status, 'pass');
+});
+
+test('Business entity: two unlinked entities warn; one @id (or linked via parentOrganization) passes', () => {
+  const SEO = engine();
+  const two = nodesOf(SEO, ld({ '@graph': [{ '@type': 'LocalBusiness', '@id': 'https://t/#b', name: 'Co' }, { '@type': 'Organization', '@id': 'https://t/#o', name: 'Co' }] }));
+  assert.strictEqual(SEO._x.businessEntityCheck(two).status, 'warn');
+  const linked = nodesOf(SEO, ld({ '@graph': [{ '@type': 'LocalBusiness', '@id': 'https://t/#b', name: 'Co', parentOrganization: { '@id': 'https://t/#o' } }, { '@type': 'Organization', '@id': 'https://t/#o', name: 'Co' }] }));
+  assert.strictEqual(SEO._x.businessEntityCheck(linked).status, 'pass');
+  assert.strictEqual(SEO._x.businessEntityCheck(nodesOf(SEO, ld({ '@type': 'AutoRepair', '@id': 'https://t/#b', name: 'Co' }))).status, 'pass');
+});
+
+test('Schema NAP: schema phone not on the page fails; matching phone passes', () => {
+  const { _x } = engine();
+  assert.strictEqual(_x.schemaNapCheck({ tel: ['(614) 555-0100'], visible: [], streets: [], schema: { names: [], phones: ['(614) 555-0199'], streets: [] } }).status, 'fail');
+  assert.strictEqual(_x.schemaNapCheck({ tel: ['(614) 555-0100'], visible: [], streets: [], schema: { names: [], phones: ['(614) 555-0100'], streets: [] } }).status, 'pass');
+});
+
+test('Schema hours: page says 24/7 but schema lists 8–5 warns; schema 00:00–23:59 all week passes', () => {
+  const SEO = engine();
+  const set = nodesOf(SEO, ld({ '@type': 'LocalBusiness', name: 'Co', openingHoursSpecification: [{ '@type': 'OpeningHoursSpecification', dayOfWeek: ['Monday'], opens: '08:00', closes: '17:00' }] }));
+  assert.strictEqual(SEO._x.openingHoursCheck(set, 'We tow 24/7.').status, 'warn');
+  const all = nodesOf(SEO, ld({ '@type': 'LocalBusiness', name: 'Co', openingHoursSpecification: [{ '@type': 'OpeningHoursSpecification', dayOfWeek: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'], opens: '00:00', closes: '23:59' }] }));
+  assert.strictEqual(SEO._x.openingHoursCheck(all, 'We tow 24/7.').status, 'pass');
+});
+
+test('Service / Breadcrumb schema: missing warns on service / inner pages; present passes', () => {
+  const SEO = engine();
+  assert.strictEqual(SEO._x.serviceSchemaCheck([], 'service').status, 'warn');
+  assert.strictEqual(SEO._x.serviceSchemaCheck(nodesOf(SEO, ld({ '@type': 'Service', name: 'Towing' })), 'service').status, 'pass');
+  assert.strictEqual(SEO._x.serviceSchemaCheck([], 'blog'), null);
+  assert.strictEqual(SEO._x.breadcrumbCheck([], 'service').status, 'warn');
+  assert.strictEqual(SEO._x.breadcrumbCheck(nodesOf(SEO, ld({ '@type': 'BreadcrumbList' })), 'service').status, 'pass');
+});
+
+test('FAQ schema must match visible text: reworded question fails; exact passes', () => {
+  const SEO = engine();
+  const faq = q => nodesOf(SEO, ld({ '@type': 'FAQPage', mainEntity: [{ '@type': 'Question', name: q, acceptedAnswer: { '@type': 'Answer', text: 'Usually 20 to 40 minutes.' } }] }));
+  const page = 'FAQ How fast can you get to me? Usually 20 to 40 minutes.';
+  assert.strictEqual(SEO._x.faqMatchCheck(faq('How quickly will a truck arrive?'), page).status, 'fail');
+  assert.strictEqual(SEO._x.faqMatchCheck(faq('How fast can you get to me?'), page).status, 'pass');
+});
+
+test('Invalid schema.org type "TowingService" warns; real types pass', () => {
+  const SEO = engine();
+  const c = SEO._x.schemaTypesCheck(nodesOf(SEO, ld({ '@type': 'TowingService', name: 'Co' })));
+  assert.strictEqual(c.status, 'warn'); assert.match(c.evidence[0].snippet, /TowingService/);
+  assert.strictEqual(SEO._x.schemaTypesCheck(nodesOf(SEO, ld({ '@type': ['LocalBusiness', 'AutomotiveBusiness'], name: 'Co' }))).status, 'pass');
 });
