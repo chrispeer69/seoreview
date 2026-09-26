@@ -218,7 +218,7 @@ function summarize(res) {
   }
   const jsPages = (cp.jsRendered || []).length;
   const ai_visibility = {
-    score: pct('AI Search & Answer Engines'),
+    score: (v => (v == null ? null : Math.min(95, v)))(pct('AI Search & Answer Engines')), // capped at 95: live AI answers are not observed
     crawlers_blocked,
     llms_txt: (c => (c && !/could not/i.test(c.detail || '') ? /^Found/.test(c.detail || '') : null))(chk(/llms\.txt/i)), // reported, not scored
     faq_schema: passed(chk(/FAQ structured data/i)),
@@ -226,7 +226,7 @@ function summarize(res) {
     readable_without_js: passed(chk(/readable without JavaScript/i)),
     js_only_pages: jsPages,
     notes: (jsPages ? `${jsPages} page${jsPages === 1 ? ' is' : 's are'} JavaScript-only and invisible to AI answer engines. ` : '')
-      + 'Score = the "AI Search & Answer Engines" category across audited pages (crawler access, llms.txt, FAQ/Organization schema, readable content). Live AI-answer citations are not checked.',
+      + 'Score = the "AI Search & Answer Engines" category across audited pages (search-crawler access, FAQ/Organization schema, readable content), capped at 95. Live AI-answer citations are not checked.',
   };
 
   const pf = res.perf || null;
@@ -248,6 +248,8 @@ function summarize(res) {
     ai_visibility,
     server_speed,
     coverage: { discovered: cov.discovered, audited: cov.audited, failed: cov.failed, capped: !!cov.capped, cap: cov.cap, discovered_via: cov.via, js_rendered: cov.rendered || 0, render_available: !!cov.renderAvailable },
+    // How the score was built: 50% page average + 50% site level (coverage, freshness, link health, duplication, technical), caps.
+    site_breakdown: res.siteBreakdown || null,
   };
 }
 
@@ -335,7 +337,7 @@ async function runJob(id) {
     const root = await resolveRoot(job.domain);
     if ((job.mode || 'site') === 'page') return await runPageJob(id, root);
     const work = headless.crawlSite(deps, root, {
-      maxPages: MAX_PAGES, concurrency: 4,
+      maxPages: MAX_PAGES, concurrency: 4, psiKey: PSI_KEY,
       onProgress: (done, total, current) => {
         const now = Date.now();
         if (now - lastSave > 1500) { lastSave = now; store.update(id, { progress: { done, total, current: String(current || '').slice(0, 200) } }).catch(() => {}); }

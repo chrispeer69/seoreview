@@ -129,18 +129,14 @@ async function crawlSite(deps, root, opts) {
       render: deps.renderEnabled ? (u => w.fetch('/api/render?url=' + encodeURIComponent(u)).then(r => (r.ok ? r.text() : null)).catch(() => null)) : null,
       places: deps.placesEnabled ? (q => w.fetch('/api/places?q=' + encodeURIComponent(q)).then(r => (r.ok ? r.json() : null)).catch(() => null)) : null,
       onProgress: opts.onProgress || function () {},
+      psiKey: opts.psiKey || '',          // PageSpeed on the homepage + 2 money pages (technical part of the site score)
+      speed: opts.speed !== false,
+      now: opts.now || null,              // pins "today" for freshness (test fixtures)
     });
     if (!res || res.error) return { result: res || { error: 'crawl returned nothing' }, html: null };
     const html = w.SEO.siteReportHTML(res);
-    // Site-level checks the single-page audit adds (robots.txt, sitemap, AI-crawler access, llms.txt). The
-    // crawl skips them per page; run them once for the site on a scratch record so site scoring is unchanged.
-    let siteChecks = [];
-    try {
-      const home = (res.pages || []).find(p => !p.error && p.origin) || null;
-      if (home) { const scratch = { origin: home.origin, checks: [] }; await w.SEO.addAux(scratch); siteChecks = scratch.checks; }
-    } catch (e) { /* best effort */ }
+    // The crawl result carries its own site-level checks (robots.txt, sitemap, AI crawlers, llms.txt): res.siteChecks.
     const result = JSON.parse(JSON.stringify(res));
-    result.siteChecks = JSON.parse(JSON.stringify(siteChecks));
     return { result, html, engineErrors: errors.slice(0, 5) };
   } finally {
     try { w.close(); } catch (e) {}

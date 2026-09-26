@@ -369,7 +369,9 @@ async function runCrawl(){
   out.innerHTML='<div style="padding:16px;color:#64748b">Discovering pages on '+esc(root)+'…</div>';
   out.scrollIntoView({behavior:'smooth',block:'nearest'});
   try{
+    const psiEl=document.getElementById('psiOn'), keyEl=document.getElementById('psiKey');
     const res=await crawlSite(root,{ max:150, concurrency:6, render:(window.__RENDER?renderPage:null),
+      speed:!(psiEl&&!psiEl.checked), psiKey:(keyEl&&keyEl.value.trim())||window.BCAI_PSI_KEY||'',
       places:(q)=>fetch('/api/places?q='+encodeURIComponent(q)).then(r=>r.ok?r.json():null).catch(()=>null),
       onProgress:(d,t,u)=>{ out.innerHTML='<div style="padding:16px;color:#64748b">Crawling… audited <b>'+d+'</b> of '+t+' pages<br><span style="font-size:12px">'+esc(String(u||'').slice(0,80))+'</span></div>'; } });
     lastSiteResult=res;

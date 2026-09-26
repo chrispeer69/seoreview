@@ -172,6 +172,9 @@ function selfServingReview(nodes){
 // Resolves to {url,status,location,noindex,challenged} or null when it could not be checked.
 const _linkCache=new Map(); let _lcQueue=[], _lcTimer=null, _lcAvailable=true;
 const _fetchMeta=new Map(); // page URL → {finalUrl,status} as seen by our own proxy
+// "Now" for date math — a crawl can pin it (test fixtures) via opts.now.
+let _nowOverride=null;
+const _nowMs=()=>_nowOverride!=null?_nowOverride:Date.now();
 function resetLinkCache(){ _linkCache.clear(); _fetchMeta.clear(); _lcAvailable=true; }
 function checkUrl(u){
   if(_linkCache.has(u)) return _linkCache.get(u);
@@ -327,6 +330,39 @@ function localDetailCheck(ents, compared){
     fix:'Name the specific roads, highway exits, landmarks and neighborhoods you serve in this town (12+), in real sentences — not a copy of another city page.'};
 }
 
+// ---------- Links and dates (for the crawl's link-health and freshness scores) ----------
+const siteKey=h=>String(h||'').toLowerCase().replace(/^www\./,'');
+const RE_ASSET=/\.(png|jpe?g|gif|svg|webp|avif|ico|css|js|mjs|json|xml|txt|pdf|zip|rar|docx?|xlsx?|pptx?|mp3|mp4|mov|webm|woff2?|ttf|eot)$/i;
+const RE_SKIP_PATH=/^\/(wp-admin|wp-json|wp-login|xmlrpc|cdn-cgi|feed|comments\/feed|api)(\/|$)|\/feed\/?$|\/amp\/?$/i;
+// Same-site <a href> targets (www and bare host count as the same site), without #fragments. Links carrying a query
+// string (filters, tracking, calendars) are not treated as pages.
+function internalLinks(doc, pageUrl){
+  let base; try{ base=new URL(pageUrl); }catch(e){ return []; }
+  const out=new Set();
+  doc.querySelectorAll('a[href]').forEach(a=>{
+    const h=(a.getAttribute('href')||'').trim();
+    if(!h||/^(#|mailto:|tel:|sms:|javascript:|data:)/i.test(h)) return;
+    let u; try{ u=new URL(h, base); }catch(e){ return; }
+    if(!/^https?:$/.test(u.protocol) || siteKey(u.hostname)!==siteKey(base.hostname)) return;
+    u.hash=''; if(u.search) return;
+    if(RE_ASSET.test(u.pathname) || RE_SKIP_PATH.test(u.pathname)) return;
+    out.add(u.href);
+  });
+  return [...out];
+}
+// Newest publish / modify dates the page states (JSON-LD, article meta, a /YYYY/MM/DD/ URL). ISO strings or null.
+function pageDates(doc, nodes, url, nowMs){
+  const ok=d=>{ const t=Date.parse(d); return !isNaN(t) && t>Date.UTC(1995,0,1) && t<nowMs+2*864e5 ? t : null; };
+  const pub=[], mod=[];
+  nodes.forEach(n=>{ if(n.datePublished) pub.push(ok(n.datePublished)); if(n.dateModified) mod.push(ok(n.dateModified)); });
+  const meta=p=>{ const m=doc.querySelector('meta[property="'+p+'"],meta[name="'+p+'"]'); return m?m.getAttribute('content'):null; };
+  pub.push(ok(meta('article:published_time'))); mod.push(ok(meta('article:modified_time')), ok(meta('og:updated_time')));
+  const m=String(url).match(/\/((?:19|20)\d{2})\/(\d{2})(?:\/(\d{2}))?\//);
+  if(m) pub.push(ok(m[1]+'-'+m[2]+'-'+(m[3]||'01')+'T00:00:00Z'));
+  const max=a=>{ const v=a.filter(x=>x!=null); return v.length?new Date(Math.max(...v)).toISOString():null; };
+  return { published:max(pub), modified:max(mod) };
+}
+
 // Flat penalties (taken off the page's final score) for the misses that make everything else moot.
 const GATES={ 'Served over HTTPS':20, 'Title tag present':10 };
 function applyGates(r){
@@ -407,6 +443,8 @@ async function auditOne(raw, prefetchedHtml){
   const mainText=blocks.join('\n');
   const mainWords=countWords(mainText);
   const entities=pageType==='location'?localEntities(mainText):[];
+  const links=internalLinks(doc, url);
+  const dates=pageDates(doc, ld, url, _nowMs());
   // AI-search / rich-result signals
   const hasFaq = /FAQPage|QAPage|Question/i.test(schemaStr) || /"@type"\s*:\s*"(FAQPage|QAPage|Question)"/i.test(html);
   const hasOrg = schemaTypes.some(t=>/Organization|LocalBusiness|AutoRepair|AutomotiveBusiness|Store|ProfessionalService|HomeAndConstructionBusiness|EmergencyService/i.test(t));
@@ -515,7 +553,7 @@ async function auditOne(raw, prefetchedHtml){
   const result={ url, domain:o.hostname, origin, timestamp:new Date().toLocaleString(), ssl, checks, tracking, schemaTypes,
     title, h1text:(h1[0]&&h1[0].textContent||'').trim(), desc, words, jsShell, loadMs,
     bodySig:bodyText.slice(0,600).replace(/\s+/g,' ').toLowerCase().trim(),
-    pageType, mainWords, entities,
+    pageType, mainWords, entities, links, datePublished:dates.published, dateModified:dates.modified,
     stats:{images:imgs.length, scripts:doc.querySelectorAll('script').length, stylesheets:doc.querySelectorAll('link[rel="stylesheet"]').length, sizeKb, words},
     aux:{robots:null,sitemap:null}, _origin:origin };
   // Main-content text blocks for the crawl's cross-page analysis — kept out of JSON (saved reports, API results).
@@ -671,20 +709,27 @@ async function discoverPages(root, max, render){
   const robotsTxt=await grab(base+'/robots.txt');
   [...String(robotsTxt).matchAll(/sitemap:\s*(\S+)/gi)].forEach(m=>{ const s=m[1].trim(); if(/^https?:\/\//i.test(s)) smList.push(s); });
   smList.push(base+'/sitemap.xml'); smList=[...new Set(smList)].slice(0,8);
-  let locs=[]; let via='sitemap';
+  let locs=[]; let via='sitemap'; const lastmod={};
+  const readUrls=xml=>{ [...String(xml).matchAll(/<url>([\s\S]*?)<\/url>/gi)].forEach(m=>{
+    const loc=(m[1].match(/<loc>\s*([^<\s]+)\s*<\/loc>/i)||[])[1], lm=(m[1].match(/<lastmod>\s*([^<\s]+)\s*<\/lastmod>/i)||[])[1];
+    if(loc&&lm) lastmod[loc.split('#')[0]]=lm; }); };
   for(const sm of smList){
     const xml=await grab1(sm); const l=[...String(xml).matchAll(locRe)].map(m=>m[1]);
     const kids=l.filter(u=>/\.xml(\?|$)/i.test(u));
-    if(kids.length && kids.length>=l.length-1){ for(const c of kids.slice(0,20)){ const cx=await grab1(c); locs=locs.concat([...String(cx).matchAll(locRe)].map(m=>m[1])); if(locs.length>max*3)break; } }
-    else locs=locs.concat(l);
+    if(kids.length && kids.length>=l.length-1){ for(const c of kids.slice(0,20)){ const cx=await grab1(c); readUrls(cx); locs=locs.concat([...String(cx).matchAll(locRe)].map(m=>m[1])); if(locs.length>max*3)break; } }
+    else { readUrls(xml); locs=locs.concat(l); }
     if(locs.length) break;
   }
-  let urls=[...new Set(locs.filter(u=>/^https?:\/\//i.test(u) && !/\.xml(\?|$)/i.test(u)))];
-  if(!urls.length){ via='link-crawl'; let home=await grab(base+'/'); urls=linksIn(home);
-    if(urls.length<3 && render){ try{ const rh=await render(base+'/'); if(rh){ const rl=linksIn(rh); if(rl.length>urls.length){ urls=rl; via='link-crawl (rendered)'; } } }catch(e){} }
-    urls.unshift(base+'/'); urls=[...new Set(urls)]; }
-  urls=[...new Set(urls.map(u=>u.split('#')[0]).filter(Boolean))];
-  return { base, urls:urls.slice(0,max), total:urls.length, capped:urls.length>max, via };
+  const sitemapUrls=[...new Set(locs.filter(u=>/^https?:\/\//i.test(u) && !/\.xml(\?|$)/i.test(u)).map(u=>u.split('#')[0]))];
+  if(!sitemapUrls.length) via='link-crawl';
+  // The crawl always starts at the homepage and follows its links; the sitemap URLs join the same queue.
+  let seeds=[];
+  if(!sitemapUrls.length && render){ // JS-only nav yields ~no links in raw HTML — take them from the rendered homepage
+    const raw=linksIn(await grab(base+'/'));
+    if(raw.length<3){ try{ const rh=await render(base+'/'); if(rh){ const rl=linksIn(rh); if(rl.length>raw.length){ seeds=rl; via='link-crawl (rendered)'; } } }catch(e){} }
+  }
+  const urls=[...new Set([base+'/'].concat(sitemapUrls, seeds))];
+  return { base, urls, sitemapUrls, lastmod, total:urls.length, capped:false, via };
 }
 function crossPageIssues(pages){
   const norm=s=>String(s||'').replace(/\s+/g,' ').trim().toLowerCase();
@@ -749,13 +794,81 @@ function crossPageContent(pages){
   });
   return { nearDuplicates:pairs };
 }
+// ---------- Site score ----------
+// Final = 50% average page score + 50% site level. Site level = coverage 30% + freshness 20% + link health 20% +
+// duplication 15% + technical 15%. Caps: no service AND no location pages -> max 70; no new content in 24 months ->
+// max 75. Every part is returned (siteBreakdown) so the report can show its working.
+const SITE_WEIGHTS={ coverage:0.30, freshness:0.20, linkHealth:0.20, duplication:0.15, technical:0.15 };
+const clamp100=v=>Math.max(0,Math.min(100,v));
+function coverageScore(pages){
+  const service=pages.filter(p=>p.pageType==='service').length, location=pages.filter(p=>p.pageType==='location').length;
+  return { score:Math.round(50*Math.min(1,service/10)+50*Math.min(1,location/10)), service, location };
+}
+function freshnessScore(pages, lastmod, nowMs){
+  const content=pages.filter(p=>p.pageType!=='utility'&&p.pageType!=='archive');
+  const newest=arr=>arr.map(d=>Date.parse(d)).filter(t=>!isNaN(t)&&t<nowMs+2*864e5).reduce((a,b)=>Math.max(a,b),-Infinity);
+  let t=newest(content.map(p=>p.datePublished)), source='publish dates on the pages';
+  if(t===-Infinity){ t=newest(content.map(p=>p.dateModified)); source='last-modified dates on the pages'; }
+  if(t===-Infinity){
+    const lm=content.map(p=>lastmod[p.url]).filter(Boolean);
+    const generated=lm.length>=5 && new Set(lm.map(d=>String(d).slice(0,10))).size===1; // every URL stamped the same day = build time
+    if(lm.length && !generated){ t=newest(lm); source='sitemap lastmod'; }
+  }
+  if(t===-Infinity) return { score:50, newest:null, ageDays:null, source:'no content dates found (scored neutral)' };
+  const ageDays=Math.max(0,Math.round((nowMs-t)/864e5));
+  return { score:Math.round(clamp100(100*(1-(ageDays-90)/(730-90)))), newest:new Date(t).toISOString().slice(0,10), ageDays, source };
+}
+function technicalScore(siteChecks, speedRuns){
+  const pct=c=>!c||c.status==='info'?null:c.status==='pass'?100:c.status==='warn'?50:0;
+  const find=l=>siteChecks.find(c=>c.label===l);
+  const sp=(speedRuns||[]).map(s=>s.score).filter(v=>v!=null);
+  const parts={ robots:pct(find('robots.txt present')), sitemap:pct(find('XML sitemap present')), aiCrawlers:pct(find('AI search crawlers allowed')),
+    pageSpeed:sp.length?Math.round(sp.reduce((a,b)=>a+b,0)/sp.length):null };
+  const W={ robots:20, sitemap:20, aiCrawlers:20, pageSpeed:40 };
+  let e=0,t=0; Object.keys(W).forEach(k=>{ if(parts[k]!=null){ e+=W[k]*parts[k]; t+=W[k]; } });
+  return { score:t?Math.round(e/t):50, parts };
+}
+
 async function crawlSite(root, opts){
-  opts=opts||{}; const max=opts.max||150, conc=opts.concurrency||5, onProgress=opts.onProgress||function(){};
+  opts=opts||{};
   resetLinkCache();
+  _nowOverride=opts.now?Date.parse(opts.now):null;
+  try{ return await crawlSiteRun(root, opts); } finally { _nowOverride=null; }
+}
+async function crawlSiteRun(root, opts){
+  const max=opts.max||150, conc=opts.concurrency||5, onProgress=opts.onProgress||function(){};
   const render=typeof opts.render==='function'?opts.render:null;
   const disc=await discoverPages(root, max, render);
   if(!disc.urls.length) return { error:'No pages discovered (no sitemap and no crawlable links — the site may be a JavaScript app with no sitemap).', root:disc.base };
-  const pages=[]; let i=0, done=0, rendered=0;
+  const baseKey=siteKey(new URL(disc.base).hostname);
+  const keyOf=u=>{ try{ const x=new URL(u); return siteKey(x.hostname)+(x.pathname.replace(/\/+$/,'')||'/').toLowerCase(); }catch(e){ return String(u); } };
+  // One queue: homepage, sitemap URLs, then every internal link the audited pages contain. Each URL is status-checked
+  // first (no redirect following): redirects and errors are recorded, not audited; 200s are audited up to the cap.
+  const queue=[], queued=new Set();
+  const enqueue=u=>{ const k=keyOf(u); if(queued.has(k)||queue.length>=max*3) return; queued.add(k); queue.push(u); };
+  disc.urls.forEach(enqueue);
+  const pages=[], redirected=[], broken=[]; let qi=0, active=0, done=0, rendered=0, audited=0, capped=false;
+  async function visit(u){
+    const st=await checkUrl(u);
+    if(st && !st.challenged && st.status>=300 && st.status<400){
+      redirected.push({url:u, status:st.status, location:st.location});
+      if(st.location){ try{ const l=new URL(st.location,u); if(siteKey(l.hostname)===baseKey && !RE_ASSET.test(l.pathname)) enqueue(l.href); }catch(e){} }
+      return;
+    }
+    if(st && !st.challenged && st.status>=400){ broken.push({url:u, status:st.status}); return; }
+    if(audited>=max){ capped=true; return; }
+    audited++;
+    try{ const r=await loadPage(u); pages.push(r); (r.links||[]).forEach(enqueue); }
+    catch(e){ pages.push({ url:u, error:(e&&e.reason)||(e&&e.message)||'failed' }); }
+  }
+  async function worker(){
+    while(true){
+      if(scanCtrl&&scanCtrl.signal.aborted) return;
+      if(qi<queue.length){ const u=queue[qi++]; active++; try{ await visit(u); } finally{ active--; } done++; onProgress(Math.min(done,max), Math.min(queue.length,max), u); }
+      else if(active>0) await sleep(50);
+      else return;
+    }
+  }
   async function loadPage(u){
     let r;
     try{ r=await auditOne(u); }
@@ -766,16 +879,65 @@ async function crawlSite(root, opts){
     if(r.jsShell && render){ try{ const html=await render(u); if(html){ r=await auditOne(u, html); r._rendered=true; rendered++; } }catch(e){} }
     return r;
   }
-  async function worker(){ while(true){ const idx=i++; if(idx>=disc.urls.length)return; const u=disc.urls[idx];
-    try{ const r=await loadPage(u); r._score=score(r); pages.push(r); }
-    catch(e){ pages.push({ url:u, error:(e&&e.reason)||(e&&e.message)||'failed' }); }
-    done++; onProgress(done, disc.urls.length, u); } }
   const pool=[]; for(let w=0; w<conc; w++) pool.push(worker()); await Promise.all(pool);
+  pages.sort((a,b)=>a.url<b.url?-1:a.url>b.url?1:0); // stable order, whatever order the workers finished in
   const ok=pages.filter(p=>!p.error);
+  if(!ok.length) return { error:'No page could be audited — the site may block automated access or is unavailable.', root:disc.base,
+    pages, coverage:{ discovered:queued.size, audited:0, failed:pages.length, capped, cap:max, via:disc.via, rendered, renderAvailable:!!render } };
   const content=crossPageContent(ok);
   ok.forEach(p=>{ p._score=score(p); });
   const scored=ok.filter(p=>p._score&&p._score.score!=null);
-  const siteScore=scored.length?Math.round(scored.reduce((a,p)=>a+p._score.score,0)/scored.length):null;
+  const pageAverage=scored.length?Math.round(scored.reduce((a,p)=>a+p._score.score,0)/scored.length):null;
+
+  // Link health: every internal link target on the audited pages, status-checked (cached from the crawl queue).
+  const sources={};
+  ok.forEach(p=>(p.links||[]).forEach(l=>{ if(keyOf(l)===keyOf(p.url)) return; (sources[l]=sources[l]||[]).push(p.url); }));
+  const targets=Object.keys(sources).slice(0,400), statusOf={};
+  await Promise.all(targets.map(async t=>{ statusOf[t]=await checkUrl(t); }));
+  const brokenLinks=[], redirectLinks=[];
+  targets.forEach(t=>{ const s=statusOf[t]; if(!s||s.challenged||!s.status) return;
+    if(s.status>=400) brokenLinks.push({url:t, status:s.status, from:sources[t].slice(0,5), linkedFrom:sources[t].length});
+    else if(s.status>=300) redirectLinks.push({url:t, status:s.status, location:s.location, from:sources[t].slice(0,5), linkedFrom:sources[t].length}); });
+  const linked=new Set();
+  targets.forEach(t=>{ linked.add(keyOf(t)); const s=statusOf[t]; if(s&&s.location) linked.add(keyOf(s.location)); });
+  const smKeys=new Set((disc.sitemapUrls||[]).map(keyOf));
+  const orphans=ok.filter(p=>p.pageType!=='home' && smKeys.has(keyOf(p.url)) && !linked.has(keyOf(p.url))).map(p=>p.url);
+  const linkHealth={ score:Math.round(clamp100(100-2*brokenLinks.length-0.5*redirectLinks.length-orphans.length)),
+    broken:brokenLinks.length, redirects:redirectLinks.length, orphans:orphans.length };
+
+  // Technical: robots.txt, sitemap, AI search crawler access (once, for the site) + PageSpeed on the homepage and
+  // two money pages (service pages first, then location pages).
+  const home=ok.find(p=>p.pageType==='home')||ok[0];
+  const aux={ origin:home.origin, checks:[] };
+  try{ await addAux(aux); }catch(e){}
+  let speedRuns=[];
+  if(opts.speed!==false){
+    // Money pages = the service (then location) pages the site links to most.
+    const inbound={}; Object.keys(sources).forEach(t=>{ inbound[keyOf(t)]=(inbound[keyOf(t)]||0)+sources[t].length; });
+    const byLinks=type=>ok.filter(p=>p.pageType===type).sort((a,b)=>(inbound[keyOf(b.url)]||0)-(inbound[keyOf(a.url)]||0)||(a.url<b.url?-1:1));
+    const money=[home].concat(byLinks('service'), byLinks('location')).filter((p,i,a)=>a.indexOf(p)===i).slice(0,3);
+    speedRuns=await Promise.all(money.map(async p=>{
+      const s={ url:p.url, checks:[] };
+      try{ await addSpeed(s, opts.psiKey||''); }catch(e){}
+      const sc=score(s);
+      return { url:p.url, score:sc.scored?sc.score:null, mobile:s.speed&&s.speed.mobile||null, desktop:s.speed&&s.speed.desktop||null, checks:s.checks };
+    }));
+  }
+  const technical=technicalScore(aux.checks, speedRuns);
+  const coverage=coverageScore(ok);
+  const freshness=freshnessScore(ok, disc.lastmod||{}, _nowMs());
+  const dupPool=ok.filter(p=>p.pageType!=='utility');
+  const inPairs=new Set(); (content.nearDuplicates||[]).forEach(x=>{ inPairs.add(x.a); inPairs.add(x.b); });
+  const duplication={ score:Math.round(100*(1-(dupPool.length?inPairs.size/dupPool.length:0))), pagesInNearDuplicatePairs:inPairs.size, pagesCompared:dupPool.length };
+  const parts={ coverage:coverage.score, freshness:freshness.score, linkHealth:linkHealth.score, duplication:duplication.score, technical:technical.score };
+  const siteLevel=Math.round(Object.keys(SITE_WEIGHTS).reduce((a,k)=>a+SITE_WEIGHTS[k]*parts[k],0));
+  let siteScore=pageAverage==null?null:Math.round(0.5*pageAverage+0.5*siteLevel);
+  const caps=[];
+  if(siteScore!=null && coverage.service===0 && coverage.location===0){ caps.push({max:70, reason:'No service or location pages'}); siteScore=Math.min(siteScore,70); }
+  if(siteScore!=null && freshness.ageDays!=null && freshness.ageDays>=730){ caps.push({max:75, reason:'No new content in 24 months (newest '+freshness.newest+')'}); siteScore=Math.min(siteScore,75); }
+  const aiCat={e:0,t:0}; ok.forEach(p=>{ const b=p._score&&p._score.byCat&&p._score.byCat[AISEARCH]; if(b){ aiCat.e+=b.e; aiCat.t+=b.t; } });
+  const aiSearch=aiCat.t?Math.min(95,Math.round(100*aiCat.e/aiCat.t)):null; // never 100: live AI answers are not observed
+  const siteBreakdown={ final:siteScore, pageAverage, siteLevel, weights:SITE_WEIGHTS, coverage, freshness, linkHealth, duplication, technical, caps, aiSearch };
   const times=ok.map(p=>p.loadMs).filter(v=>v!=null);
   let perf=null;
   if(times.length){ const sorted=times.slice().sort((a,b)=>a-b); const avg=Math.round(times.reduce((a,b)=>a+b,0)/times.length);
@@ -792,10 +954,32 @@ async function crawlSite(root, opts){
         : { found:false, query:bizName };
     }catch(e){ local=null; }
   }
-  const crossPage=Object.assign(crossPageIssues(ok), content);
-  ok.forEach(p=>{ delete p._blocks; delete p._bh; delete p._sh; delete p._ownText; delete p._simWith; }); // working data, not results
-  return { root:disc.base, siteScore, perf, local, crossPage, pages,
-    coverage:{ discovered:disc.total, audited:ok.length, failed:pages.length-ok.length, capped:disc.capped, cap:max, via:disc.via, rendered:rendered, renderAvailable:!!render } };
+  const crossPage=Object.assign(crossPageIssues(ok), content, { brokenLinks, redirectLinks, orphans,
+    sitemapRedirects:redirected.filter(x=>smKeys.has(keyOf(x.url))), sitemapBroken:broken.filter(x=>smKeys.has(keyOf(x.url))) });
+  ok.forEach(p=>{ p.linkCount=(p.links||[]).length; delete p.links; delete p._blocks; delete p._bh; delete p._sh; delete p._ownText; delete p._simWith; }); // working data, not results (crawl results get saved)
+  return { root:disc.base, siteScore, pageAverage, siteBreakdown, siteChecks:aux.checks, speed:speedRuns, perf, local, crossPage, pages,
+    coverage:{ discovered:queued.size, inSitemap:(disc.sitemapUrls||[]).length, audited:ok.length, failed:pages.length-ok.length, redirected:redirected.length, broken:broken.length,
+      capped, cap:max, via:disc.via==='sitemap'?'sitemap + links':disc.via, rendered, renderAvailable:!!render } };
+}
+// How the site score was built — every part and cap, so the number can be checked by hand.
+function siteBreakdownHTML(b, scol){
+  if(!b) return '';
+  const row=(label,val,weight,note)=>'<tr style="border-bottom:1px solid #eef2f7"><td style="padding:5px 8px">'+label+'</td><td style="padding:5px 8px;font-weight:800;color:'+scol(val)+'">'+(val==null?'—':val)+'</td><td style="padding:5px 8px;color:#64748b">'+weight+'</td><td style="padding:5px 8px;font-size:12px;color:#475569">'+note+'</td></tr>';
+  const pct=w=>Math.round(w*100)+'% of site level';
+  const f=b.freshness||{}, l=b.linkHealth||{}, c=b.coverage||{}, d=b.duplication||{}, t=b.technical||{}, tp=t.parts||{};
+  const tparts=['robots.txt '+(tp.robots==null?'n/a':tp.robots),'sitemap '+(tp.sitemap==null?'n/a':tp.sitemap),'AI search crawlers '+(tp.aiCrawlers==null?'n/a':tp.aiCrawlers),'PageSpeed '+(tp.pageSpeed==null?'not measured':tp.pageSpeed)].join(' · ');
+  return '<div style="overflow:auto;margin:6px 0 10px"><table style="border-collapse:collapse;width:100%;font-size:13px">'
+    +'<tr><th style="text-align:left;padding:5px 8px;border-bottom:2px solid #e2e8f0;font-size:12px;color:#64748b">Part</th><th style="text-align:left;padding:5px 8px;border-bottom:2px solid #e2e8f0;font-size:12px;color:#64748b">Score</th><th style="text-align:left;padding:5px 8px;border-bottom:2px solid #e2e8f0;font-size:12px;color:#64748b">Weight</th><th style="text-align:left;padding:5px 8px;border-bottom:2px solid #e2e8f0;font-size:12px;color:#64748b">Basis</th></tr>'
+    +row('<b>Pages</b> (average page score)',b.pageAverage,'50% of final','Every audited page scored on its own checks, then averaged.')
+    +row('<b>Site level</b>',b.siteLevel,'50% of final','The five parts below.')
+    +row('&nbsp;&nbsp;Coverage',c.score,pct(b.weights.coverage),(c.service||0)+' service pages · '+(c.location||0)+' location pages (full credit at 10 of each)')
+    +row('&nbsp;&nbsp;Freshness',f.score,pct(b.weights.freshness),f.newest?('Newest content '+esc(f.newest)+' ('+f.ageDays+' days ago, from '+esc(f.source)+'); full at ≤90 days, 0 at 24 months'):esc(f.source||'no dates'))
+    +row('&nbsp;&nbsp;Link health',l.score,pct(b.weights.linkHealth),(l.broken||0)+' broken internal links (−2 each) · '+(l.redirects||0)+' redirecting links (−0.5 each) · '+(l.orphans||0)+' orphan pages (−1 each)')
+    +row('&nbsp;&nbsp;Duplication',d.score,pct(b.weights.duplication),(d.pagesInNearDuplicatePairs||0)+' of '+(d.pagesCompared||0)+' pages are near-duplicates (80%+ shared text) of another page')
+    +row('&nbsp;&nbsp;Technical',t.score,pct(b.weights.technical),tparts)
+    +'</table>'
+    +((b.caps||[]).length?'<div style="font-size:13px;color:#b91c1c;margin-top:6px"><b>Score capped:</b> '+b.caps.map(x=>esc(x.reason)+' → max '+x.max).join(' · ')+'</div>':'')
+  +'</div>';
 }
 function aiExplainerHTML(){
   return '<h3 style="margin:24px 0 8px;font-size:15px">Why AI Search Matters</h3>'
@@ -859,12 +1043,13 @@ function siteReportHTML(res){
   return '<div style="'+F+'">'
     +'<div style="border-bottom:3px solid #0f172a;padding-bottom:12px;margin-bottom:14px"><div style="font-size:20px;font-weight:800">'+esc(BRAND.name)+' — Full-Site SEO &amp; AI Search Audit</div><div style="color:#64748b;font-size:13px">'+esc(res.root)+'</div></div>'
     +'<div style="font-size:13px;color:#334155;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:10px 12px;margin-bottom:14px"><b>Coverage:</b> audited <b>'+cov.audited+'</b> of <b>'+cov.discovered+'</b> pages found'+(cov.capped?(' (capped at '+cov.cap+' — more exist)'):'')+' · discovery via <b>'+esc(cov.via||'?')+'</b>'+(cov.failed?(' · '+cov.failed+' failed to load'):'')+(cov.renderAvailable?(' · '+cov.rendered+' JS pages rendered'):' · JS-rendering off (raw HTML only)')+'.</div>'
-    +'<div style="font-size:15px;margin-bottom:6px"><b>Site score:</b> <span style="font-size:26px;font-weight:800;color:'+scol(res.siteScore)+'">'+(res.siteScore==null?'—':res.siteScore)+'</span> / 100 (average across audited pages)</div>'
+    +'<div style="font-size:15px;margin-bottom:6px"><b>Site score:</b> <span style="font-size:26px;font-weight:800;color:'+scol(res.siteScore)+'">'+(res.siteScore==null?'—':res.siteScore)+'</span> / 100'+(res.siteBreakdown?'':' (average across audited pages)')+'</div>'
+    +siteBreakdownHTML(res.siteBreakdown, scol)
     +speedHTML
     +'<h3 style="margin:18px 0 8px;font-size:15px">Readiness by search engine</h3><div style="display:flex;gap:10px;flex-wrap:wrap">'
       +engine('Google', res.siteScore, 'Overall on-page + technical (Google renders JS).')
       +engine('Bing', res.siteScore==null?null:Math.max(0,res.siteScore-(jsCount?Math.min(25,jsCount*3):0)), jsCount?(jsCount+' JS-only pages hurt Bing more'):'Reads mostly raw HTML.')
-      +engine('AI Search', aiPct, jsCount?(jsCount+' pages invisible to AI (JS-only)'):'ChatGPT/Perplexity/AI Overviews.')
+      +engine('AI Search', res.siteBreakdown&&res.siteBreakdown.aiSearch!=null?res.siteBreakdown.aiSearch:(aiPct==null?null:Math.min(95,aiPct)), jsCount?(jsCount+' pages invisible to AI (JS-only)'):'ChatGPT/Perplexity/AI Overviews. Capped at 95 — live AI answers are not observed.')
     +'</div>'
     +'<h3 style="margin:20px 0 8px;font-size:15px">Site-wide issues (what a single-page scan misses)</h3>'
     +(function(){ var out='';
