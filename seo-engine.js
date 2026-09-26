@@ -327,6 +327,17 @@ function localDetailCheck(ents, compared){
     fix:'Name the specific roads, highway exits, landmarks and neighborhoods you serve in this town (12+), in real sentences — not a copy of another city page.'};
 }
 
+// Flat penalties (taken off the page's final score) for the misses that make everything else moot.
+const GATES={ 'Served over HTTPS':20, 'Title tag present':10 };
+function applyGates(r){
+  (r.checks||[]).forEach(c=>{
+    delete c.penalty;
+    if(c.status!=='fail') return;
+    if(c.label==='Page is indexable' && (r.pageType==='service'||r.pageType==='location')) c.penalty=20; // a money page hidden from Google
+    else if(GATES[c.label]) c.penalty=GATES[c.label];
+  });
+}
+
 async function auditOne(raw, prefetchedHtml){
   let url=raw.trim();
   if(!/^https?:\/\//i.test(url)) url='https://'+url;
@@ -408,7 +419,9 @@ async function auditOne(raw, prefetchedHtml){
   // ---- CHECKS ----
   const INDEX='Indexability & Crawlability', CONTENT='On-Page Content', TECH='Technical & Mobile', LOCAL='Local SEO', SOCIAL='Social Sharing', MEDIA='Images & Accessibility', PERF='Performance Hygiene';
 
-  add(INDEX,'Page is indexable',14, noindex?'fail':'pass',
+  // Presence checks are gates: few points for having them; applyGates() adds a flat penalty for the misses that
+  // sink a page outright.
+  add(INDEX,'Page is indexable',4, noindex?'fail':'pass',
     noindex?'A "noindex" directive is present':'No noindex directive',
     'A "noindex" tag is a stop sign telling Google to hide this page completely. If it is there by mistake, nothing else you do matters — you are invisible in search.',
     'Remove the "noindex" value from the robots meta tag so search engines can list the page.');
@@ -418,7 +431,7 @@ async function auditOne(raw, prefetchedHtml){
     canonical?'Point the canonical at the final, indexable URL of this page (the address that returns 200 with no redirect and no noindex).'
              :'Add <link rel="canonical" href="'+esc(origin)+'/"> in the page head pointing to the preferred URL.');
 
-  add(CONTENT,'Title tag present',12, title?'pass':'fail',
+  add(CONTENT,'Title tag present',3, title?'pass':'fail',
     title?('"'+title+'"'):'Missing',
     'Your title is the blue headline people click in Google. It is the single strongest thing on the page for both ranking and earning the click.',
     'Add a unique <title> of about 50–60 characters that names the business and primary service + city.');
@@ -430,7 +443,7 @@ async function auditOne(raw, prefetchedHtml){
       'Aim for 50–60 characters, e.g. "Auto Repair in Hilliard, OH | Shop Name".');
     if(titleCount>1) add(CONTENT,'Single title tag',2,'warn',titleCount+' title tags found','More than one title confuses search engines about which one to show.','Keep exactly one <title> tag.');
   }
-  add(CONTENT,'Meta description present',9, desc?'pass':'fail',
+  add(CONTENT,'Meta description present',2, desc?'pass':'fail',
     desc?('"'+desc.slice(0,90)+(desc.length>90?'…':'')+'"'):'Missing',
     'This is the grey summary under your title in Google. It does not change ranking, but a good one convinces people to click you instead of a competitor.',
     'Write a compelling 120–155 character summary with the service, location, and a reason to click (e.g. "Call now").');
@@ -444,8 +457,8 @@ async function auditOne(raw, prefetchedHtml){
   checks.push({cat:CONTENT,label:'Unique vs sibling pages',points:0,status:'info',detail:'Compared against the site\'s other pages in a whole-site crawl',why:'',fix:''});
   if(pageType==='location') checks.push(Object.assign({cat:LOCAL}, localDetailCheck(entities, false)));
 
-  add(TECH,'Served over HTTPS',9, ssl?'pass':'fail', ssl?'Secure':'Not secure','The padlock in the browser bar. Google ranks secure sites higher and browsers scare visitors away from sites without it.','Install an SSL certificate (free via Let\'s Encrypt or your host) and force HTTPS.');
-  add(TECH,'Mobile viewport set',7, viewport?'pass':'fail', viewport?'Configured':'Missing','Without this the site looks broken on phones — and Google judges your site by its phone version first.','Add <meta name="viewport" content="width=device-width, initial-scale=1">.');
+  add(TECH,'Served over HTTPS',3, ssl?'pass':'fail', ssl?'Secure':'Not secure','The padlock in the browser bar. Google ranks secure sites higher and browsers scare visitors away from sites without it.','Install an SSL certificate (free via Let\'s Encrypt or your host) and force HTTPS.');
+  add(TECH,'Mobile viewport set',2, viewport?'pass':'fail', viewport?'Configured':'Missing','Without this the site looks broken on phones — and Google judges your site by its phone version first.','Add <meta name="viewport" content="width=device-width, initial-scale=1">.');
   add(TECH,'No mixed (insecure) content',4, mixed===0?'pass':'warn', mixed===0?'Clean':(mixed+' http:// resources'),'Insecure files on a secure page trigger browser warnings and can stop images or features from loading.','Update http:// links for images/scripts/styles to https://.');
   add(TECH,'Character encoding declared',2, charset?'pass':'warn', charset?'Declared':'Missing','Prevents letters and symbols from showing up as garbled characters.','Add <meta charset="UTF-8"> as the first head tag.');
   add(TECH,'Language declared',2, lang?'pass':'warn', lang?('lang="'+lang+'"'):'Missing','Tells search engines what language your site is in so it reaches the right people.','Add lang="en" to the <html> tag.');
@@ -506,6 +519,7 @@ async function auditOne(raw, prefetchedHtml){
     stats:{images:imgs.length, scripts:doc.querySelectorAll('script').length, stylesheets:doc.querySelectorAll('link[rel="stylesheet"]').length, sizeKb, words},
     aux:{robots:null,sitemap:null}, _origin:origin };
   // Main-content text blocks for the crawl's cross-page analysis — kept out of JSON (saved reports, API results).
+  applyGates(result);
   Object.defineProperty(result,'_blocks',{value:blocks,enumerable:false,writable:true,configurable:true});
   return result;
 }
@@ -629,7 +643,8 @@ function score(r){
     if(!byCat[c.cat])byCat[c.cat]={e:0,t:0};
     byCat[c.cat].e+=c.points*w; byCat[c.cat].t+=c.points;
   });
-  const s= total? Math.round(100*earned/total):0;
+  const penalty=r.checks.reduce((a,c)=>a+(c.penalty||0),0);
+  const s= Math.max(0,(total? Math.round(100*earned/total):0)-penalty);
   let grade,color;
   if(s>=90){grade='A';color='#16a34a';} else if(s>=80){grade='B';color='#65a30d';}
   else if(s>=70){grade='C';color='#f59e0b';} else if(s>=55){grade='D';color='#f97316';} else {grade='F';color='#dc2626';}
@@ -638,7 +653,7 @@ function score(r){
     : s>=70?'Several important gaps are holding this site back in search.'
     : s>=55?'Significant SEO problems are limiting how often this site is found.'
     : 'Major SEO issues — the site is likely losing substantial search traffic.';
-  return {score:s,grade,color,counts,byCat,verdict,scored};
+  return {score:s,grade,color,counts,byCat,verdict,scored,penalty};
 }
 
 // ---------- Whole-site crawl (SEO Analyzer v2) — mirrors CRMColumbus/public/seo-engine.js ----------
@@ -729,6 +744,7 @@ function crossPageContent(pages){
     if(p.pageType==='location'){ const own=(p.entities||[]).filter(e=>entCount[e]===1);
       setCheck(p,'Local detail','Local SEO',localDetailCheck(own,true)); }
     else { const i=p.checks.findIndex(c=>c.label==='Local detail'); if(i>=0) p.checks.splice(i,1); }
+    applyGates(p);
     p.bodySig=String(p._ownText||'').slice(0,600).replace(/\s+/g,' ').toLowerCase().trim();
   });
   return { nearDuplicates:pairs };
