@@ -284,3 +284,68 @@ test('Invalid schema.org type "TowingService" warns; real types pass', () => {
   assert.strictEqual(c.status, 'warn'); assert.match(c.evidence[0].snippet, /TowingService/);
   assert.strictEqual(SEO._x.schemaTypesCheck(nodesOf(SEO, ld({ '@type': ['LocalBusiness', 'AutomotiveBusiness'], name: 'Co' }))).status, 'pass');
 });
+
+// ---------------- Phase 7 — trust & conversion ----------------
+test('License numbers (towing config): PUCO / USDOT found passes; none fails; general industry skips', async () => {
+  const SEO = engine(); await SEO._x.loadIndustry('towing');
+  const c = SEO._x.licenseCheck('Licensed: PUCO towing certificate 650256, USDOT #03560921.', 'home');
+  assert.strictEqual(c.status, 'pass'); assert.match(c.detail, /PUCO towing certificate 650256/); assert.match(c.detail, /USDOT #03560921/);
+  assert.strictEqual(SEO._x.licenseCheck('We tow cars.', 'service').status, 'fail');
+  await SEO._x.loadIndustry('general');
+  assert.strictEqual(SEO._x.licenseCheck('PUCO 650256', 'home'), null);
+});
+
+test('Pricing: "no hidden fees" without prices fails; a price or a link to a rate-card page passes', () => {
+  const { _x } = engine();
+  assert.strictEqual(_x.pricingCheck('Fast towing, no hidden fees.', [], 'service').status, 'fail');
+  assert.strictEqual(_x.pricingCheck('Hook-up $80, $4.50 per mile.', [], 'service').status, 'pass');
+  assert.strictEqual(_x.pricingCheck('No hidden fees.', [{ url: 'https://t/quote', text: 'Online quote', href: '/quote' }], 'home', new Set(['https://t/quote'])).status, 'pass');
+  assert.strictEqual(_x.pricingCheck('We tow cars.', [], 'service').status, 'warn');
+});
+
+test('Insurance mention: "fully insured" passes; nothing fails', () => {
+  const { _x } = engine();
+  assert.strictEqual(_x.insuranceCheck('Licensed and fully insured operators.', 'home').status, 'pass');
+  assert.strictEqual(_x.insuranceCheck('We tow cars.', 'home').status, 'fail');
+});
+
+test('Trust site findings: about page with owner passes; dead form fails (GET only); privacy policy missing tracking warns', async () => {
+  const SEO = engine({ 'https://t/thanks-handler': { status: 404 } });
+  const pages = [{ url: 'https://t/about', pageType: 'other', _pageText: 'Owner Jane Smith started the company in 1990.', _html: '' },
+    { url: 'https://t/contact', pageType: 'utility', _pageText: '', _html: '<form action="/thanks-handler" method="post"></form>' },
+    { url: 'https://t/privacy-policy', pageType: 'utility', _pageText: 'We collect your phone number.', _html: '' }];
+  const f = SEO._x.trustFindings(pages, { tracking: ['Google Analytics'] });
+  await SEO._x.resolveAsyncFindings(f);
+  assert.strictEqual(f.find(x => /About page/.test(x.label)).status, 'pass');
+  const form = f.find(x => /Form endpoints/.test(x.label)); assert.strictEqual(form.status, 'fail'); assert.match(form.evidence[0].snippet, /thanks-handler"> → 404/);
+  assert.strictEqual(f.find(x => /Privacy policy covers/.test(x.label)).status, 'warn');
+  const ok2 = SEO._x.trustFindings([{ url: 'https://t/about', _pageText: 'About our trucks.', _html: '' }, { url: 'https://t/privacy', _pageText: 'We use Google Analytics cookies.', _html: '' }], { tracking: ['Google Analytics'] });
+  assert.strictEqual(ok2.find(x => /About page/.test(x.label)).status, 'warn');
+  assert.strictEqual(ok2.find(x => /Privacy policy covers/.test(x.label)).status, 'pass');
+});
+
+// ---------------- Phase 8 — AI search ----------------
+test('Question headings: "?" H2 + short answer passes; long answer warns; none fails', () => {
+  const { _x } = engine();
+  assert.strictEqual(_x.questionAnswerCheck(doc('<h2>How fast can you get to me?</h2><p>Most calls are reached in 20 to 40 minutes.</p>'), 'service').status, 'pass');
+  assert.strictEqual(_x.questionAnswerCheck(doc('<h2>How fast can you get to me?</h2><p>' + words(90) + '</p>'), 'service').status, 'warn');
+  assert.strictEqual(_x.questionAnswerCheck(doc('<h2>Our services</h2><p>We tow.</p>'), 'service').status, 'fail');
+});
+
+test('Citable facts: licence + hours + prices pass; none fails', async () => {
+  const SEO = engine(); await SEO._x.loadIndustry('towing');
+  assert.strictEqual(SEO._x.citableFactsCheck('USDOT #03560921. Open 24/7. Hook-up $80.', 'home', []).status, 'pass');
+  assert.strictEqual(SEO._x.citableFactsCheck('We are great.', 'home', []).status, 'fail');
+});
+
+test('AI site findings: Bingbot-only Disallow fails; name mismatch between schema and title warns', () => {
+  const { _x } = engine();
+  const home = { url: 'https://t/', title: 'Best Tow Co | Columbus', _html: '<footer>Best Tow Co</footer>', nap: { schema: { names: ['Acme Towing'] } } };
+  const f = _x.aiSiteFindings([home], { home, local: null, robots: 'User-agent: bingbot\nDisallow: /\n\nUser-agent: *\nAllow: /', disc: { base: 'https://t' } });
+  assert.strictEqual(f.find(x => /Bingbot/.test(x.label)).status, 'fail');
+  assert.strictEqual(f.find(x => /One business name/.test(x.label)).status, 'warn');
+  const home2 = { url: 'https://t/', title: 'Towing | Acme Towing', _html: '<footer>© Acme Towing</footer>', nap: { schema: { names: ['Acme Towing'] } } };
+  const g = _x.aiSiteFindings([home2], { home: home2, local: null, robots: 'User-agent: *\nAllow: /', disc: { base: 'https://t' } });
+  assert.strictEqual(g.find(x => /Bingbot/.test(x.label)).status, 'pass');
+  assert.strictEqual(g.find(x => /One business name/.test(x.label)).status, 'pass');
+});

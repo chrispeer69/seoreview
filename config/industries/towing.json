@@ -2,45 +2,284 @@
   "industry": "towing",
   "label": "Towing & roadside",
   "services": [
-    { "name": "Emergency towing", "terms": ["emergency towing", "emergency tow", "24/7 towing", "24 hour towing"] },
-    { "name": "Flatbed towing", "terms": ["flatbed", "rollback"] },
-    { "name": "Wheel-lift towing", "terms": ["wheel-lift", "wheel lift", "dolly tow", "dollies"] },
-    { "name": "Light-duty towing", "terms": ["light duty", "light-duty"] },
-    { "name": "Medium-duty towing", "terms": ["medium duty", "medium-duty"] },
-    { "name": "Heavy-duty towing", "terms": ["heavy duty", "heavy-duty", "semi towing", "big rig"] },
-    { "name": "Accident / collision towing", "terms": ["accident towing", "collision towing", "accident recovery", "accident scene"] },
-    { "name": "Police / rotation towing", "terms": ["police towing", "police tow", "rotation towing", "law enforcement towing"] },
-    { "name": "Impound / private property towing", "terms": ["impound", "private property", "parking enforcement", "illegally parked"] },
-    { "name": "Parking garage / low-clearance towing", "terms": ["parking garage", "low clearance", "low-clearance", "low profile"] },
-    { "name": "Winch-out / recovery", "terms": ["winch", "winch-out", "ditch recovery", "vehicle recovery"] },
-    { "name": "Motorcycle towing", "terms": ["motorcycle tow", "motorcycle towing"] },
-    { "name": "Long-distance towing", "terms": ["long distance", "long-distance"] },
-    { "name": "EV / Tesla towing", "terms": ["ev towing", "tesla", "electric vehicle"] },
-    { "name": "Roadside assistance", "terms": ["roadside assistance", "roadside service"] },
-    { "name": "Lockout service", "terms": ["lockout", "locked out", "car unlock"] },
-    { "name": "Jump start", "terms": ["jump start", "jump-start", "jumpstart"] },
-    { "name": "Battery replacement", "terms": ["battery replacement", "battery service", "new battery"] },
-    { "name": "Fuel delivery", "terms": ["fuel delivery", "gas delivery", "out of gas"] },
-    { "name": "Tire change", "terms": ["tire change", "flat tire", "tire changes"] },
-    { "name": "Junk car removal", "terms": ["junk car", "cash for cars", "scrap car"] },
-    { "name": "Equipment hauling", "terms": ["equipment hauling", "equipment transport", "machinery"] },
-    { "name": "Auction transport", "terms": ["auction"] },
-    { "name": "Repossession", "terms": ["repossession", "repo"] },
-    { "name": "Fleet / commercial towing", "terms": ["fleet", "commercial towing", "contract towing"] }
+    {
+      "name": "Emergency towing",
+      "terms": [
+        "emergency towing",
+        "emergency tow",
+        "24/7 towing",
+        "24 hour towing"
+      ]
+    },
+    {
+      "name": "Flatbed towing",
+      "terms": [
+        "flatbed",
+        "rollback"
+      ]
+    },
+    {
+      "name": "Wheel-lift towing",
+      "terms": [
+        "wheel-lift",
+        "wheel lift",
+        "dolly tow",
+        "dollies"
+      ]
+    },
+    {
+      "name": "Light-duty towing",
+      "terms": [
+        "light duty",
+        "light-duty"
+      ]
+    },
+    {
+      "name": "Medium-duty towing",
+      "terms": [
+        "medium duty",
+        "medium-duty"
+      ]
+    },
+    {
+      "name": "Heavy-duty towing",
+      "terms": [
+        "heavy duty",
+        "heavy-duty",
+        "semi towing",
+        "big rig"
+      ]
+    },
+    {
+      "name": "Accident / collision towing",
+      "terms": [
+        "accident towing",
+        "collision towing",
+        "accident recovery",
+        "accident scene"
+      ]
+    },
+    {
+      "name": "Police / rotation towing",
+      "terms": [
+        "police towing",
+        "police tow",
+        "rotation towing",
+        "law enforcement towing"
+      ]
+    },
+    {
+      "name": "Impound / private property towing",
+      "terms": [
+        "impound",
+        "private property",
+        "parking enforcement",
+        "illegally parked"
+      ]
+    },
+    {
+      "name": "Parking garage / low-clearance towing",
+      "terms": [
+        "parking garage",
+        "low clearance",
+        "low-clearance",
+        "low profile"
+      ]
+    },
+    {
+      "name": "Winch-out / recovery",
+      "terms": [
+        "winch",
+        "winch-out",
+        "ditch recovery",
+        "vehicle recovery"
+      ]
+    },
+    {
+      "name": "Motorcycle towing",
+      "terms": [
+        "motorcycle tow",
+        "motorcycle towing"
+      ]
+    },
+    {
+      "name": "Long-distance towing",
+      "terms": [
+        "long distance",
+        "long-distance"
+      ]
+    },
+    {
+      "name": "EV / Tesla towing",
+      "terms": [
+        "ev towing",
+        "tesla",
+        "electric vehicle"
+      ]
+    },
+    {
+      "name": "Roadside assistance",
+      "terms": [
+        "roadside assistance",
+        "roadside service"
+      ]
+    },
+    {
+      "name": "Lockout service",
+      "terms": [
+        "lockout",
+        "locked out",
+        "car unlock"
+      ]
+    },
+    {
+      "name": "Jump start",
+      "terms": [
+        "jump start",
+        "jump-start",
+        "jumpstart"
+      ]
+    },
+    {
+      "name": "Battery replacement",
+      "terms": [
+        "battery replacement",
+        "battery service",
+        "new battery"
+      ]
+    },
+    {
+      "name": "Fuel delivery",
+      "terms": [
+        "fuel delivery",
+        "gas delivery",
+        "out of gas"
+      ]
+    },
+    {
+      "name": "Tire change",
+      "terms": [
+        "tire change",
+        "flat tire",
+        "tire changes"
+      ]
+    },
+    {
+      "name": "Junk car removal",
+      "terms": [
+        "junk car",
+        "cash for cars",
+        "scrap car"
+      ]
+    },
+    {
+      "name": "Equipment hauling",
+      "terms": [
+        "equipment hauling",
+        "equipment transport",
+        "machinery"
+      ]
+    },
+    {
+      "name": "Auction transport",
+      "terms": [
+        "auction"
+      ]
+    },
+    {
+      "name": "Repossession",
+      "terms": [
+        "repossession",
+        "repo"
+      ]
+    },
+    {
+      "name": "Fleet / commercial towing",
+      "terms": [
+        "fleet",
+        "commercial towing",
+        "contract towing"
+      ]
+    }
   ],
-  "license_patterns": ["PUCO\\s*(?:certificate)?\\s*(?:no\\.?|#)?\\s*\\d{4,}", "USDOT\\s*(?:no\\.?|#)?\\s*\\d{5,}", "\\bMC\\s*(?:no\\.?|#)?\\s*\\d{5,}"],
-  "expected_page_types": ["service", "location", "reviews", "about", "contact", "pricing", "blog"],
-  "market_area_codes": { "columbus": ["614", "380"] },
+  "license_patterns": [
+    "PUCO(?:\\s+(?:towing|tow|certificate|cert\\.?|number|no\\.?)){0,2}\\s*#?\\s*\\d{4,}",
+    "USDOT\\s*(?:no\\.?|#)?\\s*\\d{5,}",
+    "\\bMC\\s*(?:no\\.?|#)?\\s*\\d{5,}"
+  ],
+  "expected_page_types": [
+    "service",
+    "location",
+    "reviews",
+    "about",
+    "contact",
+    "pricing",
+    "blog"
+  ],
+  "market_area_codes": {
+    "columbus": [
+      "614",
+      "380"
+    ]
+  },
   "default_market": "columbus",
   "ops_tools": [
-    { "name": "Towbook", "patterns": ["towbook.com", "towbook"] },
-    { "name": "Roadside.io", "patterns": ["roadside.io"] },
-    { "name": "Omadi", "patterns": ["omadi.com"] },
-    { "name": "Beacon Software", "patterns": ["beaconsoftware"] },
-    { "name": "Dispatch Anywhere", "patterns": ["dispatchanywhere"] },
-    { "name": "AAA (motor club)", "patterns": ["aaa.com"] },
-    { "name": "Agero (motor club)", "patterns": ["agero.com", "swoopme.com"] },
-    { "name": "Honk", "patterns": ["honkforhelp.com"] },
-    { "name": "Urgently", "patterns": ["geturgently.com", "urgent.ly"] }
+    {
+      "name": "Towbook",
+      "patterns": [
+        "towbook.com",
+        "towbook"
+      ]
+    },
+    {
+      "name": "Roadside.io",
+      "patterns": [
+        "roadside.io"
+      ]
+    },
+    {
+      "name": "Omadi",
+      "patterns": [
+        "omadi.com"
+      ]
+    },
+    {
+      "name": "Beacon Software",
+      "patterns": [
+        "beaconsoftware"
+      ]
+    },
+    {
+      "name": "Dispatch Anywhere",
+      "patterns": [
+        "dispatchanywhere"
+      ]
+    },
+    {
+      "name": "AAA (motor club)",
+      "patterns": [
+        "aaa.com"
+      ]
+    },
+    {
+      "name": "Agero (motor club)",
+      "patterns": [
+        "agero.com",
+        "swoopme.com"
+      ]
+    },
+    {
+      "name": "Honk",
+      "patterns": [
+        "honkforhelp.com"
+      ]
+    },
+    {
+      "name": "Urgently",
+      "patterns": [
+        "geturgently.com",
+        "urgent.ly"
+      ]
+    }
   ]
 }

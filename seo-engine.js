@@ -626,6 +626,9 @@ async function auditOne(raw, prefetchedHtml){
   const SD='Structured Data';
   [jsonLdSyntaxCheck(doc), businessEntityCheck(ld), schemaNapCheck(nap), openingHoursCheck(ld, pageText), serviceSchemaCheck(ld, pageType),
     breadcrumbCheck(ld, pageType), faqMatchCheck(ld, pageText), schemaTypesCheck(ld)].filter(Boolean).forEach(c=>checks.push(Object.assign({cat:SD}, c)));
+  const TRUST='Trust & Conversion';
+  [licenseCheck(pageText, pageType), pricingCheck(pageText, anchors, pageType), insuranceCheck(pageText, pageType)].filter(Boolean).forEach(c=>checks.push(Object.assign({cat:TRUST}, c)));
+  [questionAnswerCheck(doc, pageType), citableFactsCheck(pageText, pageType, anchors)].filter(Boolean).forEach(c=>checks.push(Object.assign({cat:AISEARCH}, c)));
   checks.push(Object.assign({cat:LOCAL}, callAboveFoldCheck(doc, pageType)));
   checks.push(Object.assign({cat:LOCAL}, areaCodeCheck(doc, _market)));
   checks.push(Object.assign({cat:CONTENT}, staleClaimsCheck(yClaims, null)));
@@ -1587,6 +1590,130 @@ function schemaTypesCheck(nodes){
     evidence:bad.map(t=>({ snippet:'"@type": "'+t+'"' })), why:'Invented types (e.g. "TowingService") are ignored — the data in them never reaches Google.', fix:'Use the closest real type (e.g. "AutomotiveBusiness" with a "Service" of serviceType "Towing").' };
 }
 
+// ---------- Phase 7 — trust & conversion ----------
+const isMoneyOrHome=t=>t==='home'||t==='service'||t==='location';
+function licenseMatches(text){
+  const res=(_industry&&_industry._license)||[]; const out=[];
+  res.forEach(re=>{ re.lastIndex=0; let m; while((m=re.exec(text))) out.push(m[0].replace(/\s+/g,' ').trim()); });
+  return [...new Set(out)];
+}
+function licenseCheck(pageText, type){
+  if(!_industry||!(_industry._license||[]).length||!isMoneyOrHome(type)) return null;
+  const found=licenseMatches(pageText);
+  return { label:'License / registration numbers shown', points:3, status:found.length?'pass':'fail', detail:found.length?('Shows '+found.slice(0,3).join(', ')):'No '+(_industry.label||_industry.name)+' license/registration number on the page',
+    evidence:found.slice(0,3).map(x=>({ snippet:x })), why:'Licence and registration numbers (e.g. PUCO, USDOT) are hard proof of a legitimate operator — for customers, for Google and for AI answers.',
+    fix:'Print your registration numbers (e.g. "PUCO #… · USDOT #…") in the footer of every page.' };
+}
+const RE_PRICE=/\$\s?\d{1,4}(?:[.,]\d{2})?(?:\s*(?:\/|per)\s*(?:mi|mile|hr|hour))?/i;
+const RE_PRICE_CLAIM=/\b(competitive (pricing|prices|rates)|affordable (rates|prices|pricing)|upfront (pricing|prices|quotes?)|transparent pricing|flat[- ]rate|no hidden fees|low(est)? (rates|prices)|best prices?|fair (pricing|prices|rates))\b/i;
+// pricingPages (crawl): URLs of pages that publish prices — a link to one of those counts as "pricing linked".
+function pricingCheck(pageText, anchors, type, pricingPages){
+  if(!isMoneyOrHome(type)) return null;
+  const price=pageText.match(RE_PRICE), link=(anchors||[]).find(a=>/(pric|rates?\b|cost|fees)/i.test(a.url+' '+a.text)||(pricingPages&&pricingPages.has(a.url))), claim=pageText.match(RE_PRICE_CLAIM);
+  const st=price||link?'pass':claim?'fail':'warn';
+  return { label:'Pricing transparency', points:2, status:st,
+    detail:price?('Shows a price: "'+price[0]+'"'):link?('Links to pricing: '+link.url):claim?('Claims "'+claim[0]+'" but shows no price or pricing page'):'No prices or pricing page',
+    evidence:st==='pass'?[{ snippet:price?snip(pageText.slice(Math.max(0,price.index-40), price.index+40),90):('<a href="'+link.href+'">'+link.text+'</a>') }]:claim?[{ snippet:snip(pageText.slice(Math.max(0,claim.index-40), claim.index+60),110) }]:[],
+    why:'People (and AI answers) look for a price range before they call. "Affordable rates" without a number reads as a dodge.', fix:'Publish a rate card or typical price ranges (hook-up fee, per-mile rate) and link it from every service page.' };
+}
+function insuranceCheck(pageText, type){
+  if(!isMoneyOrHome(type)) return null;
+  const m=pageText.match(/\b(fully insured|licensed (and|&) insured|insured|insurance|bonded)\b/i);
+  return { label:'Insurance mentioned', points:1, status:m?'pass':'fail', detail:m?('Mentions "'+m[0]+'"'):'No mention of insurance', evidence:m?[{ snippet:snip(pageText.slice(Math.max(0,m.index-40), m.index+50),100) }]:[],
+    why:'"Licensed & insured" is one of the first things customers look for before letting someone handle their vehicle or property.', fix:'State that you are fully insured (and with whom, if you can) on the homepage and service pages.' };
+}
+const RE_STOCK=/(shutterstock|istock(photo)?|gettyimages|getty-images|adobestock|adobe-stock|depositphotos|dreamstime|123rf|bigstock|stock-photo)/i;
+const PRIVACY_TERMS={ 'Google Analytics':/analytics/i, 'Google Tag Manager':/tag manager|google/i, 'Google Ads':/google ads|advertis|remarketing/i, 'Meta / Facebook Pixel':/facebook|meta|pixel/i,
+  'Microsoft Clarity':/clarity|microsoft/i, 'Hotjar':/hotjar|session record/i, 'TikTok Pixel':/tiktok/i, 'LinkedIn Insight':/linkedin/i,
+  'CallRail':/call ?rail|call tracking|record(ed|ing)? (calls|phone)/i, 'CallTrackingMetrics':/call ?tracking/i, 'Invoca':/invoca|call tracking/i, 'WhatConverts':/whatconverts|call tracking/i };
+function trustFindings(ok, stack){
+  const out=[];
+  const about=ok.find(p=>/(^|\/)(about|about-us|our-story|who-we-are|history)(\/|$)/i.test(new URL(p.url).pathname));
+  const ab=about&&(about._pageText||'').match(/\b(owner|owned by|founder|founded|family[- ]owned|established|since (19|20)\d{2}|president|ceo|started (the|our) (business|company))\b/i);
+  out.push(finding('coverage','About page names the owner / founding',4,about&&ab?'pass':'warn',about?(ab?'About page mentions "'+ab[0]+'"':'About page has no owner or founding details'):'No About page',
+    about?(ab?[{ url:about.url, snippet:snip(about._pageText.slice(Math.max(0,ab.index-40), ab.index+60),110) }]:[{ url:about.url, snippet:'no owner/founder/established wording' }]):[],
+    'Add an About page with the owner\'s name, when and how the business started, and a photo of the team.'));
+  // Forms: GET their endpoint (never submit).
+  const forms=[]; ok.forEach(p=>{ const html=p._html||''; [...html.matchAll(/<form\b[^>]*\baction=["']([^"']+)["']/gi)].forEach(m=>{ const a=m[1].trim(); if(!a||/^(#|javascript:|mailto:)/i.test(a)) return; try{ forms.push({ page:p.url, action:new URL(a.replace(/&amp;/g,'&'),p.url).href }); }catch(e){} }); });
+  const uniq=[...new Map(forms.map(f=>[f.action,f])).values()].slice(0,20);
+  out.push(Object.assign({ _async:true, _forms:uniq }, finding('linkHealth','Form endpoints respond',6,'info',uniq.length?'Checking…':'No forms with an action URL',[],'')));
+  // Stock photos (filenames).
+  const stock=[]; ok.forEach(p=>((p._assets||{}).images||[]).forEach(i=>{ if(RE_STOCK.test(i.url)) stock.push({ url:p.url, snippet:i.url }); }));
+  out.push(finding('technical','Stock photo signals',0,'info',stock.length?(stock.length+' image'+(stock.length===1?' has a':'s have') +' stock-library filename'):'No stock-library filenames',stock.slice(0,5),'Swap stock shots for real photos of your trucks, team and jobs — they convert better and prove you are local.'));
+  // Privacy policy vs detected tracking.
+  const tools=[...new Set((stack&&stack.tracking)||[])];
+  const pp=ok.find(p=>/privacy/i.test(p.url));
+  if(tools.length){ const txt=pp?(pp._pageText||''):''; const missing=tools.filter(t=>PRIVACY_TERMS[t]&&!PRIVACY_TERMS[t].test(txt));
+    out.push(finding('technical','Privacy policy covers the tracking in use',4,!pp||missing.length?'warn':'pass',!pp?('No privacy page, but the site runs '+tools.join(', ')):missing.length?('Policy does not mention '+missing.join(', ')):('Policy covers '+tools.join(', ')),
+      [{ url:pp?pp.url:'', snippet:'Detected: '+tools.join(', ')+(missing.length?' · not mentioned: '+missing.join(', '):'') }],'Name every analytics, ad pixel and call-tracking tool in the privacy policy, with what it collects.')); }
+  return out;
+}
+async function resolveAsyncFindings(findings){
+  for(const f of findings.filter(x=>x._async)){
+    const forms=f._forms||[]; delete f._async; delete f._forms;
+    if(!forms.length) continue;
+    const res=await Promise.all(forms.map(x=>checkUrl(x.action)));
+    const dead=forms.map((x,i)=>({ x, c:res[i] })).filter(y=>y.c&&(y.c.status===404||y.c.status===410));
+    const checked=res.filter(c=>c&&c.status).length;
+    f.status=dead.length?'fail':checked?'pass':'info';
+    f.detail=dead.length?(dead.length+' form'+(dead.length===1?' posts':'s post')+' to an endpoint that returns 404'):checked?(checked+' form endpoint'+(checked===1?'':'s')+' respond (checked with GET, not submitted)'):'Form endpoints could not be checked';
+    f.evidence=dead.map(y=>({ url:y.x.page, snippet:'<form action="'+y.x.action+'"> → '+y.c.status }));
+    f.fix='Point the form at a working handler and send a test lead — a dead form silently loses every enquiry.';
+  }
+}
+
+// ---------- Phase 8 — AI search ----------
+function questionAnswerCheck(doc, type){
+  if(!/^(home|service|location|blog)$/.test(type)) return null;
+  const qs=[...doc.querySelectorAll('h2,h3')].filter(h=>/\?\s*$/.test(h.textContent||''));
+  if(!qs.length) return { label:'Question headings with direct answers', points:2, status:'fail', detail:'No question-form H2/H3 headings', evidence:[],
+    why:'AI answer engines lift a question heading plus the short answer right under it. Pages without them are harder to quote.', fix:'Add 3–5 real customer questions as H2/H3 headings, each followed by a 1–3 sentence answer (under 60 words).' };
+  const answerOf=h=>{ let el=h.nextElementSibling; for(let i=0;i<4&&el;i++,el=el.nextElementSibling){ const t=(el.textContent||'').replace(/\s+/g,' ').trim(); if(/^H[1-6]$/.test(el.tagName)) return ''; if(t) return t; }
+    const d=h.closest('details,[class*="faq" i],[class*="accordion" i]'); return d?(d.textContent||'').replace(h.textContent,'').replace(/\s+/g,' ').trim():''; };
+  const pairs=qs.map(h=>({ q:(h.textContent||'').trim(), a:answerOf(h) }));
+  const good=pairs.filter(p=>{ const n=countWords(p.a); return n>=3&&n<=60; });
+  return { label:'Question headings with direct answers', points:2, status:good.length?'pass':'warn',
+    detail:good.length?(good.length+' of '+pairs.length+' question headings have a short direct answer'):(pairs.length+' question heading'+(pairs.length===1?'':'s')+', but no answer under 60 words right after'),
+    evidence:(good.length?good:pairs).slice(0,2).map(p=>({ snippet:'"'+snip(p.q,70)+'" → '+countWords(p.a)+' words: '+snip(p.a,70) })),
+    why:'AI answer engines lift a question heading plus the short answer right under it. Pages without them are harder to quote.', fix:'Answer each question heading in 1–3 sentences (under 60 words) directly below it, then expand.' };
+}
+function citableFactsCheck(pageText, type, anchors){
+  if(!isMoneyOrHome(type)) return null;
+  const facts=[];
+  const lic=licenseMatches(pageText); if(lic.length||/\b(licen[cs]e|registration)\s*(no\.?|number|#)\s*[:#]?\s*\w*\d{3,}/i.test(pageText)) facts.push('licence # '+(lic[0]||''));
+  const areaLinks=(anchors||[]).filter(a=>classifyPage(a.url,[])==='location').length;
+  if(areaLinks>=3||/\b(serving|service area|we serve|areas? served)\b[^.]{0,120}(,[^.,]{2,30}){2,}/i.test(pageText)) facts.push('service-area list');
+  if(RE_24_7.test(pageText)||RE_HOURS.test(pageText)) facts.push('hours');
+  if(RE_PRICE.test(pageText)) facts.push('pricing');
+  return { label:'Citable facts', points:2, status:facts.length>=2?'pass':facts.length?'warn':'fail', detail:facts.length?('States '+facts.join(', ')):'No licence #, service areas, hours or prices',
+    evidence:facts.map(f=>({ snippet:f })), why:'AI answers quote concrete facts — licence numbers, areas served, hours, prices. Pages without them get summarised vaguely or skipped.',
+    fix:'State the facts plainly on the page: licence numbers, the towns you serve, your hours and typical prices.' };
+}
+function aiSiteFindings(ok, ctx){
+  const out=[], home=ctx.home, loc=ctx.local;
+  const schemaNames=[...new Set(ok.flatMap(p=>((p.nap||{}).schema||{}).names||[]))];
+  const brand=schemaNames[0];
+  if(brand){
+    const probs=[], low=brand.toLowerCase();
+    if(schemaNames.length>1) probs.push('schema uses '+schemaNames.map(n=>'"'+n+'"').join(' and '));
+    if(home&&home.title&&!home.title.toLowerCase().includes(low)) probs.push('homepage title "'+snip(home.title,60)+'" does not contain "'+brand+'"');
+    const foot=home&&home._html?((home._html.match(/<footer[\s\S]*?<\/footer>/i)||[''])[0].replace(/<[^>]+>/g,' ').replace(/&amp;/g,'&')):'';
+    if(foot&&!foot.toLowerCase().includes(low)) probs.push('footer does not say "'+brand+'"');
+    if(loc&&loc.found&&loc.name&&loc.name.toLowerCase()!==low) probs.push('Google Business Profile is "'+loc.name+'"');
+    out.push(finding('technical','One business name everywhere',4,probs.length?'warn':'pass',probs.length?probs.join(' · '):('"'+brand+'" in the title, schema, footer'+(loc&&loc.found?' and GBP':'')),
+      probs.length?[{ url:home&&home.url, snippet:'schema name "'+brand+'"; '+probs[0] }]:[],'Use exactly the same business name in the page titles, schema "name", footer and Google Business Profile (a legal name can go in "legalName").'));
+  }
+  if(ctx.robots!=null){
+    const groups=robotsGroups(ctx.robots), bing=groups.filter(g=>g.agents.includes('bingbot')||g.agents.includes('msnbot'));
+    const blocks=bing.flatMap(g=>g.disallow.filter(Boolean));
+    out.push(finding('technical','No Bingbot-specific blocks',6,blocks.length?'fail':'pass',blocks.length?('robots.txt blocks Bingbot from '+blocks.join(', ')):'No rules single out Bingbot',
+      blocks.map(d=>({ url:ctx.disc.base+'/robots.txt', snippet:'User-agent: bingbot · Disallow: '+d })),'Remove the Bingbot-only Disallow rules — Bing feeds ChatGPT search and Copilot.'));
+  }
+  const ix=/indexnow/i.test((home&&home._html||'')+' '+(ctx.robots||''));
+  out.push(finding('technical','IndexNow',0,'info',ix?'IndexNow reference found':'No IndexNow reference (the key file name is private, so it cannot be probed)',[],'Turn on IndexNow (most SEO plugins and Cloudflare support it) so Bing and Yandex see changes within minutes.'));
+  return out;
+}
+
 // Link graph facts per page: click depth from the homepage (BFS over audited pages' links), inlink count and the
 // anchor texts used; plus the full redirect chain for every redirecting URL met (hops, loops, final URL).
 function crawlGraph(pages, base, redirected, keyOf){
@@ -1707,6 +1834,9 @@ async function crawlSiteRun(root, opts){
   // The site's founding year (earliest one stated anywhere) checks every page's "X years" claims.
   const allFounded=ok.flatMap(p=>(p._yearClaims||{founded:[]}).founded).sort((a,b)=>a.year-b.year);
   ok.forEach(p=>{ if(p._yearClaims) setPageCheck(p,'Years-in-business claims current',staleClaimsCheck(p._yearClaims, allFounded[0]||null)); });
+  // Pages that publish a rate card (2+ prices) — linking to one counts as pricing transparency.
+  const pricingPages=new Set(ok.filter(p=>((p._pageText||'').match(new RegExp(RE_PRICE.source,'gi'))||[]).length>=2).map(p=>p.url));
+  ok.forEach(p=>{ const pc=pricingCheck(p._pageText||'', p._anchors, p.pageType, pricingPages); if(pc) setPageCheck(p,'Pricing transparency',pc); });
   ok.forEach(p=>{ setPageCheck(p,'Title quality',titleQualityCheck(p.title,p.url,p.pageType)); setPageCheck(p,'Soft 404',soft404Check(p.pageType,p.title,p.h1text,p.uniqueWords!=null?p.uniqueWords:p.mainWords)); applyGates(p); p._score=score(p); });
   const scored=ok.filter(p=>p._score&&p._score.score!=null);
   const pageAverage=scored.length?Math.round(scored.reduce((a,p)=>a+p._score.score,0)/scored.length):null;
@@ -1747,6 +1877,9 @@ async function crawlSiteRun(root, opts){
   const contra=contradictionFindings(ok); siteFindings.push(...contra);
   const claims24=(contra.find(f=>f.label==='Consistent hours claims')||{}).claims24_7||[];
   siteFindings.push(...localFindings(ok, { home, disc, local, claims24_7:claims24 }));
+  siteFindings.push(...trustFindings(ok, { tracking:[...new Set(ok.flatMap(p=>p.tracking||[]))] }));
+  siteFindings.push(...aiSiteFindings(ok, { home, local, robots:aux._robotsTxt, disc }));
+  try{ await resolveAsyncFindings(siteFindings); }catch(e){}
   phase('scoring');
   const technical=technicalScore(aux.checks, speedRuns);
   const coverage=coverageScore(ok);
@@ -2147,7 +2280,7 @@ const API={ BRAND, PROXIES, TAGS, AI_BOTS, AISEARCH, PROJECT_FIXES, sleep, esc, 
   // building blocks, exposed for tests
   classifyPage, mainContent, localEntities, countClaims, h1Glued, smsLabelTelLinks, businessSchema, ldNodes, AI_SEARCH_BOTS, AI_TRAINING_BOTS,
   // individual checks, for unit tests
-  _x:{ soft404Check, viewportZoomCheck, headingHierarchyCheck, imageCheck, weightCheck, pageAssets, robotsRulesFor, robotsAllowed, chainOf, technicalFindings, applyDeductions, titleQualityCheck, titlePixels, genericH1Check, descEqualsTitleCheck, genericAnchorCheck, onPageLinkFindings, yearClaims, staleClaimsCheck, placeholderCheck, defaultPrivacyCheck, contentFreshnessFindings, contradictionFindings, serviceCoverage, locationCoverage, callAboveFoldCheck, areaCodeCheck, localFindings, jsonLdSyntaxCheck, businessEntityCheck, schemaNapCheck, openingHoursCheck, serviceSchemaCheck, breadcrumbCheck, faqMatchCheck, schemaTypesCheck, loadIndustry, setMarket:(m)=>{ _market=m; } } };
+  _x:{ soft404Check, viewportZoomCheck, headingHierarchyCheck, imageCheck, weightCheck, pageAssets, robotsRulesFor, robotsAllowed, chainOf, technicalFindings, applyDeductions, titleQualityCheck, titlePixels, genericH1Check, descEqualsTitleCheck, genericAnchorCheck, onPageLinkFindings, yearClaims, staleClaimsCheck, placeholderCheck, defaultPrivacyCheck, contentFreshnessFindings, contradictionFindings, serviceCoverage, locationCoverage, callAboveFoldCheck, areaCodeCheck, localFindings, jsonLdSyntaxCheck, businessEntityCheck, schemaNapCheck, openingHoursCheck, serviceSchemaCheck, breadcrumbCheck, faqMatchCheck, schemaTypesCheck, licenseCheck, pricingCheck, insuranceCheck, trustFindings, resolveAsyncFindings, questionAnswerCheck, citableFactsCheck, aiSiteFindings, loadIndustry, setMarket:(m)=>{ _market=m; } } };
 root.SEO=API;
 if(typeof module!=="undefined"&&module.exports) module.exports=API;
 })(typeof window!=="undefined"?window:globalThis);
