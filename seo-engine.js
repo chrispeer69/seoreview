@@ -175,6 +175,22 @@ const _fetchMeta=new Map(); // page URL → {finalUrl,status} as seen by our own
 // "Now" for date math — a crawl can pin it (test fixtures) via opts.now.
 let _nowOverride=null;
 const _nowMs=()=>_nowOverride!=null?_nowOverride:Date.now();
+// ---------- Industry + market (audit input) ----------
+// Industry config lives in /config/industries/<name>.json (served next to this engine). "general" (or none) = no
+// industry checks. The market (area codes, city list) comes from the audit input, else the industry's default.
+let _industry=null, _market=null;
+async function loadIndustry(name, market){
+  _industry=null; _market=null;
+  if(name && name!=='general'){
+    try{ const res=await fetch('/config/industries/'+encodeURIComponent(String(name).toLowerCase())+'.json'); if(res.ok) _industry=await res.json(); }catch(e){}
+    if(_industry){ _industry.name=_industry.industry||name;
+      _industry._license=(_industry.license_patterns||[]).map(p=>{ try{ return new RegExp(p,'gi'); }catch(e){ return null; } }).filter(Boolean); }
+  }
+  const m=market||{};
+  const dm=_industry&&_industry.default_market, codes=m.areaCodes||(_industry&&dm&&(_industry.market_area_codes||{})[dm])||null;
+  _market={ name:m.name||dm||null, areaCodes:codes, cities:Array.isArray(m.cities)?m.cities:null };
+  return _industry;
+}
 function resetLinkCache(){ _linkCache.clear(); _fetchMeta.clear(); _lcAvailable=true; }
 function checkUrl(u){
   if(_linkCache.has(u)) return _linkCache.get(u);
@@ -340,9 +356,12 @@ const RE_ASSET=/\.(png|jpe?g|gif|svg|webp|avif|ico|css|js|mjs|json|xml|txt|pdf|z
 const RE_SKIP_PATH=/^\/(wp-admin|wp-json|wp-login|xmlrpc|cdn-cgi|feed|comments\/feed|api)(\/|$)|\/feed\/?$|\/amp\/?$/i;
 // Same-site <a href> targets (www and bare host count as the same site), without #fragments. Links carrying a query
 // string (filters, tracking, calendars) are not treated as pages.
-function internalLinks(doc, pageUrl){
+function internalLinks(doc, pageUrl){ return [...new Set(anchorDetails(doc, pageUrl).map(a=>a.url))]; }
+// Every same-site <a>: target, visible anchor text and rel=nofollow — for inlink counts, anchor texts, generic
+// anchors and internal nofollow findings.
+function anchorDetails(doc, pageUrl){
   let base; try{ base=new URL(pageUrl); }catch(e){ return []; }
-  const out=new Set();
+  const out=[];
   doc.querySelectorAll('a[href]').forEach(a=>{
     const h=(a.getAttribute('href')||'').trim();
     if(!h||/^(#|mailto:|tel:|sms:|javascript:|data:)/i.test(h)) return;
@@ -350,9 +369,10 @@ function internalLinks(doc, pageUrl){
     if(!/^https?:$/.test(u.protocol) || siteKey(u.hostname)!==siteKey(base.hostname)) return;
     u.hash=''; if(u.search) return;
     if(RE_ASSET.test(u.pathname) || RE_SKIP_PATH.test(u.pathname)) return;
-    out.add(u.href);
+    const text=(a.textContent||a.getAttribute('aria-label')||(a.querySelector('img')&&a.querySelector('img').getAttribute('alt'))||'').replace(/\s+/g,' ').trim().slice(0,80);
+    out.push({ url:u.href, text, nofollow:/\bnofollow\b/i.test(a.getAttribute('rel')||''), href:h });
   });
-  return [...out];
+  return out;
 }
 // Newest publish / modify dates the page states (JSON-LD, article meta, a /YYYY/MM/DD/ URL). ISO strings or null.
 function pageDates(doc, nodes, url, nowMs){
@@ -499,7 +519,9 @@ async function auditOne(raw, prefetchedHtml){
   const mainText=blocks.join('\n');
   const mainWords=countWords(mainText);
   const entities=pageType==='location'?localEntities(mainText):[];
-  const links=internalLinks(doc, url);
+  const anchors=anchorDetails(doc, url);
+  const links=[...new Set(anchors.map(a=>a.url))];
+  const bytes=(typeof TextEncoder!=='undefined')?new TextEncoder().encode(html).length:html.length;
   const dates=pageDates(doc, ld, url, _nowMs());
   const nap=napSignals(doc, doc.body?textBlocks(doc.body).join('\n'):'', ld); // whole page incl. header/footer, where NAP lives
   const claims=countClaims(mainText);
@@ -614,12 +636,15 @@ async function auditOne(raw, prefetchedHtml){
     title, h1text:(h1[0]&&h1[0].textContent||'').trim(), desc, words, jsShell, loadMs,
     bodySig:bodyText.slice(0,600).replace(/\s+/g,' ').toLowerCase().trim(),
     pageType, mainWords, entities, links, datePublished:dates.published, dateModified:dates.modified,
-    nap, claims, h1Glue, smsTel,
+    nap, claims, h1Glue, smsTel, bytes,
     stats:{images:imgs.length, scripts:doc.querySelectorAll('script').length, stylesheets:doc.querySelectorAll('link[rel="stylesheet"]').length, sizeKb, words},
     aux:{robots:null,sitemap:null}, _origin:origin };
   // Main-content text blocks for the crawl's cross-page analysis — kept out of JSON (saved reports, API results).
   applyGates(result);
   Object.defineProperty(result,'_blocks',{value:blocks,enumerable:false,writable:true,configurable:true});
+  // Raw HTML and anchor details stay available to the crawl's checks but out of saved results.
+  Object.defineProperty(result,'_html',{value:html,enumerable:false,writable:true,configurable:true});
+  Object.defineProperty(result,'_anchors',{value:anchors,enumerable:false,writable:true,configurable:true});
   return result;
 }
 
@@ -960,10 +985,31 @@ function technicalScore(siteChecks, speedRuns){
   return { score:t?Math.round(e/t):50, parts };
 }
 
+// Link graph facts per page: click depth from the homepage (BFS over audited pages' links), inlink count and the
+// anchor texts used; plus the full redirect chain for every redirecting URL met (hops, loops, final URL).
+function crawlGraph(pages, base, redirected, keyOf){
+  const byKey={}; pages.forEach(p=>{ byKey[keyOf(p.url)]=p; });
+  const redir={}; redirected.forEach(x=>{ if(x.location) redir[x.url]=x.location; });
+  const resolve=u=>{ const seen=[u]; let cur=u; while(redir[cur]){ cur=redir[cur]; if(seen.includes(cur)){ seen.push(cur); return {chain:seen, loop:true}; } seen.push(cur); if(seen.length>10) break; } return {chain:seen, loop:false}; };
+  const target=u=>{ const r=resolve(u); return keyOf(r.chain[r.chain.length-1]); };
+  const inl={};
+  pages.forEach(p=>(p._anchors||[]).forEach(a=>{ const k=target(a.url); if(k===keyOf(p.url)) return;
+    const e=inl[k]||(inl[k]={from:new Set(),anchors:{}}); e.from.add(p.url); if(a.text) e.anchors[a.text]=(e.anchors[a.text]||0)+1; }));
+  const home=byKey[keyOf(base+'/')]||pages.find(p=>p.pageType==='home')||pages[0];
+  const depth={}; if(home){ depth[keyOf(home.url)]=0; const q=[home];
+    while(q.length){ const p=q.shift(), d=depth[keyOf(p.url)]; (p.links||[]).forEach(l=>{ const k=target(l); if(depth[k]==null&&byKey[k]){ depth[k]=d+1; q.push(byKey[k]); } }); } }
+  pages.forEach(p=>{ const k=keyOf(p.url), e=inl[k];
+    p.clickDepth=depth[k]==null?null:depth[k];
+    p.inlinks=e?e.from.size:0;
+    p.inlinkAnchors=e?Object.entries(e.anchors).sort((a,b)=>b[1]-a[1]).slice(0,5).map(x=>x[0]):[]; });
+  const chains=redirected.map(x=>{ const r=resolve(x.url); return { from:x.url, chain:r.chain, hops:r.chain.length-1, loop:r.loop, final:r.loop?null:r.chain[r.chain.length-1] }; });
+  return { chains };
+}
 async function crawlSite(root, opts){
   opts=opts||{};
   resetLinkCache();
   _nowOverride=opts.now?Date.parse(opts.now):null;
+  await loadIndustry(opts.industry, opts.market);
   try{ return await crawlSiteRun(root, opts); } finally { _nowOverride=null; }
 }
 async function crawlSiteRun(root, opts){
@@ -992,7 +1038,11 @@ async function crawlSiteRun(root, opts){
     if(st && !st.challenged && st.status>=400){ broken.push({url:u, status:st.status}); return; }
     if(audited>=max){ capped=true; return; }
     audited++;
-    try{ const r=await loadPage(u); pages.push(r); (r.links||[]).forEach(enqueue); }
+    try{ const r=await loadPage(u);
+      // Per-URL crawl data: status, final URL, response headers, bytes (HTML), rendered or not.
+      const meta=_fetchMeta.get(u)||{};
+      r.httpStatus=st&&st.status||meta.status||null; r.finalUrl=meta.finalUrl||u; r.headers=st&&st.headers||null; r.rendered=!!r._rendered;
+      pages.push(r); (r.links||[]).forEach(enqueue); }
     catch(e){ pages.push({ url:u, error:(e&&e.reason)||(e&&e.message)||'failed' }); }
   }
   async function worker(){
@@ -1003,14 +1053,16 @@ async function crawlSiteRun(root, opts){
       else return;
     }
   }
+  // Raw HTML (what AI crawlers see) and rendered HTML (only when rendered) — kept off the saved result.
+  const keepHtml=(r,raw,rendered)=>{ Object.defineProperty(r,'_html',{value:raw,enumerable:false,writable:true,configurable:true}); Object.defineProperty(r,'_renderedHtml',{value:rendered,enumerable:false,writable:true,configurable:true}); };
   async function loadPage(u){
     let r;
     try{ r=await auditOne(u); }
     catch(e1){ // one free retry — most failures are transient (slow origin throttling under concurrency)
       try{ r=await auditOne(u); }
-      catch(e2){ if(render){ const html=await render(u); if(html){ r=await auditOne(u, html); r._rendered=true; rendered++; return r; } } throw e2; }
+      catch(e2){ if(render){ const html=await render(u); if(html){ r=await auditOne(u, html); r._rendered=true; rendered++; keepHtml(r,null,html); return r; } } throw e2; }
     }
-    if(r.jsShell && render){ try{ const html=await render(u); if(html){ r=await auditOne(u, html); r._rendered=true; rendered++; } }catch(e){} }
+    if(r.jsShell && render){ try{ const raw=r._html; const html=await render(u); if(html){ r=await auditOne(u, html); r._rendered=true; rendered++; keepHtml(r,raw,html); } }catch(e){} }
     return r;
   }
   phase('crawling',{queued:queue.length});
@@ -1019,6 +1071,7 @@ async function crawlSiteRun(root, opts){
   const ok=pages.filter(p=>!p.error);
   if(!ok.length) return { error:'No page could be audited — the site may block automated access or is unavailable.', root:disc.base,
     pages, coverage:{ discovered:queued.size, audited:0, failed:pages.length, capped, cap:max, via:disc.via, rendered, renderAvailable:!!render } };
+  const graph=crawlGraph(ok, disc.base, redirected, keyOf);
   const content=crossPageContent(ok);
   ok.forEach(p=>{ p._score=score(p); });
   const scored=ok.filter(p=>p._score&&p._score.score!=null);
@@ -1105,7 +1158,7 @@ async function crawlSiteRun(root, opts){
         : { found:false, query:bizName };
     }catch(e){ local=null; }
   }
-  const crossPage=Object.assign(cpEarly, content, { brokenLinks, redirectLinks, orphans,
+  const crossPage=Object.assign(cpEarly, content, { redirectChains:graph.chains, brokenLinks, redirectLinks, orphans,
     sitemapRedirects:redirected.filter(x=>smKeys.has(keyOf(x.url))), sitemapBroken:broken.filter(x=>smKeys.has(keyOf(x.url))) });
   ok.forEach(p=>{ p.linkCount=(p.links||[]).length; delete p.links; delete p._blocks; delete p._bh; delete p._sh; delete p._ownText; delete p._simWith; delete p._place; }); // working data, not results (crawl results get saved)
   return { root:disc.base, siteScore, pageAverage, siteBreakdown, siteChecks:aux.checks, speed:speedRuns, perf, local, crossPage, pages,
@@ -1404,6 +1457,7 @@ function emailText(clientName,r){
 async function audit(url, opts){
   opts=opts||{};
   resetLinkCache();
+  await loadIndustry(opts.industry, opts.market);
   const r=await auditOne(url);
   try{ await addAux(r); }catch(e){}
   try{ r.sitemap=await sitemapSummary(r.origin||r.url); }catch(e){}
@@ -1463,7 +1517,7 @@ function comparisonHTML(items){
 }
 const API={ BRAND, PROXIES, TAGS, AI_BOTS, AISEARCH, PROJECT_FIXES, sleep, esc, isQuick, setAbort,
   fetchHtml, fetchAux, aiCrawlerStatus, auditOne, addAux, fetchPSI, addSpeed, score, audit,
-  discoverPages, sitemapSummary, crossPageIssues, crawlSite, siteReportHTML, siteTopIssues, siteComparisonHTML, speedRunsHTML, aiExplainerHTML, ctaBlockHTML, PSI_RUNS,
+  loadIndustry, discoverPages, sitemapSummary, crossPageIssues, crawlSite, siteReportHTML, siteTopIssues, siteComparisonHTML, speedRunsHTML, aiExplainerHTML, ctaBlockHTML, PSI_RUNS,
   reportHTML, findingsHTML, emailHTML, emailText, comparisonHTML,
   // building blocks, exposed for tests
   classifyPage, mainContent, localEntities, countClaims, h1Glued, smsLabelTelLinks, businessSchema, ldNodes, AI_SEARCH_BOTS, AI_TRAINING_BOTS };

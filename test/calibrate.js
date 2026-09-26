@@ -14,11 +14,17 @@ const headless = require('../headless-audit');
 
 const SITES = [
   // Site bands, plus page bands for pages whose score is a known reference point.
-  { domain: 'columbusroadsidetowing.com', root: 'https://www.columbusroadsidetowing.com', target: [88, 95],
+  { domain: 'columbusroadsidetowing.com', root: 'https://www.columbusroadsidetowing.com', target: [88, 95], industry: 'towing',
     pages: { '/service-area/whitehall': [60, 80], '/service-area/lewis-center': [90, 100] } },
-  { domain: 'broadandjames.com', root: 'https://broadandjames.com', target: [45, 65] },
+  { domain: 'broadandjames.com', root: 'https://broadandjames.com', target: [45, 65], industry: 'towing' },
 ];
 const RECORD = process.argv.includes('--record');
+// --record-missing: replay the fixture, fetch live only what it lacks (new checks), and add that to the fixture.
+// --refresh-checks: re-fetch every URL status check (e.g. after linkcheck starts returning more fields).
+const RECORD_MISSING = process.argv.includes('--record-missing');
+const REFRESH_CHECKS = process.argv.includes('--refresh-checks');
+const { makeLinkCheck } = require('../url-check');
+const liveLinkCheck = makeLinkCheck((u, o) => fetch(u, o), HEADERS_FOR_CHECKS());
 const VERBOSE = process.argv.includes('--verbose');
 // Fixtures are pinned to the day they were recorded so freshness math does not drift as real time passes.
 const HEADERS = {
@@ -51,21 +57,20 @@ async function liveGet(u, redirect) {
   } finally { clearTimeout(t); }
 }
 
+function HEADERS_FOR_CHECKS() { return { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36', 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8', 'Accept-Language': 'en-US,en;q=0.9' }; }
 function makeDeps(fx) {
   const misses = [];
+  fx.dirty = false;
   const get = async (key, live) => {
-    if (RECORD) { const v = await live(); fx.calls[key] = v; return v; }
+    const refresh = REFRESH_CHECKS && key.startsWith('check:') && !(fx.refreshed || (fx.refreshed = new Set())).has(key);
+    if (RECORD || refresh || (RECORD_MISSING && !(key in fx.calls))) { const v = await live(); fx.calls[key] = v; fx.dirty = true; if (refresh) fx.refreshed.add(key); return v; }
     if (key in fx.calls) return fx.calls[key];
     misses.push(key); throw Object.assign(new Error('not in fixture'), { code: 502 });
   };
   const deps = {
     renderEnabled: false, placesEnabled: false,
     proxyFetch: (target) => get('proxy:' + target, async () => { const r = await liveGet(target); return { status: r.status, body: r.body, finalUrl: r.finalUrl, challenged: false }; }),
-    linkCheck: (target) => get('check:' + target, async () => {
-      const r = await liveGet(target, 'manual');
-      const noindex = /noindex/i.test(r.xRobots || '') || /<meta[^>]+name=["']robots["'][^>]+content=["'][^"']*noindex/i.test(r.body || '');
-      return { status: r.status, location: r.location, noindex };
-    }),
+    linkCheck: (target) => get('check:' + target, () => liveLinkCheck(target)),
     directFetch: (u) => get('direct:' + stripKey(u), async () => { const r = await liveGet(u); return { status: r.status, body: trimPsi(r.body) }; }),
     renderFetch: async () => { throw Object.assign(new Error('render off'), { code: 503 }); },
     placesLookup: async () => null,
@@ -81,8 +86,8 @@ function makeDeps(fx) {
     if (RECORD) fx = { domain: site.domain, recorded: new Date().toISOString(), calls: {} };
     const { deps, misses } = makeDeps(fx);
     const t0 = Date.now();
-    const out = await headless.crawlSite(deps, site.root, { maxPages: 150, concurrency: 4, psiKey: psiKey(), now: fx.recorded });
-    if (RECORD) save(site.domain, fx);
+    const out = await headless.crawlSite(deps, site.root, { maxPages: 150, concurrency: 4, psiKey: psiKey(), now: fx.recorded, industry: site.industry || 'general' });
+    if (fx.dirty) { delete fx.dirty; delete fx.refreshed; save(site.domain, fx); console.log(`  (fixture updated: ${Object.keys(fx.calls).length} calls)`); }
     const res = out.result || {};
     if (res.error) { console.log(`${site.domain}: crawl error — ${res.error}`); failed++; continue; }
     const s = res.siteScore; const b = res.siteBreakdown || null;
@@ -112,6 +117,7 @@ function makeDeps(fx) {
     if (VERBOSE) {
       const want = (process.argv.find(a => a.startsWith('--page=')) || '').slice(7);
       const home = (res.pages || []).find(p => !p.error && (want ? p.url.replace(res.root, '') === want : (p.url === res.root + '/' || p.url === res.root)));
+      if (home) console.log('  crawl data: ' + JSON.stringify({ url: home.url, status: home.httpStatus, finalUrl: home.finalUrl, bytes: home.bytes, rendered: home.rendered, clickDepth: home.clickDepth, inlinks: home.inlinks, anchors: home.inlinkAnchors, headers: home.headers }).slice(0, 700));
       if (home) console.log('  homepage checks:\n' + home.checks.map(c => `    ${c.status.padEnd(4)} ${String(c.points).padStart(3)}${c.frac != null ? ' x' + c.frac.toFixed(2) : ''}${c.penalty ? ' -' + c.penalty : ''}  ${c.label} — ${String(c.detail || '').slice(0, 110)}`).join('\n'));
       (res.siteChecks || []).forEach(c => console.log(`    site ${c.status.padEnd(4)} ${String(c.points).padStart(3)}  ${c.label} — ${String(c.detail || '').slice(0, 110)}`));
       const byType = {};

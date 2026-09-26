@@ -62,6 +62,11 @@ function makeFetch(deps) {
         try { const r = await deps.renderFetch(target); return r && r.ok ? textResponse(200, r.body) : textResponse(502, ''); }
         catch (e) { return textResponse((e && e.code) || 502, ''); }
       }
+      if (p.startsWith('/config/industries/')) { // industry configs ship with the engine
+        const name = p.slice('/config/industries/'.length).replace(/[^a-z0-9_.-]/gi, '');
+        try { return textResponse(200, fs.readFileSync(path.join(__dirname, 'config', 'industries', name), 'utf8'), { 'content-type': 'application/json' }); }
+        catch (e) { return jsonResponse(404, { error: 'not_found' }); }
+      }
       if (p === '/api/linkcheck') {
         if (!deps.linkCheck) return jsonResponse(404, { error: 'not_found' });
         let urls = []; try { urls = JSON.parse(init.body || '{}').urls || []; } catch (e) { /* empty */ }
@@ -132,6 +137,7 @@ async function crawlSite(deps, root, opts) {
       psiKey: opts.psiKey || '',          // PageSpeed on the homepage + 2 money pages (technical part of the site score)
       speed: opts.speed !== false,
       now: opts.now || null,              // pins "today" for freshness (test fixtures)
+      industry: opts.industry || 'general', market: opts.market || null,
     });
     if (!res || res.error) return { result: res || { error: 'crawl returned nothing' }, html: null };
     const html = w.SEO.siteReportHTML(res);

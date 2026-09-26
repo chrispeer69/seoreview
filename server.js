@@ -376,26 +376,8 @@ app.get('/api/proxy', rateLimit({ windowMs: 60000, max: 60 }), async (req, res) 
 // ---------- URL status checks for the engine (canonical targets, internal links) ----------
 // Redirects are NOT followed — a redirecting URL is reported as the redirect it is. The body is read only to spot
 // a robots noindex; the X-Robots-Tag header is checked too.
-async function linkCheck(target) {
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), 12000);
-  try {
-    const r = await guardedFetch(target, { signal: ctrl.signal, headers: BROWSER_HEADERS, redirect: 'manual' });
-    const status = r.status;
-    let location = r.headers.get('location') || null;
-    if (location) { try { location = new URL(location, target).href; } catch (e) { /* keep raw */ } }
-    let noindex = /noindex/i.test(r.headers.get('x-robots-tag') || '');
-    let challenged = false;
-    if (status === 200 || status === 403 || status === 503) {
-      const body = (await r.text()).slice(0, 400000);
-      if (status === 200 && /<meta[^>]+name=["']?(robots|googlebot)["']?[^>]*content=["'][^"']*noindex/i.test(body)) noindex = true;
-      challenged = status !== 200 && /just a moment|cf-chl|challenge-platform|cf-mitigated|enable javascript and cookies/i.test(body);
-    } else { try { await r.body?.cancel(); } catch (e) { /* ignore */ } }
-    return { url: target, status, location, noindex, challenged };
-  } catch (e) {
-    return { url: target, status: 0, location: null, noindex: false, challenged: false, error: (e && e.code) === 403 ? 'blocked host' : 'fetch failed' };
-  } finally { clearTimeout(t); }
-}
+const { makeLinkCheck } = require('./url-check');
+const linkCheck = makeLinkCheck(guardedFetch, BROWSER_HEADERS);
 async function linkCheckMany(urls, check) {
   const list = [...new Set((Array.isArray(urls) ? urls : []).map(String).filter(u => /^https?:\/\//i.test(u)))].slice(0, 60);
   const out = []; let i = 0;
@@ -932,6 +914,12 @@ apiV1.mount(app, {
 });
 
 // ---------- Static public tool ----------
+// Industry configs for the shared engine; CORS so CRMColumbus (which loads the engine from here) can read them.
+app.get('/config/industries/:name', (req, res) => {
+  const name = String(req.params.name || '').replace(/[^a-z0-9_.-]/gi, '');
+  res.set('Access-Control-Allow-Origin', '*');
+  res.sendFile(path.join(__dirname, 'config', 'industries', name), err => { if (err && !res.headersSent) res.status(404).json({ error: 'not_found' }); });
+});
 app.use(express.static(__dirname, { extensions: ['html'] }));
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
 
