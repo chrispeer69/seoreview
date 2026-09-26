@@ -500,7 +500,7 @@ async function auditOne(raw, prefetchedHtml){
   const withDim=imgs.filter(i=>i.getAttribute('width')&&i.getAttribute('height')).length;
   const words=bodyText.split(/\s+/).filter(Boolean).length;
   const tel=doc.querySelectorAll('a[href^="tel:"]').length;
-  const hasMap=/google\.com\/maps|maps\.google|goo\.gl\/maps/i.test(html);
+  const hasMap=/google\.com\/maps|maps\.google|goo\.gl\/maps|maps\.app\.goo\.gl|maps\.apple\.com|bing\.com\/maps/i.test(html) || [...doc.querySelectorAll('a')].some(a=>/\b(get )?directions\b/i.test(a.textContent||''));
   const ssl=url.startsWith('https');
   const mixed= ssl ? [...doc.querySelectorAll('[src],[href]')].filter(el=>/^http:\/\//i.test(el.getAttribute('src')||el.getAttribute('href')||'')).length : 0;
   const blocking=doc.querySelectorAll('head script[src]:not([async]):not([defer])').length;
@@ -599,7 +599,9 @@ async function auditOne(raw, prefetchedHtml){
     'Review markup about your own business does not earn stars in Google (not eligible since 2019) and can be treated as spammy structured data. Show your real Google reviews on your website — that’s what builds trust with visitors and AI.',
     selfReview?'Remove aggregateRating / review from the LocalBusiness / Organization JSON-LD. Show your real Google reviews on your website — that’s what builds trust with visitors and AI.':'');
   add(LOCAL,'Click-to-call phone link',4, tel>0?'pass':'warn', tel>0?(tel+' tel: link(s)'):'None found','A tappable phone number turns a phone visitor into a phone call with one tap. Missing it quietly costs you leads.','Wrap the phone number in <a href="tel:+1...">.');
-  add(LOCAL,'Map / location reference',3, hasMap?'pass':'warn', hasMap?'Map detected':'No map embed found','A map and visible address prove to Google (and customers) exactly where you serve.','Embed a Google Map and show the full address (matching your Google Business Profile).');
+  const mapPage=pageType==='home'||pageType==='location'||/contact|about|location/i.test(url);
+  if(!mapPage) checks.push({cat:LOCAL,label:'Map / location reference',points:0,status:'info',detail:'Checked on the homepage, contact, about and location pages',why:'',fix:''});
+  else add(LOCAL,'Map / location reference',3, hasMap?'pass':'warn', hasMap?'Map or directions link found':'No map embed or directions link','A map and visible address prove to Google (and customers) exactly where you serve.','Embed a Google Map and show the full address (matching your Google Business Profile).');
 
   add(SOCIAL,'Open Graph tags',5, ogCount>=2?'pass':(ogCount===1?'warn':'fail'), ogCount+' of 3 core OG tags','Controls how your link looks when shared on Facebook, in texts, and on LinkedIn. A bare, ugly link looks unprofessional and gets ignored.','Add og:title, og:description, and og:image meta tags.');
   add(SOCIAL,'Twitter / X card',3, twCard?'pass':'warn', twCard?'Configured':'Missing','Controls the preview when your link is shared on X (Twitter).','Add <meta name="twitter:card" content="summary_large_image">.');
@@ -621,6 +623,8 @@ async function auditOne(raw, prefetchedHtml){
   checks.push(Object.assign({cat:CONTENT}, genericH1Check(h1[0]&&h1[0].textContent)));
   checks.push(Object.assign({cat:CONTENT}, descEqualsTitleCheck(title, desc)));
   checks.push(Object.assign({cat:CONTENT}, genericAnchorCheck(anchors)));
+  checks.push(Object.assign({cat:LOCAL}, callAboveFoldCheck(doc, pageType)));
+  checks.push(Object.assign({cat:LOCAL}, areaCodeCheck(doc, _market)));
   checks.push(Object.assign({cat:CONTENT}, staleClaimsCheck(yClaims, null)));
   checks.push(Object.assign({cat:CONTENT}, placeholderCheck(mainText)));
   const privacy=defaultPrivacyCheck(url, mainText); if(privacy) checks.push(Object.assign({cat:CONTENT}, privacy));
@@ -1394,6 +1398,95 @@ function contradictionFindings(ok){
   return out;
 }
 
+// ---------- Phase 5 — local SEO ----------
+const termRe=t=>new RegExp('\\b'+String(t).toLowerCase().replace(/[.*+?^${}()|[\]\\]/g,'\\$&').replace(/[\s-]+/g,'[\\s-]+')+'\\b','i');
+// Industry service taxonomy vs the site: covered = a service page of its own (URL, title or H1 names it),
+// partial = mentioned somewhere but no page, missing = not mentioned. Score = covered / taxonomy size.
+function serviceCoverage(ok, industry){
+  if(!industry||!industry.services) return null;
+  const svc=ok.filter(p=>p.pageType==='service'), text=ok.map(p=>({ url:p.url, t:(p._pageText||'') }));
+  const rows=industry.services.map(s=>{
+    const res=(s.terms||[s.name]).map(termRe);
+    const page=svc.find(p=>res.some(r=>r.test(pathSegs(p.url).join(' ').replace(/-/g,' '))||r.test(p.title||'')||r.test(p.h1text||'')));
+    if(page) return { service:s.name, status:'covered', url:page.url };
+    const m=text.find(x=>res.some(r=>r.test(x.t)));
+    if(m){ const r=res.find(r=>r.test(m.t)), i=m.t.search(r); return { service:s.name, status:'partial', url:m.url, snippet:snip(m.t.slice(Math.max(0,i-40), i+60),100) }; }
+    return { service:s.name, status:'missing' };
+  });
+  const covered=rows.filter(r=>r.status==='covered').length;
+  return { rows, covered, partial:rows.filter(r=>r.status==='partial').length, missing:rows.filter(r=>r.status==='missing').length, size:rows.length, score:Math.round(100*covered/rows.length) };
+}
+// Market towns vs the location pages (only when the audit input supplies the market's city list).
+function locationCoverage(ok, market){
+  if(!market||!market.cities||!market.cities.length) return null;
+  const locs=ok.filter(p=>p.pageType==='location');
+  const rows=market.cities.map(c=>{ const r=termRe(c); const pg=locs.find(p=>r.test(pathSegs(p.url).join(' ').replace(/-/g,' '))||r.test(p.title||'')||r.test(p.h1text||'')); return { city:c, status:pg?'covered':'missing', url:pg&&pg.url||null }; });
+  const covered=rows.filter(r=>r.status==='covered').length;
+  return { rows, covered, size:rows.length, score:Math.round(100*covered/rows.length) };
+}
+// Click-to-call near the top of the page. Estimated from document order (no mobile layout render): a tel: link in
+// the header/nav, in a fixed/sticky call bar, or within the first ~1,200 characters of visible text.
+function callAboveFoldCheck(doc, type){
+  if(!/^(home|service|location)$/.test(type)) return { label:'Click-to-call at the top (mobile)', points:0, status:'info', detail:'Checked on the homepage and money pages', evidence:[], why:'', fix:'' };
+  const tels=[...doc.querySelectorAll('a[href^="tel:"]')];
+  if(!tels.length) return { label:'Click-to-call at the top (mobile)', points:3, status:'fail', detail:'No tel: link on the page', evidence:[], why:'On a phone the first screen decides the call. A tap-to-call button there is the single biggest conversion win for a local service.', fix:'Put a tap-to-call button in the header (sticky on mobile).' };
+  const body=doc.body; const full=(body&&body.textContent||'');
+  const pos=el=>{ let n=0; const w=doc.createTreeWalker(body,4); let t; while((t=w.nextNode())){ if(el.contains(t)) return n; n+=(t.nodeValue||'').replace(/\s+/g,' ').length; } return n; };
+  const top=tels.find(a=>a.closest('header,nav,[role="banner"]')||/(sticky|fixed|call-?bar|mobile-?call|topbar|top-bar|header)/i.test((a.className||'')+' '+((a.parentElement&&a.parentElement.className)||''))||pos(a)<1200);
+  return { label:'Click-to-call at the top (mobile)', points:3, status:top?'pass':'fail',
+    detail:top?('Tap-to-call near the top: '+snip(top.textContent||top.getAttribute('href'),50)+' (estimated from page order)'):'The first tel: link is far down the page (estimated from page order, ~'+Math.round(pos(tels[0])/Math.max(1,full.length)*100)+'% down)',
+    evidence:[{ snippet:'<a href="'+(top||tels[0]).getAttribute('href')+'">'+snip((top||tels[0]).textContent,50)+'</a>' }],
+    why:'On a phone the first screen decides the call. A tap-to-call button there is the single biggest conversion win for a local service.', fix:'Put a tap-to-call button in the header (sticky on mobile).' };
+}
+function areaCodeCheck(doc, market){
+  const codes=market&&market.areaCodes;
+  const nums=[...new Set([...doc.querySelectorAll('a[href^="tel:"]')].map(a=>(a.getAttribute('href')||'').replace(/\D/g,'').replace(/^1(?=\d{10}$)/,'')).filter(d=>d.length===10))];
+  if(!codes||!nums.length) return { label:'Local area code', points:0, status:'info', detail:nums.length?'No market area codes supplied':'No phone link', evidence:[], why:'', fix:'' };
+  const local=nums.filter(n=>codes.includes(n.slice(0,3)));
+  return { label:'Local area code', points:0, status:'info', detail:local.length?('Local number ('+local[0].slice(0,3)+')'):('Phone '+nums[0].slice(0,3)+' is not a local '+codes.join('/')+' number'),
+    evidence:[{ snippet:'tel:'+nums[0] }], why:'A local area code reassures callers they are reaching a nearby business.', fix:'' };
+}
+const RE_REVIEW_LINK=/(g\.page\/[^"'\s]*\/review|search\.google\.com\/local\/writereview|google\.com\/maps\/place|google\.com\/maps\?cid=|maps\.google\.com\/\?cid=|maps\.app\.goo\.gl|g\.co\/kgs|google-review|reviewSummary|elfsight|trustindex|embedsocial|reviewsonmywebsite|birdeye|podium|grade\.us|nicejob|sociablekit|widget\.trustmary|featurable)/i;
+function localFindings(ok, ctx){
+  const out=[], ind=_industry, home=ctx.home;
+  // coverage: industry taxonomy + market towns
+  const sc=serviceCoverage(ok, ind);
+  if(sc) out.push(finding('coverage','Service coverage vs '+(ind.label||ind.name)+' services',20,sc.score>=60?'pass':sc.score>=30?'warn':'fail',
+    sc.covered+' of '+sc.size+' services have their own page · '+sc.partial+' mentioned without a page · '+sc.missing+' missing',
+    sc.rows.filter(r=>r.status!=='covered').slice(0,8).map(r=>({ url:r.url||'', snippet:r.service+': '+(r.status==='partial'?'mentioned, no page — "'+(r.snippet||'')+'"':'not mentioned') })),
+    'Give each service you offer its own page (what it is, when to call, pricing factors, areas) — AI and Google match searches to pages, not to lists.',
+    { matrix:sc }));
+  const lc=locationCoverage(ok, _market);
+  if(lc) out.push(finding('coverage','Location coverage vs market towns',15,lc.score>=60?'pass':lc.score>=30?'warn':'fail',lc.covered+' of '+lc.size+' market towns have a page',
+    lc.rows.filter(r=>r.status==='missing').slice(0,8).map(r=>({ snippet:r.city+': no page' })),'Add a real page for each town you serve (roads, landmarks, local FAQs — not a template).',{ matrix:lc }));
+  else out.push(finding('coverage','Location coverage vs market towns',0,'info','No market city list supplied with this audit',[],''));
+  // Google reviews shown on the site
+  const rv=ok.map(p=>({ p, m:(p._html||'').match(RE_REVIEW_LINK) })).filter(x=>x.m);
+  out.push(finding('coverage','Google reviews shown on the site',6,rv.length?'pass':'warn',rv.length?('Review link/widget on '+rv.length+' page'+(rv.length===1?'':'s')):'No Google review link or reviews widget found',
+    rv.slice(0,3).map(x=>({ url:x.p.url, snippet:x.m[0] })),'Show your real Google reviews on your website — that\'s what builds trust with visitors and AI — and link to your Google review page.'));
+  const revPage=ok.find(p=>/(^|\/)(reviews?|testimonials?)(\/|$)/i.test(new URL(p.url).pathname));
+  if(revPage) out.push(finding('linkHealth','Reviews page linked',4,revPage.inlinks>0?'pass':'warn',revPage.inlinks>0?('Reviews page has '+revPage.inlinks+' internal link'+(revPage.inlinks===1?'':'s')):'The reviews page exists but nothing links to it',
+    [{ url:revPage.url, snippet:revPage.inlinks+' inlinks' }],'Link the reviews page from the menu and from every service page.'));
+  // GBP comparison (Google Places data)
+  const loc=ctx.local;
+  if(loc&&loc.found){
+    const probs=[], hp=ok.map(p=>p.nap||{}), phones=new Set(hp.flatMap(n=>(n.tel||[]).concat(n.visible||[]))), schemaNames=new Set(hp.flatMap(n=>(n.schema||{}).names||[]));
+    const digits=s=>String(s||'').replace(/\D/g,'').replace(/^1(?=\d{10}$)/,'');
+    if(loc.phone && ![...phones].some(p=>digits(p)===digits(loc.phone))) probs.push({ s:'fail', t:'GBP phone '+loc.phone+' is not on the site' });
+    if(loc.name && schemaNames.size && ![...schemaNames].some(n=>n.toLowerCase()===String(loc.name).toLowerCase())) probs.push({ s:'warn', t:'GBP name "'+loc.name+'" vs schema "'+[...schemaNames][0]+'"' });
+    if(loc.website){ try{ if(siteKey(new URL(loc.website).hostname)!==siteKey(new URL(ctx.disc.base).hostname)) probs.push({ s:'fail', t:'GBP website points to '+new URL(loc.website).hostname }); }catch(e){} }
+    if(loc.address){ const street=normStreet(String(loc.address).split(',')[0]); const streets=new Set(hp.flatMap(n=>(n.streets||[]).concat((n.schema||{}).streets||[])));
+      if(streets.size && !streets.has(street)) probs.push({ s:'warn', t:'GBP address "'+String(loc.address).split(',')[0]+'" not found on the site' }); }
+    const h24=(ctx.claims24_7||[]).length;
+    if(h24 && loc.hours && !loc.hours.open247) probs.push({ s:'fail', t:'Site claims 24/7 on '+h24+' page'+(h24===1?'':'s')+' but GBP hours are not 24 hours' });
+    const st=probs.some(p=>p.s==='fail')?'fail':probs.length?'warn':'pass';
+    out.push(finding('technical','Google Business Profile matches the site',8,st,st==='pass'?'Name, phone, address, website and hours agree with the site':probs.map(p=>p.t).join(' · '),
+      [{ url:loc.mapsUrl||'', snippet:'GBP: '+[loc.name,loc.phone,loc.address,loc.website].filter(Boolean).join(' · ')+(loc.hours?' · hours: '+(loc.hours.open247?'open 24 hours':(loc.hours.weekdayText||[]).slice(0,2).join('; ')):'') }],
+      'Make the Google Business Profile and the site say the same name, phone, address, website and hours — Google cross-checks them.'));
+  } else out.push(finding('technical','Google Business Profile matches the site',0,'info',loc?'No Google Business Profile match found':'Google Places lookup not available for this audit',[],''));
+  return out;
+}
+
 // Link graph facts per page: click depth from the homepage (BFS over audited pages' links), inlink count and the
 // anchor texts used; plus the full redirect chain for every redirecting URL met (hops, loops, final URL).
 function crawlGraph(pages, base, redirected, keyOf){
@@ -1533,16 +1626,33 @@ async function crawlSiteRun(root, opts){
       return { url:p.url, score:blend, mobile:s.speed&&s.speed.mobile||null, desktop:s.speed&&s.speed.desktop||null, checks:s.checks };
     }));
   }
+  // Google Business Profile (Places), needed by the GBP comparison.
+  let local=null;
+  if(typeof opts.places==='function'){
+    try{
+      const home=ok.find(p=>p.url===disc.base+'/'||p.url===disc.base)||ok[0];
+      const bizName=(home&&home.title?home.title.split(/[|\-–—:·]/)[0].trim():'')||disc.base.replace(/^https?:\/\//,'').replace(/^www\./,'').split('.')[0];
+      const pl=await opts.places(bizName);
+      local=(pl&&(pl.name||pl.rating!=null||pl.address))
+        ? { found:true, name:pl.name||bizName, rating:pl.rating, reviews:pl.reviews, address:pl.address, phone:pl.phone, website:pl.website, mapsUrl:pl.mapsUrl, hours:pl.hours||null }
+        : { found:false, query:bizName };
+    }catch(e){ local=null; }
+  }
   // Site findings (each deducts from its component).
   const ctx={ ok, home, money, disc, graph, keyOf, robots:aux._robotsTxt, speedRuns, sources, statusOf, opts };
   const siteFindings=[];
   try{ siteFindings.push(...await technicalFindings(ctx)); }catch(e){}
   siteFindings.push(...onPageLinkFindings(ok));
   siteFindings.push(...contentFreshnessFindings(ok));
-  siteFindings.push(...contradictionFindings(ok));
+  const contra=contradictionFindings(ok); siteFindings.push(...contra);
+  const claims24=(contra.find(f=>f.label==='Consistent hours claims')||{}).claims24_7||[];
+  siteFindings.push(...localFindings(ok, { home, disc, local, claims24_7:claims24 }));
   phase('scoring');
   const technical=technicalScore(aux.checks, speedRuns);
   const coverage=coverageScore(ok);
+  // Industry audits blend in the service taxonomy (and market towns when supplied): score = covered / size.
+  const mx=siteFindings.filter(f=>f.matrix&&f.component==='coverage').map(f=>f.matrix.score);
+  if(mx.length){ coverage.pageCounts=coverage.score; coverage.score=Math.round((coverage.score+mx.reduce((x,y)=>x+y,0))/(1+mx.length)); coverage.taxonomy=mx; }
   const freshness=freshnessScore(ok, disc.lastmod||{}, _nowMs());
   const dupPool=ok.filter(p=>p.pageType!=='utility');
   const inPairs=new Set(); (content.nearDuplicates||[]).forEach(x=>{ inPairs.add(x.a); inPairs.add(x.b); });
@@ -1573,17 +1683,6 @@ async function crawlSiteRun(root, opts){
   if(times.length){ const sorted=times.slice().sort((a,b)=>a-b); const avg=Math.round(times.reduce((a,b)=>a+b,0)/times.length);
     perf={ avg, median:sorted[Math.floor(sorted.length/2)], max:sorted[sorted.length-1], count:times.length,
       slow:ok.filter(p=>p.loadMs!=null&&p.loadMs>2000).map(p=>({url:p.url,ms:p.loadMs})).sort((a,b)=>b.ms-a.ms) }; }
-  let local=null;
-  if(typeof opts.places==='function'){
-    try{
-      const home=ok.find(p=>p.url===disc.base+'/'||p.url===disc.base)||ok[0];
-      const bizName=(home&&home.title?home.title.split(/[|\-–—:·]/)[0].trim():'')||disc.base.replace(/^https?:\/\//,'').replace(/^www\./,'').split('.')[0];
-      const pl=await opts.places(bizName);
-      local=(pl&&(pl.name||pl.rating!=null||pl.address))
-        ? { found:true, name:pl.name||bizName, rating:pl.rating, reviews:pl.reviews, address:pl.address, phone:pl.phone, website:pl.website, mapsUrl:pl.mapsUrl }
-        : { found:false, query:bizName };
-    }catch(e){ local=null; }
-  }
   const crossPage=Object.assign(cpEarly, content, { redirectChains:graph.chains, brokenLinks, redirectLinks, orphans,
     sitemapRedirects:redirected.filter(x=>smKeys.has(keyOf(x.url))), sitemapBroken:broken.filter(x=>smKeys.has(keyOf(x.url))) });
   ok.forEach(p=>{ p.linkCount=(p.links||[]).length; delete p.links; delete p._blocks; delete p._bh; delete p._sh; delete p._ownText; delete p._simWith; delete p._place; }); // working data, not results (crawl results get saved)
@@ -1948,7 +2047,7 @@ const API={ BRAND, PROXIES, TAGS, AI_BOTS, AISEARCH, PROJECT_FIXES, sleep, esc, 
   // building blocks, exposed for tests
   classifyPage, mainContent, localEntities, countClaims, h1Glued, smsLabelTelLinks, businessSchema, ldNodes, AI_SEARCH_BOTS, AI_TRAINING_BOTS,
   // individual checks, for unit tests
-  _x:{ soft404Check, viewportZoomCheck, headingHierarchyCheck, imageCheck, weightCheck, pageAssets, robotsRulesFor, robotsAllowed, chainOf, technicalFindings, applyDeductions, titleQualityCheck, titlePixels, genericH1Check, descEqualsTitleCheck, genericAnchorCheck, onPageLinkFindings, yearClaims, staleClaimsCheck, placeholderCheck, defaultPrivacyCheck, contentFreshnessFindings, contradictionFindings } };
+  _x:{ soft404Check, viewportZoomCheck, headingHierarchyCheck, imageCheck, weightCheck, pageAssets, robotsRulesFor, robotsAllowed, chainOf, technicalFindings, applyDeductions, titleQualityCheck, titlePixels, genericH1Check, descEqualsTitleCheck, genericAnchorCheck, onPageLinkFindings, yearClaims, staleClaimsCheck, placeholderCheck, defaultPrivacyCheck, contentFreshnessFindings, contradictionFindings, serviceCoverage, locationCoverage, callAboveFoldCheck, areaCodeCheck, localFindings, loadIndustry, setMarket:(m)=>{ _market=m; } } };
 root.SEO=API;
 if(typeof module!=="undefined"&&module.exports) module.exports=API;
 })(typeof window!=="undefined"?window:globalThis);

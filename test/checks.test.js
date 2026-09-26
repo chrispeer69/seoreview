@@ -176,3 +176,55 @@ test('Contradictions: 20–40 vs 30–60 min for the same area fails; metro vs o
   const hrs = _x.contradictionFindings([pg('https://t/a', 'Open 24/7 for towing.'), pg('https://t/b', 'Hours: Monday - Friday 9 AM - 5 PM')]);
   assert.strictEqual(hrs.find(f => f.label === 'Consistent hours claims').status, 'fail');
 });
+
+// ---------------- Phase 5 — local SEO ----------------
+test('Service coverage vs towing taxonomy: dedicated page = covered, mention = partial, else missing', async () => {
+  const SEO = engine(); await SEO._x.loadIndustry('towing');
+  const pages = [{ url: 'https://t/services/flatbed-towing', pageType: 'service', title: 'Flatbed Towing | Co', h1text: 'Flatbed Towing', _pageText: 'Flatbed towing' },
+    { url: 'https://t/', pageType: 'home', title: 'Co', h1text: 'Co', _pageText: 'We also do lockout help.' }];
+  const cfg = require('../config/industries/towing.json');
+  const m = SEO._x.serviceCoverage(pages, cfg);
+  assert.strictEqual(m.rows.find(r => r.service === 'Flatbed towing').status, 'covered');
+  assert.strictEqual(m.rows.find(r => r.service === 'Lockout service').status, 'partial');
+  assert.strictEqual(m.rows.find(r => r.service === 'Junk car removal').status, 'missing');
+  assert.strictEqual(m.score, Math.round(100 / cfg.services.length));
+  assert.strictEqual(SEO._x.serviceCoverage(pages, null), null, 'general industry = no taxonomy check');
+});
+
+test('Location coverage only runs with a market city list', () => {
+  const { _x } = engine();
+  assert.strictEqual(_x.locationCoverage([], null), null);
+  const m = _x.locationCoverage([{ url: 'https://t/service-area/dublin', pageType: 'location', title: 'Towing Dublin', h1text: '' }], { cities: ['Dublin', 'Hilliard'] });
+  assert.strictEqual(m.covered, 1); assert.strictEqual(m.rows[1].status, 'missing');
+});
+
+test('Click-to-call at the top: tel in header passes; tel only far down the page fails', () => {
+  const { _x } = engine();
+  assert.strictEqual(_x.callAboveFoldCheck(doc('<body><header><a href="tel:+16145550100">Call</a></header><p>' + words(900) + '</p></body>'), 'service').status, 'pass');
+  assert.strictEqual(_x.callAboveFoldCheck(doc('<body><p>' + words(900) + '</p><a href="tel:+16145550100">Call</a></body>'), 'service').status, 'fail');
+  assert.strictEqual(_x.callAboveFoldCheck(doc('<body></body>'), 'blog').status, 'info');
+});
+
+test('Local area code (info): 614 is local for Columbus, 740 is not', () => {
+  const { _x } = engine();
+  assert.match(_x.areaCodeCheck(doc('<a href="tel:+16145550100">x</a>'), { areaCodes: ['614', '380'] }).detail, /Local number/);
+  assert.match(_x.areaCodeCheck(doc('<a href="tel:+17408129489">x</a>'), { areaCodes: ['614', '380'] }).detail, /not a local 614\/380/);
+});
+
+test('GBP comparison: site claims 24/7 but GBP hours are not 24 hours fails; matching profile passes', async () => {
+  const SEO = engine();
+  const ok = [{ url: 'https://t/', pageType: 'home', inlinks: 0, _html: '', nap: { tel: ['(614) 555-0100'], visible: [], streets: ['1 main st'], schema: { names: ['Co'], phones: [], streets: [] } } }];
+  const base = { home: ok[0], disc: { base: 'https://t' } };
+  const bad = SEO._x.localFindings(ok, Object.assign({ local: { found: true, name: 'Co', phone: '(614) 555-0100', address: '1 Main St, X', website: 'https://t/', hours: { open247: false, weekdayText: ['Monday: 8 AM–5 PM'] } }, claims24_7: ['https://t/'] }, base));
+  const g = bad.find(f => f.label === 'Google Business Profile matches the site');
+  assert.strictEqual(g.status, 'fail'); assert.match(g.detail, /24\/7/);
+  const good = SEO._x.localFindings(ok, Object.assign({ local: { found: true, name: 'Co', phone: '614-555-0100', address: '1 Main Street, X', website: 'https://t/', hours: { open247: true } }, claims24_7: ['https://t/'] }, base));
+  assert.strictEqual(good.find(f => f.label === 'Google Business Profile matches the site').status, 'pass');
+});
+
+test('Google reviews shown: GBP cid link or widget passes; none warns', () => {
+  const { _x } = engine();
+  const base = { home: null, disc: { base: 'https://t' }, local: null };
+  assert.strictEqual(_x.localFindings([{ url: 'https://t/', pageType: 'home', _html: '<a href="https://www.google.com/maps?cid=123">Reviews</a>' }], base).find(f => /Google reviews/.test(f.label)).status, 'pass');
+  assert.strictEqual(_x.localFindings([{ url: 'https://t/', pageType: 'home', _html: '<p>hi</p>' }], base).find(f => /Google reviews/.test(f.label)).status, 'warn');
+});

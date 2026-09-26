@@ -521,12 +521,14 @@ async function placesLookup(query) {
   const ts = await fetch(`https://maps.googleapis.com/maps/api/place/textsearch/json?query=${encodeURIComponent(query)}&key=${key}`).then(r => r.json());
   const first = ts.results && ts.results[0];
   if (!first) return { found: false };
-  const det = await fetch(`https://maps.googleapis.com/maps/api/place/details/json?place_id=${first.place_id}&fields=name,rating,user_ratings_total,url,formatted_address,formatted_phone_number,reviews&key=${key}`).then(r => r.json());
+  const det = await fetch(`https://maps.googleapis.com/maps/api/place/details/json?place_id=${first.place_id}&fields=name,rating,user_ratings_total,url,formatted_address,formatted_phone_number,reviews,website,opening_hours&key=${key}`).then(r => r.json());
   const d = det.result || {};
   return {
     found: true,
     name: d.name, rating: d.rating, reviews: d.user_ratings_total,
-    address: d.formatted_address, phone: d.formatted_phone_number, mapsUrl: d.url,
+    address: d.formatted_address, phone: d.formatted_phone_number, mapsUrl: d.url, website: d.website || null,
+    // GBP hours; open247 = Google's "open 24 hours" (one period opening Sunday 00:00 with no close).
+    hours: d.opening_hours ? { weekdayText: d.opening_hours.weekday_text || [], open247: !!(d.opening_hours.periods && d.opening_hours.periods.length === 1 && d.opening_hours.periods[0].open && d.opening_hours.periods[0].open.time === '0000' && !d.opening_hours.periods[0].close) } : null,
     recent: (d.reviews || []).slice(0, 3).map(x => ({ author: x.author_name, rating: x.rating, text: x.text, when: x.relative_time_description })),
   };
 }
