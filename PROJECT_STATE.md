@@ -6,18 +6,24 @@
 ## Two products, two repos, two Railway deploys
 1. **Public SEO tool** — repo `chrispeer69/seoreview`, file `web-analyzer-siteV7.html` + `server.js`.
    Live: **https://seoreview-production.up.railway.app/web-analyzer-siteV7.html**
-2. **CRM ("Blue Collar AI CRM")** — repo `chrispeer69/CRMColumbus`, `public/index.html` +
-   `public/seo-engine.js` + `server.js`. Map-first field-sales CRM with SEO merged in.
+2. **CRM ("Blue Collar AI CRM")** — repo `chrispeer69/CRMColumbus`, `public/index.html` + `server.js`.
+   Map-first field-sales CRM with SEO merged in.
    Live: **https://crmcolumbus-production.up.railway.app**
 
 Local paths: seoreview = `C:\Users\chris\OneDrive\Desktop\Website Files\Web Site SEO`;
 CRM = `C:\Users\chris\OneDrive\Desktop\CRMColumbus`. Railway auto-deploys on push to `main`.
 
-## The audit engine is DUPLICATED in both repos — keep them in sync
-- CRM canonical module: `CRMColumbus/public/seo-engine.js` (exposes `window.SEO`).
-- Public tool: same functions embedded inline in `web-analyzer-siteV7.html`.
-- **Any engine change must be applied to BOTH files identically.** They have drifted before
-  (bland report, missing branding) — always mirror + verify both.
+## The audit engine has ONE copy: `seo-engine.js` in this repo (since 2026-09-26)
+- `seo-engine.js` exposes `window.SEO`. The public page loads it (`<script src="seo-engine.js">`),
+  `headless-audit.js` inlines it into jsdom for `/api/v1`, and CRMColumbus's server **redirects
+  `/seo-engine.js` to this deploy** (`SEO_ENGINE_URL`, default the seoreview production URL).
+- Change the engine here only. Deploy order: push seoreview first, then CRMColumbus.
+- Both servers must expose the same engine endpoints: `/api/proxy` (with `X-Final-Url`), `/api/linkcheck`
+  (POST, no redirect following), `/api/render`, `/api/places`.
+- Scoring (2026-09-26 rewrite): page score = checks with partial credit (`frac`) minus gate penalties; site score =
+  50% page average + 50% site level (coverage 30 / freshness 20 / link health 20 / duplication 15 / technical 15),
+  caps 70 (no service+location pages) and 75 (no new content in 24 months). `npm test` = unit tests + calibration
+  replay of `test/fixtures/` (roadside target 80–90; B&J target TBD).
 
 ## What the tool does now (both tools, identical)
 - **Single-page audit** (public "Run Audit" / CRM "Audit 1 page") → branded report (score, grade,
