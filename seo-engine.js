@@ -307,9 +307,12 @@ const RE_ENTITIES=[
 function localEntities(text){
   const found=new Set();
   RE_ENTITIES.forEach(re=>{ re.lastIndex=0; let m; while((m=re.exec(text))){
-    const e=m[1].trim();
-    if(RE_ENT_STOP.test(e) || RE_ENT_GENERIC.test(e)) continue;
-    found.add(e.toLowerCase().replace(/\binterstate[- ]?/,'i-').replace(/^i[- ]?(\d)/,'i-$1').replace(/\s+/g,' ').replace(/\.$/,''));
+    // Drop a sentence end caught in front ("Yes. Polaris Fashion Place"); keep "E. Main St" / "St. Clair Ave".
+    const e=m[1].trim().replace(/^(?:(?!(?:St|Mt|Ft|Pt)\.)[A-Za-z]{2,}[.!?]\s+)+/,'');
+    if(!e || RE_ENT_STOP.test(e) || RE_ENT_GENERIC.test(e)) continue;
+    // One spelling per place: "E. Main Street" = "E Main St".
+    found.add(e.toLowerCase().replace(/\binterstate[- ]?/,'i-').replace(/^i[- ]?(\d)/,'i-$1').replace(/\./g,'').replace(/\s+/g,' ').trim()
+      .split(' ').map(w=>STREET_ABBR[w]||w).join(' '));
   } });
   return [...found];
 }
@@ -845,15 +848,19 @@ function crossPageContent(pages){
     const words=slug.split('-').filter(w=>w.length>1 && !/^(in|near|oh|and|the)$/.test(w));
     return words.length?new RegExp('\\b'+words.join('[\\s-]+')+'\\b','gi'):null; };
   const masked=(p,b)=>{ const re=p._place; return re?String(b).replace(re,'{place}'):b; };
+  // Boilerplate is judged per sentence, not per paragraph: a template paragraph where only one clause changes
+  // (a list of roads) must not count as unique in full.
+  const sentences=b=>String(b).split(/(?<=[.!?])\s+(?=[A-Z0-9("])/).filter(s=>s.trim());
+  const units=p=>(p._blocks||[]).flatMap(sentences);
   const groupSize={}, inGroup={}, inSite={};
   pages.forEach(p=>{ const g=groupOf(p); groupSize[g]=(groupSize[g]||0)+1; p._place=placeMask(p);
-    p._bh=[...new Set((p._blocks||[]).map(b=>fnv(normBlock(masked(p,b)))))];
+    p._bh=[...new Set(units(p).map(b=>fnv(normBlock(masked(p,b)))))];
     p._bh.forEach(h=>{ const k=g+'|'+h; inGroup[k]=(inGroup[k]||0)+1; inSite[h]=(inSite[h]||0)+1; }); });
   const isBoiler=(p,h)=>{ const g=groupOf(p), gs=groupSize[g];
     return (gs>=3 && inGroup[g+'|'+h]>gs*0.5) || (N>=3 && inSite[h]>N*0.5); };
   pages.forEach(p=>{
     const seen=new Set(), own=[];
-    (p._blocks||[]).forEach(b=>{ const h=fnv(normBlock(masked(p,b))); if(seen.has(h)) return; seen.add(h); if(!isBoiler(p,h)) own.push(b); });
+    units(p).forEach(b=>{ const h=fnv(normBlock(masked(p,b))); if(seen.has(h)) return; seen.add(h); if(!isBoiler(p,h)) own.push(b); });
     p._ownText=own.join('\n'); p.uniqueWords=countWords(p._ownText);
     // Main content as served (shared template text IS the duplication), place name masked the same way.
     p._sh=shingles((p._blocks||[]).map(b=>masked(p,b)).join('\n'));
@@ -1010,8 +1017,11 @@ async function crawlSiteRun(root, opts){
     speedRuns=await Promise.all(money.map(async p=>{
       const s={ url:p.url, checks:[] };
       try{ await addSpeed(s, opts.psiKey||''); }catch(e){}
-      const sc=score(s);
-      return { url:p.url, score:sc.scored?sc.score:null, mobile:s.speed&&s.speed.mobile||null, desktop:s.speed&&s.speed.desktop||null, checks:s.checks };
+      // Mobile counts 70%, desktop 30% (Google ranks the mobile version; most local searches are on phones).
+      const ps=x=>x&&!x.error&&x.score!=null?x.score:null;
+      const m=ps(s.speed&&s.speed.mobile), d=ps(s.speed&&s.speed.desktop);
+      const blend=m!=null&&d!=null?Math.round(0.7*m+0.3*d):(m!=null?m:d);
+      return { url:p.url, score:blend, mobile:s.speed&&s.speed.mobile||null, desktop:s.speed&&s.speed.desktop||null, checks:s.checks };
     }));
   }
   const technical=technicalScore(aux.checks, speedRuns);
@@ -1023,12 +1033,22 @@ async function crawlSiteRun(root, opts){
   const parts={ coverage:coverage.score, freshness:freshness.score, linkHealth:linkHealth.score, duplication:duplication.score, technical:technical.score };
   const siteLevel=Math.round(Object.keys(SITE_WEIGHTS).reduce((a,k)=>a+SITE_WEIGHTS[k]*parts[k],0));
   let siteScore=pageAverage==null?null:Math.round(0.5*pageAverage+0.5*siteLevel);
+  // Site-wide penalties — once per site, however many pages repeat the problem.
+  const cpEarly=crossPageIssues(ok);
+  const selfReview=ok.some(p=>p.checks.some(c=>c.label==='Review / rating schema (stars)'&&c.status==='warn'));
+  const penalties=[
+    (cpEarly.countClaims||[]).length && {points:2, reason:'Hard-coded count claims that don’t match the site'},
+    (cpEarly.h1Spacing||[]).length && {points:2, reason:'H1 words run together in the page code'},
+    (cpEarly.smsTelLinks||[]).length && {points:1, reason:'"Text"/"SMS" links that dial (tel:)'},
+    selfReview && {points:2, reason:'Self-serving review markup on the business'},
+  ].filter(Boolean);
+  if(siteScore!=null) siteScore=Math.max(0,siteScore-penalties.reduce((a,x)=>a+x.points,0));
   const caps=[];
   if(siteScore!=null && coverage.service===0 && coverage.location===0){ caps.push({max:70, reason:'No service or location pages'}); siteScore=Math.min(siteScore,70); }
   if(siteScore!=null && freshness.ageDays!=null && freshness.ageDays>=730){ caps.push({max:75, reason:'No new content in 24 months (newest '+freshness.newest+')'}); siteScore=Math.min(siteScore,75); }
   const aiCat={e:0,t:0}; ok.forEach(p=>{ const b=p._score&&p._score.byCat&&p._score.byCat[AISEARCH]; if(b){ aiCat.e+=b.e; aiCat.t+=b.t; } });
   const aiSearch=aiCat.t?Math.min(95,Math.round(100*aiCat.e/aiCat.t)):null; // never 100: live AI answers are not observed
-  const siteBreakdown={ final:siteScore, pageAverage, siteLevel, weights:SITE_WEIGHTS, coverage, freshness, linkHealth, duplication, technical, caps, aiSearch };
+  const siteBreakdown={ final:siteScore, pageAverage, siteLevel, weights:SITE_WEIGHTS, coverage, freshness, linkHealth, duplication, technical, penalties, caps, aiSearch };
   const times=ok.map(p=>p.loadMs).filter(v=>v!=null);
   let perf=null;
   if(times.length){ const sorted=times.slice().sort((a,b)=>a-b); const avg=Math.round(times.reduce((a,b)=>a+b,0)/times.length);
@@ -1045,7 +1065,7 @@ async function crawlSiteRun(root, opts){
         : { found:false, query:bizName };
     }catch(e){ local=null; }
   }
-  const crossPage=Object.assign(crossPageIssues(ok), content, { brokenLinks, redirectLinks, orphans,
+  const crossPage=Object.assign(cpEarly, content, { brokenLinks, redirectLinks, orphans,
     sitemapRedirects:redirected.filter(x=>smKeys.has(keyOf(x.url))), sitemapBroken:broken.filter(x=>smKeys.has(keyOf(x.url))) });
   ok.forEach(p=>{ p.linkCount=(p.links||[]).length; delete p.links; delete p._blocks; delete p._bh; delete p._sh; delete p._ownText; delete p._simWith; delete p._place; }); // working data, not results (crawl results get saved)
   return { root:disc.base, siteScore, pageAverage, siteBreakdown, siteChecks:aux.checks, speed:speedRuns, perf, local, crossPage, pages,
@@ -1058,7 +1078,7 @@ function siteBreakdownHTML(b, scol){
   const row=(label,val,weight,note)=>'<tr style="border-bottom:1px solid #eef2f7"><td style="padding:5px 8px">'+label+'</td><td style="padding:5px 8px;font-weight:800;color:'+scol(val)+'">'+(val==null?'—':val)+'</td><td style="padding:5px 8px;color:#64748b">'+weight+'</td><td style="padding:5px 8px;font-size:12px;color:#475569">'+note+'</td></tr>';
   const pct=w=>Math.round(w*100)+'% of site level';
   const f=b.freshness||{}, l=b.linkHealth||{}, c=b.coverage||{}, d=b.duplication||{}, t=b.technical||{}, tp=t.parts||{};
-  const tparts=['robots.txt '+(tp.robots==null?'n/a':tp.robots),'sitemap '+(tp.sitemap==null?'n/a':tp.sitemap),'AI search crawlers '+(tp.aiCrawlers==null?'n/a':tp.aiCrawlers),'PageSpeed '+(tp.pageSpeed==null?'not measured':tp.pageSpeed)].join(' · ');
+  const tparts=['robots.txt '+(tp.robots==null?'n/a':tp.robots),'sitemap '+(tp.sitemap==null?'n/a':tp.sitemap),'AI search crawlers '+(tp.aiCrawlers==null?'n/a':tp.aiCrawlers),'PageSpeed '+(tp.pageSpeed==null?'not measured':tp.pageSpeed+' (homepage + 2 money pages, mobile 70% / desktop 30%)')].join(' · ');
   return '<div style="overflow:auto;margin:6px 0 10px"><table style="border-collapse:collapse;width:100%;font-size:13px">'
     +'<tr><th style="text-align:left;padding:5px 8px;border-bottom:2px solid #e2e8f0;font-size:12px;color:#64748b">Part</th><th style="text-align:left;padding:5px 8px;border-bottom:2px solid #e2e8f0;font-size:12px;color:#64748b">Score</th><th style="text-align:left;padding:5px 8px;border-bottom:2px solid #e2e8f0;font-size:12px;color:#64748b">Weight</th><th style="text-align:left;padding:5px 8px;border-bottom:2px solid #e2e8f0;font-size:12px;color:#64748b">Basis</th></tr>'
     +row('<b>Pages</b> (average page score)',b.pageAverage,'50% of final','Every audited page scored on its own checks, then averaged.')
@@ -1069,6 +1089,7 @@ function siteBreakdownHTML(b, scol){
     +row('&nbsp;&nbsp;Duplication',d.score,pct(b.weights.duplication),(d.pagesInNearDuplicatePairs||0)+' of '+(d.pagesCompared||0)+' pages are near-duplicates (80%+ shared text) of another page')
     +row('&nbsp;&nbsp;Technical',t.score,pct(b.weights.technical),tparts)
     +'</table>'
+    +((b.penalties||[]).length?'<div style="font-size:13px;color:#b45309;margin-top:6px"><b>Site-wide penalties:</b> '+b.penalties.map(x=>esc(x.reason)+' −'+x.points).join(' · ')+'</div>':'')
     +((b.caps||[]).length?'<div style="font-size:13px;color:#b91c1c;margin-top:6px"><b>Score capped:</b> '+b.caps.map(x=>esc(x.reason)+' → max '+x.max).join(' · ')+'</div>':'')
   +'</div>';
 }

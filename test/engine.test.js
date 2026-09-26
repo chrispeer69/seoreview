@@ -125,8 +125,9 @@ test('Page types from URLs', () => {
 test('Local detail and count-claim extraction', () => {
   const SEO = engine({});
   const e = SEO.localEntities('We serve Bridge Park, Tuttle Crossing, I-270 & US-33 near Frantz Road and Exit 17B. Our Service Center is open.');
-  ['bridge park', 'tuttle crossing', 'i-270', 'us-33', 'frantz road', 'exit 17b'].forEach(x => assert.ok(e.includes(x), x + ' in ' + e));
+  ['bridge park', 'tuttle crossing', 'i-270', 'us-33', 'frantz rd', 'exit 17b'].forEach(x => assert.ok(e.includes(x), x + ' in ' + e));
   assert.ok(!e.some(x => /service center/.test(x)), 'generic words are not landmarks');
+  same([...SEO.localEntities('Yes. Polaris Fashion Place is off E. Main Street and E. Main St.')].sort(), ['e main st', 'polaris fashion pl']);
   const c = SEO.countClaims('See all 34 Central Ohio service areas. We offer 13 services in Dublin. Open 24 hours.');
   same(c.map(x => [x.kind, x.n]), [['location', 34], ['service', 13]]);
 });

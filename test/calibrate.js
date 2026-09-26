@@ -13,9 +13,10 @@ const zlib = require('zlib');
 const headless = require('../headless-audit');
 
 const SITES = [
-  { domain: 'columbusroadsidetowing.com', root: 'https://www.columbusroadsidetowing.com', target: [80, 90] },
-  // The B&J target band was cut off in the spec — scored and reported, not asserted, until it is set.
-  { domain: 'broadandjames.com', root: 'https://broadandjames.com', target: null },
+  // Site bands, plus page bands for pages whose score is a known reference point.
+  { domain: 'columbusroadsidetowing.com', root: 'https://www.columbusroadsidetowing.com', target: [88, 95],
+    pages: { '/service-area/whitehall': [60, 80], '/service-area/lewis-center': [90, 100] } },
+  { domain: 'broadandjames.com', root: 'https://broadandjames.com', target: [45, 60] },
 ];
 const RECORD = process.argv.includes('--record');
 const VERBOSE = process.argv.includes('--verbose');
@@ -89,7 +90,18 @@ function makeDeps(fx) {
     if (inBand === false) failed++;
     console.log(`\n${site.domain}: site score ${s}${site.target ? ` (target ${site.target[0]}–${site.target[1]}: ${inBand ? 'OK' : 'OUT OF BAND'})` : ' (no target set)'}`
       + ` · ${(res.pages || []).filter(p => !p.error).length} pages · ${((Date.now() - t0) / 1000).toFixed(1)}s${misses.length ? ` · ${misses.length} fixture misses` : ''}`);
-    if (b) console.log('  ' + JSON.stringify(b));
+    if (b) {
+      const t = b.technical || {}, f = b.freshness || {}, l = b.linkHealth || {}, c = b.coverage || {}, d = b.duplication || {};
+      console.log(`  pages ${b.pageAverage} | site level ${b.siteLevel} = coverage ${c.score} (${c.service} svc/${c.location} loc) · freshness ${f.score} (${f.newest || 'n/a'}) · links ${l.score} (${l.broken} broken/${l.redirects} redirects/${l.orphans} orphans) · duplication ${d.score} · technical ${t.score} ${JSON.stringify(t.parts || {})}`);
+      console.log(`  penalties: ${(b.penalties || []).map(x => '-' + x.points + ' ' + x.reason).join('; ') || 'none'} | caps: ${(b.caps || []).map(x => x.max + ' ' + x.reason).join('; ') || 'none'} | AI Search ${b.aiSearch}`);
+    }
+    Object.keys(site.pages || {}).forEach(pth => {
+      const [lo, hi] = site.pages[pth];
+      const pg = (res.pages || []).find(p => !p.error && p.url.replace(res.root, '') === pth);
+      const sc = pg && pg._score ? pg._score.score : null;
+      const okp = sc != null && sc >= lo && sc <= hi; if (!okp) failed++;
+      console.log(`  page ${pth}: ${sc == null ? 'not crawled' : sc} (target ${lo}–${hi}: ${okp ? 'OK' : 'OUT OF BAND'})`);
+    });
     // The API summary and the branded report must build from this result.
     const api = require('../api-v1').summarize(res);
     if (api.score !== s) { console.log(`  API score ${api.score} != engine ${s}`); failed++; }
