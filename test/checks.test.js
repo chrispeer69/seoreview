@@ -349,3 +349,19 @@ test('AI site findings: Bingbot-only Disallow fails; name mismatch between schem
   assert.strictEqual(g.find(x => /Bingbot/.test(x.label)).status, 'pass');
   assert.strictEqual(g.find(x => /One business name/.test(x.label)).status, 'pass');
 });
+
+// ---------------- Phase 9 — stack & agency fingerprint (info only) ----------------
+test('Stack fingerprint: WordPress theme/plugins/builder, payments, call tracking, agency credit; plain page finds nothing', async () => {
+  const SEO = engine(); await SEO._x.loadIndustry('towing');
+  const html = '<meta name="generator" content="WordPress 6.5"><link href="/wp-content/themes/generatepress/style.css?ver=3.4"><script src="/wp-content/plugins/gravityforms/js/x.js?ver=2.8.1"></script>'
+    + '<div class="fl-builder-content"></div><script src="https://cdn.callrail.com/companies/1/swap.js"></script><a href="https://www.paypal.com/pay">Pay</a><a href="https://public.towbook.com/x">Impounds</a>'
+    + '<footer>Website by Acme Web Co</footer>';
+  const st = await SEO._x.stackFingerprint([{ url: 'https://t/', _html: html, _pageText: '', headers: { 'cf-ray': 'x' } }], { home: { url: 'https://t/', title: 'Co', _html: html }, local: null });
+  assert.strictEqual(st.cms, 'WordPress'); assert.ok(st.theme.includes('generatepress'));
+  assert.ok(st.plugins.some(p => p.name === 'Gravity Forms' && p.version === '2.8.1'));
+  assert.ok(st.builders.includes('Beaver Builder')); assert.ok(st.tracking.includes('CallRail'));
+  assert.ok(st.payments.includes('PayPal')); assert.ok(st.opsTools.includes('Towbook'));
+  assert.ok(st.agency.credits.some(c => /Acme Web Co/.test(c.value))); assert.ok(st.hosting.includes('Cloudflare (CDN)'));
+  const plain = await SEO._x.stackFingerprint([{ url: 'https://t/', _html: '<p>Hello</p>', _pageText: 'Hello', headers: null }], { home: { url: 'https://t/', title: 'Co', _html: '<p>Hello</p>' }, local: null });
+  assert.strictEqual(plain.cms, null); same([plain.builders, plain.plugins, plain.payments, plain.opsTools, plain.agency.credits, plain.tracking], [[], [], [], [], [], []]);
+});

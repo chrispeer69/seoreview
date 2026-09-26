@@ -39,7 +39,20 @@ const TAGS = {
   'Hotjar':['hotjar.com'],
   'TikTok Pixel':['analytics.tiktok.com','ttq.'],
   'LinkedIn Insight':['snap.licdn.com'],
+  // call tracking
+  'CallRail':['cdn.callrail.com','callrail.com/companies'],
+  'CallTrackingMetrics':['tctm.co','calltrackingmetrics.com'],
+  'Invoca':['invocacdn.com','solutions.invocacdn','invoca.net'],
+  'WhatConverts':['whatconverts.com'],
 };
+// Live-chat and messaging widgets (stack fingerprint, not scored).
+const CHAT_WIDGETS = { 'Intercom':['widget.intercom.io','intercomcdn'], 'Drift':['js.driftt.com'], 'tawk.to':['embed.tawk.to'], 'LiveChat':['cdn.livechatinc.com'],
+  'Podium':['connect.podium.com','podium.com/widget'], 'Birdeye':['birdeye.com/embed','birdeye.com/widget'], 'Tidio':['code.tidio.co'], 'Zendesk Chat':['static.zdassets.com','v2.zopim.com'],
+  'HubSpot Chat':['js.hs-scripts.com','js.usemessages.com'], 'Facebook Messenger':['connect.facebook.net/en_US/sdk/xfbml.customerchat'], 'Olark':['static.olark.com'], 'Crisp':['client.crisp.chat'],
+  'Smartsupp':['smartsuppchat.com'], 'Freshchat':['wchat.freshchat.com'], 'LiveAgent':['ladesk.com'], 'Weave':['weavehelp','getweave.com'] };
+const PAYMENTS = { 'PayPal':['paypal.com','paypalobjects.com'], 'CardPointe':['cardpointe','cardconnect.com'], 'Square':['squareup.com','square.site','squarecdn'], 'Stripe':['js.stripe.com','buy.stripe.com','checkout.stripe.com'],
+  'Clover':['clover.com'], 'Authorize.net':['authorize.net'], 'Braintree':['braintreegateway','braintree-api'], 'Venmo':['venmo.com'], 'Heartland':['heartlandpaymentsystems','hps.io'],
+  'QuickBooks Payments':['quickbooks.intuit.com','connect.intuit.com'], 'Zelle':['zellepay.com'] };
 // Crawlers that fetch pages for live search / AI answers — blocking these removes the site from those answers (scored).
 const AI_SEARCH_BOTS = ['OAI-SearchBot','ChatGPT-User','PerplexityBot','Perplexity-User','ClaudeBot','Bingbot','Googlebot'];
 // Crawlers that only collect model-training data — blocking them is a legitimate choice (reported, never penalized).
@@ -1714,6 +1727,58 @@ function aiSiteFindings(ok, ctx){
   return out;
 }
 
+// ---------- Phase 9 — stack & agency fingerprint (info only, never scored) ----------
+const BUILDERS=[ ['Beaver Builder',/fl-builder|bb-plugin|beaver-builder/i], ['Elementor',/elementor/i], ['Divi',/et_pb_|\/themes\/Divi\//i], ['WPBakery',/js_composer|vc_row/i],
+  ['Oxygen',/oxygen-builder|ct-section/i], ['Bricks',/bricks-builder|brxe-/i], ['Gutenberg blocks',/wp-block-/i], ['Wix',/wixstatic\.com|X-Wix|_wixCIDX/i], ['Squarespace',/static1\.squarespace\.com|squarespace-cdn/i],
+  ['GoDaddy Website Builder',/img1\.wsimg\.com|godaddy.*builder/i], ['Duda',/irp\.cdn-website\.com|dudamobile|cdn-website\.com/i], ['Webflow',/data-wf-site|webflow\.js/i],
+  ['Shopify',/cdn\.shopify\.com/i], ['Weebly',/weebly\.com|editmysite\.com/i], ['Framer',/framerusercontent|framer\.com\/m\//i], ['Hibu',/hibu/i], ['Scorpion',/scorpion\.co/i] ];
+const FRAMEWORKS=[ ['Next.js',/\/_next\/static|__NEXT_DATA__/], ['Nuxt',/\/_nuxt\/|window\.__NUXT__/], ['Gatsby',/\/page-data\/|___gatsby/], ['Vite',/<script[^>]+type=["']module["'][^>]+src=["'][^"']*\/assets\/index-[\w-]+\.js/i],
+  ['React',/data-reactroot|id=["']root["']/], ['Angular',/ng-version=/], ['Vue',/data-v-[0-9a-f]{8}|data-server-rendered/] ];
+const KNOWN_PLUGINS={ 'gravityforms':'Gravity Forms', 'wonderplugin-carousel':'WonderPlugin Carousel', 'wordpress-seo':'Yoast SEO', 'seo-by-rank-math':'Rank Math', 'contact-form-7':'Contact Form 7',
+  'wpforms-lite':'WPForms', 'elementor':'Elementor', 'bb-plugin':'Beaver Builder', 'beaver-builder-lite-version':'Beaver Builder (lite)', 'woocommerce':'WooCommerce', 'jetpack':'Jetpack',
+  'wp-rocket':'WP Rocket', 'litespeed-cache':'LiteSpeed Cache', 'w3-total-cache':'W3 Total Cache', 'autoptimize':'Autoptimize', 'akismet':'Akismet', 'revslider':'Slider Revolution', 'js_composer':'WPBakery', 'gp-premium':'GP Premium (GeneratePress)',
+  'simple-banner':'Simple Banner', 'lightweight-social-icons':'Lightweight Social Icons', 'all-in-one-seo-pack':'All in One SEO', 'wpcf7':'Contact Form 7' };
+function verCmp(a,b){ const x=String(a).split('.').map(Number), y=String(b).split('.').map(Number); for(let i=0;i<Math.max(x.length,y.length);i++){ const d=(x[i]||0)-(y[i]||0); if(d) return d; } return 0; }
+async function stackFingerprint(ok, ctx){
+  const html=ok.map(p=>p._html||'').join('\n');
+  const home=ctx.home, homeHtml=home&&home._html||'';
+  const gen=[...new Set([...html.matchAll(/<meta[^>]+name=["']generator["'][^>]+content=["']([^"']+)["']/gi)].map(m=>m[1]))];
+  const wp=/\/wp-content\/|\/wp-includes\//i.test(html);
+  const themes=[...new Set([...html.matchAll(/\/wp-content\/themes\/([a-z0-9_-]+)\//gi)].map(m=>m[1].toLowerCase()))];
+  const plugins={};
+  [...html.matchAll(/\/wp-content\/plugins\/([a-z0-9_-]+)\/[^"'\s)]*?(?:\?ver=([\d.]+))?["'\s)]/gi)].forEach(m=>{ const slug=m[1].toLowerCase(); const v=m[2]||null;
+    if(!plugins[slug]) plugins[slug]={ slug, name:KNOWN_PLUGINS[slug]||slug, version:null };
+    if(v&&(!plugins[slug].version||verCmp(v,plugins[slug].version)>0)) plugins[slug].version=v; });
+  if(/gform_wrapper|gform_fields/i.test(html)&&!plugins.gravityforms) plugins.gravityforms={ slug:'gravityforms', name:'Gravity Forms', version:null };
+  // Latest versions from the WordPress.org plugins API (premium plugins like Gravity Forms are not listed there).
+  const list=Object.values(plugins).slice(0,25);
+  await Promise.all(list.map(async p=>{ try{ const t=await fetchAux('https://api.wordpress.org/plugins/info/1.2/?action=plugin_information&request%5Bslug%5D='+encodeURIComponent(p.slug)); const j=t?JSON.parse(t):null;
+    if(j&&j.version){ p.latest=j.version; if(p.version) p.outdated=verCmp(p.version,j.version)<0; } else p.latest=null; }catch(e){ p.latest=null; } }));
+  const builders=BUILDERS.filter(([,re])=>re.test(html)).map(([n])=>n);
+  const frameworks=FRAMEWORKS.filter(([,re])=>re.test(homeHtml)).map(([n])=>n);
+  const has=(map)=>Object.keys(map).filter(k=>map[k].some(s=>html.includes(s)));
+  const tracking=has(TAGS), chat=has(CHAT_WIDGETS), payments=has(PAYMENTS);
+  const ops=((_industry&&_industry.ops_tools)||[]).filter(t=>t.patterns.some(s=>html.toLowerCase().includes(s.toLowerCase()))).map(t=>t.name);
+  // Agency attribution: footer credits, meta author, HTML comments, UTM tags on the GBP website link.
+  const credits=[]; const txt=html.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/gi,' ');
+  [...txt.matchAll(/(?:website|web ?site|web design|site|designed|developed|built|powered|marketing|seo)\s+(?:and\s+\w+\s+)?by\s*(?:<[^>]+>\s*)*([A-Z0-9][\w&.' -]{2,40}?)(?=\s*(?:<|\||·|,|\.|$))/gi)].slice(0,50).forEach(m=>{ const n=m[1].replace(/<[^>]+>/g,'').trim(); if(n&&!/^(WordPress|the|our|us|you|Google)$/i.test(n)) credits.push({ source:'footer credit', value:snip(m[0].replace(/<[^>]+>/g,' '),80) }); });
+  [...html.matchAll(/<meta[^>]+name=["']author["'][^>]+content=["']([^"']+)["']/gi)].forEach(m=>{ if(!(home&&home.title||'').toLowerCase().includes(m[1].toLowerCase())) credits.push({ source:'meta author', value:m[1] }); }); // the business itself is not an agency
+  [...html.matchAll(/<!--([\s\S]{3,200}?)-->/g)].map(m=>m[1].trim()).filter(c=>/(website|web ?site|site|designed|developed|built|powered|created|made)\s+(and\s+\w+\s+)?by\s+\S|\bagency\b/i.test(c)&&!/(\[if|endif|wp:|\/wp:|google tag|end google|begin|yoast|seo plugin)/i.test(c)).slice(0,5).forEach(c=>credits.push({ source:'HTML comment', value:snip(c,80) }));
+  const gbpSite=ctx.local&&ctx.local.website; let gbpUtm=null; if(gbpSite){ try{ const u=new URL(gbpSite); const src=u.searchParams.get('utm_source'); if(src) gbpUtm={ utm_source:src, utm_medium:u.searchParams.get('utm_medium'), utm_campaign:u.searchParams.get('utm_campaign'), url:gbpSite }; }catch(e){} }
+  // Hosting / CDN from response headers.
+  const hdrs=ok.map(p=>p.headers).filter(Boolean), h=k=>hdrs.map(x=>x[k]).find(Boolean);
+  const hosting=[]; const server=h('server');
+  if(h('cf-ray')||/cloudflare/i.test(server||'')) hosting.push('Cloudflare (CDN)');
+  if(h('x-vercel-id')) hosting.push('Vercel'); if(h('x-nf-request-id')) hosting.push('Netlify'); if(h('x-amz-cf-id')) hosting.push('Amazon CloudFront');
+  if(/fastly/i.test((h('x-served-by')||'')+(h('via')||''))) hosting.push('Fastly'); if(h('x-kinsta-cache')) hosting.push('Kinsta'); if(h('x-wpe-backend')||h('wpe-backend')) hosting.push('WP Engine');
+  if(h('x-litespeed-cache')||/litespeed/i.test(server||'')) hosting.push('LiteSpeed'); if(h('x-sucuri-id')) hosting.push('Sucuri'); if(h('x-github-request-id')) hosting.push('GitHub Pages');
+  if(h('x-wix-request-id')) hosting.push('Wix'); if(h('x-shopify-stage')) hosting.push('Shopify'); if(h('x-squarespace-served-by')) hosting.push('Squarespace'); if(/railway/i.test(server||'')) hosting.push('Railway');
+  if(server&&!hosting.length) hosting.push('Server: '+server);
+  const licenses=[...new Set(ok.flatMap(p=>licenseMatches(p._pageText||'')))];
+  return { cms:wp?'WordPress':(gen[0]||null), generator:gen, theme:themes, builders, frameworks, plugins:list, tracking, chat, payments, opsTools:ops,
+    agency:{ credits:[...new Map(credits.filter(c=>!/(rank math|yoast|all in one seo|seopress|search engine optimization by)/i.test(c.value)).map(c=>[c.source+'|'+c.value.toLowerCase(),c])).values()].slice(0,6), gbpUtm }, hosting, server:server||null, licenses };
+}
+
 // Link graph facts per page: click depth from the homepage (BFS over audited pages' links), inlink count and the
 // anchor texts used; plus the full redirect chain for every redirecting URL met (hops, loops, final URL).
 function crawlGraph(pages, base, redirected, keyOf){
@@ -1877,7 +1942,8 @@ async function crawlSiteRun(root, opts){
   const contra=contradictionFindings(ok); siteFindings.push(...contra);
   const claims24=(contra.find(f=>f.label==='Consistent hours claims')||{}).claims24_7||[];
   siteFindings.push(...localFindings(ok, { home, disc, local, claims24_7:claims24 }));
-  siteFindings.push(...trustFindings(ok, { tracking:[...new Set(ok.flatMap(p=>p.tracking||[]))] }));
+  let stack=null; try{ stack=await stackFingerprint(ok, { home, local }); }catch(e){}
+  siteFindings.push(...trustFindings(ok, { tracking:(stack&&stack.tracking)||[...new Set(ok.flatMap(p=>p.tracking||[]))] }));
   siteFindings.push(...aiSiteFindings(ok, { home, local, robots:aux._robotsTxt, disc }));
   try{ await resolveAsyncFindings(siteFindings); }catch(e){}
   phase('scoring');
@@ -1919,7 +1985,7 @@ async function crawlSiteRun(root, opts){
   const crossPage=Object.assign(cpEarly, content, { redirectChains:graph.chains, brokenLinks, redirectLinks, orphans,
     sitemapRedirects:redirected.filter(x=>smKeys.has(keyOf(x.url))), sitemapBroken:broken.filter(x=>smKeys.has(keyOf(x.url))) });
   ok.forEach(p=>{ p.linkCount=(p.links||[]).length; delete p.links; delete p._blocks; delete p._bh; delete p._sh; delete p._ownText; delete p._simWith; delete p._place; }); // working data, not results (crawl results get saved)
-  return { root:disc.base, siteScore, pageAverage, siteBreakdown, siteChecks:aux.checks, siteFindings:findingsOut, speed:speedRuns, perf, local, crossPage, pages,
+  return { root:disc.base, siteScore, pageAverage, siteBreakdown, siteChecks:aux.checks, siteFindings:findingsOut, stack, speed:speedRuns, perf, local, crossPage, pages,
     coverage:{ discovered:queued.size, inSitemap:(disc.sitemapUrls||[]).length, audited:ok.length, failed:pages.length-ok.length, redirected:redirected.length, broken:broken.length,
       capped, cap:max, via:disc.via==='sitemap'?'sitemap + links':disc.via, rendered, renderAvailable:!!render } };
 }
@@ -2280,7 +2346,7 @@ const API={ BRAND, PROXIES, TAGS, AI_BOTS, AISEARCH, PROJECT_FIXES, sleep, esc, 
   // building blocks, exposed for tests
   classifyPage, mainContent, localEntities, countClaims, h1Glued, smsLabelTelLinks, businessSchema, ldNodes, AI_SEARCH_BOTS, AI_TRAINING_BOTS,
   // individual checks, for unit tests
-  _x:{ soft404Check, viewportZoomCheck, headingHierarchyCheck, imageCheck, weightCheck, pageAssets, robotsRulesFor, robotsAllowed, chainOf, technicalFindings, applyDeductions, titleQualityCheck, titlePixels, genericH1Check, descEqualsTitleCheck, genericAnchorCheck, onPageLinkFindings, yearClaims, staleClaimsCheck, placeholderCheck, defaultPrivacyCheck, contentFreshnessFindings, contradictionFindings, serviceCoverage, locationCoverage, callAboveFoldCheck, areaCodeCheck, localFindings, jsonLdSyntaxCheck, businessEntityCheck, schemaNapCheck, openingHoursCheck, serviceSchemaCheck, breadcrumbCheck, faqMatchCheck, schemaTypesCheck, licenseCheck, pricingCheck, insuranceCheck, trustFindings, resolveAsyncFindings, questionAnswerCheck, citableFactsCheck, aiSiteFindings, loadIndustry, setMarket:(m)=>{ _market=m; } } };
+  _x:{ soft404Check, viewportZoomCheck, headingHierarchyCheck, imageCheck, weightCheck, pageAssets, robotsRulesFor, robotsAllowed, chainOf, technicalFindings, applyDeductions, titleQualityCheck, titlePixels, genericH1Check, descEqualsTitleCheck, genericAnchorCheck, onPageLinkFindings, yearClaims, staleClaimsCheck, placeholderCheck, defaultPrivacyCheck, contentFreshnessFindings, contradictionFindings, serviceCoverage, locationCoverage, callAboveFoldCheck, areaCodeCheck, localFindings, jsonLdSyntaxCheck, businessEntityCheck, schemaNapCheck, openingHoursCheck, serviceSchemaCheck, breadcrumbCheck, faqMatchCheck, schemaTypesCheck, licenseCheck, pricingCheck, insuranceCheck, trustFindings, resolveAsyncFindings, questionAnswerCheck, citableFactsCheck, aiSiteFindings, stackFingerprint, loadIndustry, setMarket:(m)=>{ _market=m; } } };
 root.SEO=API;
 if(typeof module!=="undefined"&&module.exports) module.exports=API;
 })(typeof window!=="undefined"?window:globalThis);
