@@ -7,7 +7,9 @@
     "node": ">=18"
   },
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test test/engine.test.js && node test/calibrate.js",
+    "calibrate:record": "node test/calibrate.js --record"
   },
   "dependencies": {
     "connect-pg-simple": "^9.0.1",

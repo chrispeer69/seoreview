@@ -838,17 +838,25 @@ function crossPageContent(pages){
     const kids=pages.filter(q=>q!==p && pathOf(q.url).indexOf(me+'/')===0).length;
     if(kids>=2 && (p.pageType==='service'||p.pageType==='location'||p.pageType==='other')) p.pageType='hub'; });
   const groupOf=p=>{ const s=pathSegs(p.url); return s.length>=2?s[0]:'/'; };
+  // A location page's own place name (from its URL slug) is masked before blocks are compared, so a template sentence
+  // with only the city swapped ("…reaches Dublin day or night…") is recognised as the same block on every city page.
+  const placeMask=p=>{ if(p.pageType!=='location') return null;
+    const slug=(pathSegs(p.url).pop()||'').replace(RE_STATE_SLUG,'').replace(/^(towing|tow-truck|auto-repair|roadside-assistance|service|services)-(in-)?/,'');
+    const words=slug.split('-').filter(w=>w.length>1 && !/^(in|near|oh|and|the)$/.test(w));
+    return words.length?new RegExp('\\b'+words.join('[\\s-]+')+'\\b','gi'):null; };
+  const masked=(p,b)=>{ const re=p._place; return re?String(b).replace(re,'{place}'):b; };
   const groupSize={}, inGroup={}, inSite={};
-  pages.forEach(p=>{ const g=groupOf(p); groupSize[g]=(groupSize[g]||0)+1;
-    p._bh=[...new Set((p._blocks||[]).map(b=>fnv(normBlock(b))))];
+  pages.forEach(p=>{ const g=groupOf(p); groupSize[g]=(groupSize[g]||0)+1; p._place=placeMask(p);
+    p._bh=[...new Set((p._blocks||[]).map(b=>fnv(normBlock(masked(p,b)))))];
     p._bh.forEach(h=>{ const k=g+'|'+h; inGroup[k]=(inGroup[k]||0)+1; inSite[h]=(inSite[h]||0)+1; }); });
   const isBoiler=(p,h)=>{ const g=groupOf(p), gs=groupSize[g];
     return (gs>=3 && inGroup[g+'|'+h]>gs*0.5) || (N>=3 && inSite[h]>N*0.5); };
   pages.forEach(p=>{
     const seen=new Set(), own=[];
-    (p._blocks||[]).forEach(b=>{ const h=fnv(normBlock(b)); if(seen.has(h)) return; seen.add(h); if(!isBoiler(p,h)) own.push(b); });
+    (p._blocks||[]).forEach(b=>{ const h=fnv(normBlock(masked(p,b))); if(seen.has(h)) return; seen.add(h); if(!isBoiler(p,h)) own.push(b); });
     p._ownText=own.join('\n'); p.uniqueWords=countWords(p._ownText);
-    p._sh=shingles(countWords(p._ownText)>=30?p._ownText:(p._blocks||[]).join('\n'));
+    // Main content as served (shared template text IS the duplication), place name masked the same way.
+    p._sh=shingles((p._blocks||[]).map(b=>masked(p,b)).join('\n'));
   });
   const pool=pages.filter(p=>p.pageType!=='utility');
   const pairs=[];
@@ -1039,7 +1047,7 @@ async function crawlSiteRun(root, opts){
   }
   const crossPage=Object.assign(crossPageIssues(ok), content, { brokenLinks, redirectLinks, orphans,
     sitemapRedirects:redirected.filter(x=>smKeys.has(keyOf(x.url))), sitemapBroken:broken.filter(x=>smKeys.has(keyOf(x.url))) });
-  ok.forEach(p=>{ p.linkCount=(p.links||[]).length; delete p.links; delete p._blocks; delete p._bh; delete p._sh; delete p._ownText; delete p._simWith; }); // working data, not results (crawl results get saved)
+  ok.forEach(p=>{ p.linkCount=(p.links||[]).length; delete p.links; delete p._blocks; delete p._bh; delete p._sh; delete p._ownText; delete p._simWith; delete p._place; }); // working data, not results (crawl results get saved)
   return { root:disc.base, siteScore, pageAverage, siteBreakdown, siteChecks:aux.checks, speed:speedRuns, perf, local, crossPage, pages,
     coverage:{ discovered:queued.size, inSitemap:(disc.sitemapUrls||[]).length, audited:ok.length, failed:pages.length-ok.length, redirected:redirected.length, broken:broken.length,
       capped, cap:max, via:disc.via==='sitemap'?'sitemap + links':disc.via, rendered, renderAvailable:!!render } };
@@ -1318,7 +1326,9 @@ function comparisonHTML(items){
 const API={ BRAND, PROXIES, TAGS, AI_BOTS, AISEARCH, PROJECT_FIXES, sleep, esc, isQuick, setAbort,
   fetchHtml, fetchAux, aiCrawlerStatus, auditOne, addAux, fetchPSI, addSpeed, score, audit,
   discoverPages, crossPageIssues, crawlSite, siteReportHTML, aiExplainerHTML, ctaBlockHTML,
-  reportHTML, findingsHTML, emailHTML, emailText, comparisonHTML };
+  reportHTML, findingsHTML, emailHTML, emailText, comparisonHTML,
+  // building blocks, exposed for tests
+  classifyPage, mainContent, localEntities, countClaims, h1Glued, smsLabelTelLinks, businessSchema, ldNodes, AI_SEARCH_BOTS, AI_TRAINING_BOTS };
 root.SEO=API;
 if(typeof module!=="undefined"&&module.exports) module.exports=API;
 })(typeof window!=="undefined"?window:globalThis);
