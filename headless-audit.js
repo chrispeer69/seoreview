@@ -1,19 +1,22 @@
 'use strict';
 // Headless runner for the public tool's audit engine.
 //
-// The SEO / AI-search engine lives inside web-analyzer-siteV7.html and runs in the browser. To let other
-// systems request audits over an API, this module loads that same page into jsdom on the server, swaps the
-// page's fetch() for a shim that routes /api/proxy, /api/render and /api/places to in-process helpers, and
-// calls the page's own crawlSite() / siteReportHTML(). One engine, one set of results — no second copy.
+// The SEO / AI-search engine lives in seo-engine.js and runs in the browser. To let other systems request audits
+// over an API, this module loads the public tool's page (with that engine inlined) into jsdom on the server, swaps
+// the page's fetch() for a shim that routes /api/proxy, /api/render and /api/places to in-process helpers, and
+// calls the engine's own SEO.crawlSite() / SEO.siteReportHTML(). One engine, one set of results — no second copy.
 const fs = require('fs');
 const path = require('path');
 const { JSDOM, VirtualConsole } = require('jsdom');
 
 const HTML_PATH = path.join(__dirname, 'web-analyzer-siteV7.html');
+const ENGINE_PATH = path.join(__dirname, 'seo-engine.js');
 let cached = null;
 function pageSource() {
   if (!cached) {
-    const html = fs.readFileSync(HTML_PATH, 'utf8');
+    // jsdom does not load <script src>; inline the engine where the page loads it.
+    const engine = fs.readFileSync(ENGINE_PATH, 'utf8').replace(/<\/script/gi, '<\\/script');
+    const html = fs.readFileSync(HTML_PATH, 'utf8').replace('<script src="seo-engine.js"></script>', () => '<script>' + engine + '</script>');
     const css = (html.match(/<style>([\s\S]*?)<\/style>/) || [])[1] || '';
     cached = { html, css };
   }
@@ -70,6 +73,7 @@ function makeFetch(deps) {
     // Absolute URLs. The page's public CORS-proxy fallbacks are skipped on the server (our own proxy already
     // fetched the page directly — a third-party proxy would not do better and adds a dependency).
     if (/allorigins\.win|corsproxy\.io|corsfix\.com/i.test(u)) return textResponse(502, '');
+    if (deps.directFetch) { try { const r = await deps.directFetch(u); return textResponse(r.status, r.body); } catch (e) { return textResponse(502, ''); } } // test fixtures
     try { const r = await fetch(u, { signal }); return textResponse(r.status, await r.text()); }
     catch (e) { return textResponse(502, ''); }
   };
@@ -106,10 +110,10 @@ async function crawlSite(deps, root, opts) {
   const w = dom.window;
   try {
     await sleep(100); // let the page's boot scripts settle
-    if (typeof w.crawlSite !== 'function' || typeof w.siteReportHTML !== 'function') {
+    if (!w.SEO || typeof w.SEO.crawlSite !== 'function') {
       throw new Error('audit engine did not load' + (errors.length ? ' — ' + errors[0] : ''));
     }
-    const res = await w.crawlSite(root, {
+    const res = await w.SEO.crawlSite(root, {
       max: opts.maxPages || 100,
       concurrency: opts.concurrency || 4,
       render: deps.renderEnabled ? (u => w.fetch('/api/render?url=' + encodeURIComponent(u)).then(r => (r.ok ? r.text() : null)).catch(() => null)) : null,
@@ -117,13 +121,13 @@ async function crawlSite(deps, root, opts) {
       onProgress: opts.onProgress || function () {},
     });
     if (!res || res.error) return { result: res || { error: 'crawl returned nothing' }, html: null };
-    const html = w.siteReportHTML(res);
+    const html = w.SEO.siteReportHTML(res);
     // Site-level checks the single-page audit adds (robots.txt, sitemap, AI-crawler access, llms.txt). The
     // crawl skips them per page; run them once for the site on a scratch record so site scoring is unchanged.
     let siteChecks = [];
     try {
       const home = (res.pages || []).find(p => !p.error && p.origin) || null;
-      if (home && typeof w.addAux === 'function') { const scratch = { origin: home.origin, checks: [] }; await w.addAux(scratch); siteChecks = scratch.checks; }
+      if (home) { const scratch = { origin: home.origin, checks: [] }; await w.SEO.addAux(scratch); siteChecks = scratch.checks; }
     } catch (e) { /* best effort */ }
     const result = JSON.parse(JSON.stringify(res));
     result.siteChecks = JSON.parse(JSON.stringify(siteChecks));
@@ -142,24 +146,24 @@ async function auditPage(deps, url, opts) {
   const w = dom.window;
   try {
     await sleep(100);
-    if (typeof w.auditOne !== 'function' || typeof w.renderReport !== 'function') {
+    if (!w.SEO || typeof w.renderReport !== 'function') {
       throw new Error('audit engine did not load' + (errors.length ? ' — ' + errors[0] : ''));
     }
     const render = deps.renderEnabled ? (u => w.fetch('/api/render?url=' + encodeURIComponent(u)).then(r => (r.ok ? r.text() : null)).catch(() => null)) : null;
     let r;
-    try { r = await w.auditOne(url); }
+    try { r = await w.SEO.auditOne(url); }
     catch (e1) {                                   // one retry, then the rendered page - as the crawl does
-      try { r = await w.auditOne(url); }
+      try { r = await w.SEO.auditOne(url); }
       catch (e2) {
         const html = render ? await render(url) : null;
         if (!html) throw new Error((e2 && e2.reason) || (e2 && e2.message) || 'page could not be fetched');
-        r = await w.auditOne(url, html); r._rendered = true;
+        r = await w.SEO.auditOne(url, html); r._rendered = true;
       }
     }
-    if (r.jsShell && render) { try { const html = await render(url); if (html) { r = await w.auditOne(url, html); r._rendered = true; } } catch (e) {} }
-    try { await w.addAux(r); } catch (e) { /* best effort, as in the tool */ }
-    if (opts.speed) { try { await w.addSpeed(r, opts.psiKey || ''); } catch (e) {} }
-    r._score = w.score(r);
+    if (r.jsShell && render) { try { const html = await render(url); if (html) { r = await w.SEO.auditOne(url, html); r._rendered = true; } } catch (e) {} }
+    try { await w.SEO.addAux(r); } catch (e) { /* best effort, as in the tool */ }
+    if (opts.speed) { try { await w.SEO.addSpeed(r, opts.psiKey || ''); } catch (e) {} }
+    r._score = w.SEO.score(r);
     w.__pageResult = r;
     w.eval('reports=[window.__pageResult]');       // the page's own top-level `let reports`
     w.renderReport();
