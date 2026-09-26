@@ -112,6 +112,7 @@ function makeDeps(fx) {
     if (api.score !== s) { console.log(`  API score ${api.score} != engine ${s}`); failed++; }
     if (!out.html || out.html.length < 5000 || !/Link health/.test(out.html)) { console.log('  report HTML missing or incomplete'); failed++; }
     if (process.argv.includes('--html')) fs.writeFileSync(path.join(require('os').tmpdir(), site.domain + '-report.html'), '<meta charset="utf-8">' + out.html);
+    if (process.argv.includes('--evidence')) (res.siteFindings || []).filter(f => f.status === 'fail' || f.status === 'warn').forEach(f => console.log('    evidence: ' + f.label + ' => ' + JSON.stringify(f.evidence).slice(0, 600)));
     if (VERBOSE) (res.siteFindings || []).forEach(f => console.log(`    finding ${f.status.padEnd(4)} ${String(f.points).padStart(2)} [${f.component}] ${f.label} — ${String(f.detail || '').slice(0, 120)}${(f.evidence || [])[0] ? ' | ' + String(f.evidence[0].snippet || '').slice(0, 110) : ''}`));
     if (VERBOSE) console.log('  API top issues: ' + api.top_issues.map(x => x.code + '(' + x.severity + ')').join(', '));
     if (out.engineErrors && out.engineErrors.length) console.log('  engine errors:', out.engineErrors);

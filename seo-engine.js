@@ -523,7 +523,9 @@ async function auditOne(raw, prefetchedHtml){
   const links=[...new Set(anchors.map(a=>a.url))];
   const bytes=(typeof TextEncoder!=='undefined')?new TextEncoder().encode(html).length:html.length;
   const dates=pageDates(doc, ld, url, _nowMs());
-  const nap=napSignals(doc, doc.body?textBlocks(doc.body).join('\n'):'', ld); // whole page incl. header/footer, where NAP lives
+  const pageText=doc.body?textBlocks(doc.body).join('\n'):''; // whole page incl. header/footer (NAP, claims live there)
+  const nap=napSignals(doc, pageText, ld);
+  const yClaims=yearClaims(pageText); yClaims.founded.forEach(f=>{ f.url=url; });
   const claims=countClaims(mainText);
   const h1Glue=h1Glued(h1[0]);
   const smsTel=smsLabelTelLinks(doc);
@@ -619,6 +621,9 @@ async function auditOne(raw, prefetchedHtml){
   checks.push(Object.assign({cat:CONTENT}, genericH1Check(h1[0]&&h1[0].textContent)));
   checks.push(Object.assign({cat:CONTENT}, descEqualsTitleCheck(title, desc)));
   checks.push(Object.assign({cat:CONTENT}, genericAnchorCheck(anchors)));
+  checks.push(Object.assign({cat:CONTENT}, staleClaimsCheck(yClaims, null)));
+  checks.push(Object.assign({cat:CONTENT}, placeholderCheck(mainText)));
+  const privacy=defaultPrivacyCheck(url, mainText); if(privacy) checks.push(Object.assign({cat:CONTENT}, privacy));
   add(PERF,'Limited render-blocking scripts',3, blocking<=3?'pass':'warn', blocking+' blocking script(s) in head','Scripts loaded the wrong way make visitors stare at a blank screen longer before your page appears.','Add async or defer to non-critical head scripts.');
 
   // ---- AI SEARCH / ANSWER ENGINES ----
@@ -655,6 +660,8 @@ async function auditOne(raw, prefetchedHtml){
   Object.defineProperty(result,'_html',{value:html,enumerable:false,writable:true,configurable:true});
   Object.defineProperty(result,'_anchors',{value:anchors,enumerable:false,writable:true,configurable:true});
   Object.defineProperty(result,'_assets',{value:assets,enumerable:false,writable:true,configurable:true});
+  Object.defineProperty(result,'_yearClaims',{value:yClaims,enumerable:false,writable:true,configurable:true});
+  Object.defineProperty(result,'_pageText',{value:pageText,enumerable:false,writable:true,configurable:true});
   return result;
 }
 
@@ -1279,6 +1286,114 @@ function onPageLinkFindings(ok){
   return out;
 }
 
+// ---------- Phase 4 — content ----------
+const nowYear=()=>new Date(_nowMs()).getUTCFullYear();
+// Years-in-business statements: founding years ("since 1973", "established 1973", "est. 1973") and durations
+// ("51 years", "for 30 years", "over 20 years of experience"). Each with its snippet.
+function yearClaims(text){
+  const out={ founded:[], years:[] }; const t=String(text); let m;
+  const reF=/\b(since|established(?:\s+in)?|founded(?:\s+in)?|est\.?|serving\s+\w+\s+since|in\s+business\s+since)\s+((?:19|20)\d{2})\b/gi;
+  while((m=reF.exec(t))) out.founded.push({ year:+m[2], snippet:snip(t.slice(Math.max(0,m.index-40), m.index+m[0].length+40),120) });
+  const reY=/\b(over|more than|nearly|almost|for)?\s*(\d{1,3})\+?\s+years?\b(?!\s+old)/gi;
+  while((m=reY.exec(t))){ const n=+m[2]; const ctx=t.slice(Math.max(0,m.index-60), m.index+m[0].length+60);
+    if(n<3||n>150) continue;
+    if(!/(experience|in business|serving|family|owned|operat|trusted|company|since|history|years? of|providing|helping)/i.test(ctx)) continue;
+    out.years.push({ n, atLeast:/over|more than/i.test(m[1]||''), snippet:snip(ctx,130) }); }
+  return out;
+}
+function staleClaimsCheck(pageClaims, siteFounded){
+  const founded=siteFounded||(pageClaims.founded[0]&&pageClaims.founded[0]);
+  if(!pageClaims.years.length && !pageClaims.founded.length) return { label:'Years-in-business claims current', points:0, status:'info', detail:'No years-in-business claims', evidence:[], why:'', fix:'' };
+  if(!founded||!pageClaims.years.length) return { label:'Years-in-business claims current', points:0, status:'info', detail:'Claims found but nothing to check them against', evidence:pageClaims.years.concat(pageClaims.founded).slice(0,2).map(c=>({ snippet:c.snippet })), why:'', fix:'' };
+  const actual=nowYear()-founded.year;
+  const bad=pageClaims.years.filter(c=>c.atLeast?c.n>actual+1:Math.abs(c.n-actual)>1);
+  return { label:'Years-in-business claims current', points:3, status:bad.length?'fail':'pass',
+    detail:bad.length?('Says "'+bad[0].n+' years" but founded '+founded.year+' = '+actual+' years in '+nowYear()):('Year claims match founding in '+founded.year),
+    evidence:bad.length?[{ snippet:bad[0].snippet },{ url:founded.url, snippet:founded.snippet }]:[],
+    why:'A hard-coded "51 years" that no longer matches "since 1973" tells visitors (and AI) the site is not maintained.',
+    fix:'Say "since '+founded.year+'" instead of a year count — it never goes stale.' };
+}
+const RE_PLACEHOLDER=/\b(lorem ipsum|dolor sit amet|coming soon|sample page|hello world!?|just another wordpress site|this is an example page|your (content|text) goes here|insert (your )?text here|edit this text|add your (content|text) here)\b/i;
+function placeholderCheck(text){
+  const m=String(text).match(RE_PLACEHOLDER);
+  return { label:'No placeholder text', points:5, status:m?'fail':'pass', detail:m?('Contains "'+m[0]+'"'):'No template / placeholder text',
+    evidence:m?[{ snippet:snip(String(text).slice(Math.max(0,m.index-50), m.index+m[0].length+50),130) }]:[],
+    why:'Leftover template text ("lorem ipsum", "sample page", "coming soon") looks abandoned to visitors and low-quality to Google.', fix:'Replace or remove the placeholder text.' };
+}
+function defaultPrivacyCheck(url, text){
+  if(!/privacy/i.test(url)) return null;
+  const m=String(text).match(/Suggested text:|When visitors leave comments on the site/i);
+  return { label:'Real privacy policy (not the WordPress default)', points:3, status:m?'fail':'pass', detail:m?'The WordPress sample privacy policy is still published':'Custom privacy policy',
+    evidence:m?[{ snippet:snip(String(text).slice(Math.max(0,m.index-30), m.index+140),160) }]:[],
+    why:'The default WordPress policy (with "Suggested text:" notes) describes comment cookies, not your business — it is not a valid policy for the tracking you run.',
+    fix:'Replace it with a policy that covers the forms, analytics, pixels and call tracking the site actually uses.' };
+}
+// Hours statements: round-the-clock claims and specific opening times.
+const RE_24_7=/\b(24\s*\/\s*7|24\/7\/365|24 hours a day|24-hour|24 hour|around the clock|never close[sd]?|open 24)\b/i;
+const RE_HOURS=/\b(mon(?:day)?|tue(?:s(?:day)?)?|wed(?:nesday)?|thu(?:rs(?:day)?)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?)\b[^.\n]{0,25}?\b\d{1,2}(?::\d{2})?\s*(?:am|pm|a\.m\.|p\.m\.)\s*(?:-|–|to)\s*\d{1,2}(?::\d{2})?\s*(?:am|pm|a\.m\.|p\.m\.)/i;
+function contentFreshnessFindings(ok){
+  const out=[];
+  const posts=ok.filter(p=>p.pageType==='blog'&&p.datePublished);
+  const days={}; posts.forEach(p=>{ const d=String(p.datePublished).slice(0,10); (days[d]=days[d]||[]).push(p.url); });
+  const one=posts.length>=3&&Object.keys(days).length===1;
+  out.push(finding('freshness','Blog posts have their own dates',20,one?'fail':posts.length>=3?'pass':'info',
+    one?('All '+posts.length+' blog posts are dated '+Object.keys(days)[0]):posts.length>=3?(posts.length+' posts across '+Object.keys(days).length+' dates'):'Fewer than 3 dated blog posts',
+    one?posts.slice(0,5).map(p=>({ url:p.url, snippet:'datePublished '+String(p.datePublished).slice(0,10) })):[],
+    'Publish posts over time with their real dates — a batch dropped in on one day reads as imported filler.'));
+  const home=ok.find(p=>p.pageType==='home')||ok[0];
+  const txt=home&&home._html?home._html.replace(/<[^>]+>/g,' '):'';
+  const cm=[...txt.matchAll(/(?:©|&copy;|copyright)\s*(?:(?:19|20)\d{2}\s*[-–]\s*)?((?:19|20)\d{2})/gi)].map(m=>({ y:+m[1], s:snip(m[0],60) }));
+  if(cm.length){ const c=cm.sort((a,b)=>b.y-a.y)[0], old=c.y<nowYear();
+    out.push(finding('freshness','Copyright year current',10,old?'warn':'pass',old?('Footer says '+c.y+' in '+nowYear()):('Footer year '+c.y),old?[{ url:home.url, snippet:c.s }]:[],'Update the footer year (or print it automatically).')); }
+  else out.push(finding('freshness','Copyright year current',0,'info','No copyright year found',[],''));
+  return out;
+}
+// Contradictions across pages (feeds duplication): arrival times, hours, years in business.
+function contradictionFindings(ok){
+  const out=[];
+  // Arrival times: only statements about arriving ("reached in", "arrive within", "response time"), compared within
+  // the same scope — "most metro calls in 20–40" and "outer communities in 40–60" are two promises, not a clash;
+  // "a lockout takes 5–15 minutes" is a job duration, not an arrival time.
+  const eta=[];
+  ok.filter(p=>p.pageType!=='location'&&p.pageType!=='utility').forEach(p=>{ const t=(p._blocks||[]).join('\n'); let m; const re=/\b(\d{1,3})\s*(?:-|–|to)\s*(\d{1,3})\s*(?:min|minutes)\b/gi;
+    while((m=re.exec(t))){ const before=t.slice(Math.max(0,m.index-70), m.index);
+      if(!/(reach|arriv|respon|get to (you|me)|on scene|on-scene|\beta\b|there (in|within)|dispatch(ed)? (in|within))/i.test(before)) continue;
+      if(/(take|takes|resolve|opened|done|finish|complete|install|last)/i.test(before.slice(-30))) continue;
+      const scope=/(outer|outlying|rural|surrounding|farther|further|outside)/i.test(before.slice(-45))?'outer':'core';
+      eta.push({ url:p.url, scope, range:m[1]+'–'+m[2], snippet:snip(t.slice(Math.max(0,m.index-60), m.index+m[0].length+30),120) }); } });
+  const byScope={}; eta.forEach(e=>{ (byScope[e.scope]=byScope[e.scope]||new Set()).add(e.range); });
+  const clash=Object.keys(byScope).filter(k=>byScope[k].size>1);
+  const clashRanges=clash.flatMap(k=>[...byScope[k]]);
+  out.push(finding('duplication','Consistent arrival-time claims',6,clash.length?'fail':'pass',
+    clash.length?('Pages promise '+clashRanges.slice(0,4).join(' / ')+' minutes for the same area'):eta.length?('Arrival times stated consistently ('+Object.keys(byScope).map(k=>[...byScope[k]].join('/')+' min '+(k==='outer'?'outer area':'core area')).join('; ')+')'):'No arrival-time claims',
+    clash.length?clashRanges.slice(0,4).map(r=>{ const e=eta.find(x=>x.range===r&&clash.includes(x.scope)); return { url:e.url, snippet:e.snippet }; }):[],
+    'Use one arrival-time promise per area, the same on every page (per-town times belong on the town pages).'));
+  // Hours: a 24/7 claim clashes with set hours — unless the set hours are explicitly for the office / shop / yard.
+  const h24=[], hrs=[];
+  // Blog posts talk about other businesses (impound lots, dealers), so they are not the business's own hours.
+  ok.filter(p=>p.pageType!=='blog').forEach(p=>{ const t=(p._blocks||[]).join('\n'); const a=t.match(RE_24_7);
+    if(a) h24.push({ url:p.url, snippet:snip(t.slice(Math.max(0,a.index-50), a.index+a[0].length+40),110) });
+    const re=new RegExp(RE_HOURS.source,'gi'); let b;
+    while((b=re.exec(t))){ const before=t.slice(Math.max(0,b.index-60), b.index);
+      if(/(office|shop|yard|lobby|repair|service department|parts|store|showroom|garage|counter|pick-?up|business hours for)/i.test(before)) continue;
+      hrs.push({ url:p.url, snippet:snip(t.slice(Math.max(0,b.index-40), b.index+b[0].length),110) }); break; } });
+  const conflict=h24.length&&hrs.length;
+  out.push(finding('duplication','Consistent hours claims',6,conflict?'fail':'pass',
+    conflict?(h24.length+' page'+(h24.length===1?' says':'s say')+' 24/7, '+hrs.length+' list'+(hrs.length===1?'s':'')+' set hours'):(h24.length?'24/7 stated consistently':hrs.length?'Set hours stated consistently':'No hours claims'),
+    conflict?[h24[0],hrs[0]].concat(h24.slice(1,2),hrs.slice(1,2)):[],
+    'Say which service runs 24/7 and which keeps office hours ("24/7 towing · shop open Mon–Fri 8–5") — the same way on every page.',
+    { claims24_7:h24.map(x=>x.url) }));
+  const yc=ok.map(p=>({ p, c:p._yearClaims||{founded:[],years:[]} }));
+  const fy=[...new Set(yc.flatMap(x=>x.c.founded.map(f=>f.year)))], yn=[...new Set(yc.flatMap(x=>x.c.years.filter(y=>!y.atLeast).map(y=>y.n)))];
+  const yConf=fy.length>1||yn.length>1;
+  const yev=[]; if(fy.length>1) fy.slice(0,3).forEach(y=>{ const x=yc.find(z=>z.c.founded.some(f=>f.year===y)); yev.push({ url:x.p.url, snippet:x.c.founded.find(f=>f.year===y).snippet }); });
+  if(yn.length>1) yn.slice(0,3).forEach(n=>{ const x=yc.find(z=>z.c.years.some(f=>f.n===n)); yev.push({ url:x.p.url, snippet:x.c.years.find(f=>f.n===n).snippet }); });
+  out.push(finding('duplication','Consistent years-in-business claims',6,yConf?'fail':'pass',
+    yConf?((fy.length>1?'Founding years '+fy.join(' / '):'')+(fy.length>1&&yn.length>1?' · ':'')+(yn.length>1?'Year counts '+yn.join(' / '):'')):'Years in business stated consistently',
+    yev,'Pick one founding year and use it everywhere ("since 1973").'));
+  return out;
+}
+
 // Link graph facts per page: click depth from the homepage (BFS over audited pages' links), inlink count and the
 // anchor texts used; plus the full redirect chain for every redirecting URL met (hops, loops, final URL).
 function crawlGraph(pages, base, redirected, keyOf){
@@ -1396,6 +1511,9 @@ async function crawlSiteRun(root, opts){
   // image checks.
   await measureAssets([home].concat(money, ok).filter((p,i,a)=>p&&a.indexOf(p)===i), 400);
   // Page checks that need the whole crawl, then page scores.
+  // The site's founding year (earliest one stated anywhere) checks every page's "X years" claims.
+  const allFounded=ok.flatMap(p=>(p._yearClaims||{founded:[]}).founded).sort((a,b)=>a.year-b.year);
+  ok.forEach(p=>{ if(p._yearClaims) setPageCheck(p,'Years-in-business claims current',staleClaimsCheck(p._yearClaims, allFounded[0]||null)); });
   ok.forEach(p=>{ setPageCheck(p,'Title quality',titleQualityCheck(p.title,p.url,p.pageType)); setPageCheck(p,'Soft 404',soft404Check(p.pageType,p.title,p.h1text,p.uniqueWords!=null?p.uniqueWords:p.mainWords)); applyGates(p); p._score=score(p); });
   const scored=ok.filter(p=>p._score&&p._score.score!=null);
   const pageAverage=scored.length?Math.round(scored.reduce((a,p)=>a+p._score.score,0)/scored.length):null;
@@ -1420,6 +1538,8 @@ async function crawlSiteRun(root, opts){
   const siteFindings=[];
   try{ siteFindings.push(...await technicalFindings(ctx)); }catch(e){}
   siteFindings.push(...onPageLinkFindings(ok));
+  siteFindings.push(...contentFreshnessFindings(ok));
+  siteFindings.push(...contradictionFindings(ok));
   phase('scoring');
   const technical=technicalScore(aux.checks, speedRuns);
   const coverage=coverageScore(ok);
@@ -1828,7 +1948,7 @@ const API={ BRAND, PROXIES, TAGS, AI_BOTS, AISEARCH, PROJECT_FIXES, sleep, esc, 
   // building blocks, exposed for tests
   classifyPage, mainContent, localEntities, countClaims, h1Glued, smsLabelTelLinks, businessSchema, ldNodes, AI_SEARCH_BOTS, AI_TRAINING_BOTS,
   // individual checks, for unit tests
-  _x:{ soft404Check, viewportZoomCheck, headingHierarchyCheck, imageCheck, weightCheck, pageAssets, robotsRulesFor, robotsAllowed, chainOf, technicalFindings, applyDeductions, titleQualityCheck, titlePixels, genericH1Check, descEqualsTitleCheck, genericAnchorCheck, onPageLinkFindings } };
+  _x:{ soft404Check, viewportZoomCheck, headingHierarchyCheck, imageCheck, weightCheck, pageAssets, robotsRulesFor, robotsAllowed, chainOf, technicalFindings, applyDeductions, titleQualityCheck, titlePixels, genericH1Check, descEqualsTitleCheck, genericAnchorCheck, onPageLinkFindings, yearClaims, staleClaimsCheck, placeholderCheck, defaultPrivacyCheck, contentFreshnessFindings, contradictionFindings } };
 root.SEO=API;
 if(typeof module!=="undefined"&&module.exports) module.exports=API;
 })(typeof window!=="undefined"?window:globalThis);

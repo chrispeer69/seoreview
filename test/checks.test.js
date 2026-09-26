@@ -125,3 +125,54 @@ test('Link health: weakly linked money pages deduct 1 each; internal nofollow wa
   assert.strictEqual(clean.find(x => x.label === 'Money pages well linked').status, 'pass');
   assert.strictEqual(clean.find(x => x.label === 'No internal nofollow links').status, 'pass');
 });
+
+// ---------------- Phase 4 — content ----------------
+test('Stale years claim: "51 years" + "since 1973" fails in 2026; a matching claim passes; no claims = info', () => {
+  const { _x } = engine();
+  const bad = _x.yearClaims('Family owned and operated since 1973. 51 Years of Experience serving Columbus.');
+  bad.founded.forEach(f => { f.url = 'https://t/'; });
+  const c = _x.staleClaimsCheck(bad, null);
+  assert.ok(c.status === 'fail' || new Date().getUTCFullYear() - 1973 - 51 <= 1, c.detail);
+  const goodYears = new Date().getUTCFullYear() - 1973;
+  const good = _x.yearClaims('Since 1973 — ' + goodYears + ' years in business.'); good.founded.forEach(f => { f.url = 'https://t/'; });
+  assert.strictEqual(_x.staleClaimsCheck(good, null).status, 'pass');
+  assert.strictEqual(_x.staleClaimsCheck(_x.yearClaims('We tow cars.'), null).status, 'info');
+});
+
+test('Placeholder text: "Lorem ipsum" fails; real copy passes', () => {
+  const { _x } = engine();
+  assert.strictEqual(_x.placeholderCheck('Lorem ipsum dolor sit amet, consectetur.').status, 'fail');
+  assert.strictEqual(_x.placeholderCheck('We tow cars across Columbus every day.').status, 'pass');
+});
+
+test('Default WordPress privacy policy fails on the privacy page only', () => {
+  const { _x } = engine();
+  assert.strictEqual(_x.defaultPrivacyCheck('https://t/privacy-policy/', 'Suggested text: Our website address is: https://t.').status, 'fail');
+  assert.strictEqual(_x.defaultPrivacyCheck('https://t/privacy-policy/', 'We collect your name and phone when you request a tow.').status, 'pass');
+  assert.strictEqual(_x.defaultPrivacyCheck('https://t/about/', 'Suggested text:'), null);
+});
+
+test('Blog dates: all posts on one day fail; spread dates pass. Copyright year behind warns', () => {
+  const { _x } = engine();
+  const mk = (d, i) => ({ url: 'https://t/b' + i, pageType: 'blog', datePublished: d });
+  const one = _x.contentFreshnessFindings([0, 1, 2].map(i => mk('2018-01-10T00:00:00Z', i)).concat([{ url: 'https://t/', pageType: 'home', _html: '<footer>© 2019 Co</footer>' }]));
+  assert.strictEqual(one.find(f => f.label === 'Blog posts have their own dates').status, 'fail');
+  assert.strictEqual(one.find(f => f.label === 'Copyright year current').status, 'warn');
+  const spread = _x.contentFreshnessFindings(['2025-01-01', '2025-03-01', '2025-06-01'].map(mk).concat([{ url: 'https://t/', pageType: 'home', _html: '<footer>© ' + new Date().getUTCFullYear() + ' Co</footer>' }]));
+  assert.strictEqual(spread.find(f => f.label === 'Blog posts have their own dates').status, 'pass');
+  assert.strictEqual(spread.find(f => f.label === 'Copyright year current').status, 'pass');
+});
+
+test('Contradictions: 20–40 vs 30–60 min for the same area fails; metro vs outer and job durations pass; office hours next to 24/7 pass', () => {
+  const { _x } = engine();
+  const pg = (u, t, type) => ({ url: u, pageType: type || 'service', _blocks: [t] });
+  const clash = _x.contradictionFindings([pg('https://t/a', 'Most calls are reached in 20–40 minutes.'), pg('https://t/b', 'We arrive in 30–60 minutes.')]);
+  const eta = clash.find(f => f.label === 'Consistent arrival-time claims');
+  assert.strictEqual(eta.status, 'fail'); assert.strictEqual(eta.evidence.length, 2);
+  const fine = _x.contradictionFindings([pg('https://t/a', 'Most metro calls are reached in 20–40 minutes and outer communities in 40–60 minutes. A lockout takes 5–15 minutes.'),
+    pg('https://t/c', 'Dispatch runs 24/7; the office is open Monday to Friday, 8 AM to 6 PM.')]);
+  assert.strictEqual(fine.find(f => f.label === 'Consistent arrival-time claims').status, 'pass');
+  assert.strictEqual(fine.find(f => f.label === 'Consistent hours claims').status, 'pass');
+  const hrs = _x.contradictionFindings([pg('https://t/a', 'Open 24/7 for towing.'), pg('https://t/b', 'Hours: Monday - Friday 9 AM - 5 PM')]);
+  assert.strictEqual(hrs.find(f => f.label === 'Consistent hours claims').status, 'fail');
+});
