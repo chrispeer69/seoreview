@@ -291,7 +291,7 @@ function firstSentence(str){const m=String(str||'').match(/^[^.]*\./);return (m?
 
 function impactOf(points){ return points>=8?{lbl:'High impact',col:'#dc2626'} : points>=4?{lbl:'Medium impact',col:'#f59e0b'} : {lbl:'Low impact',col:'#64748b'}; }
 
-const SEV = { fail:{tag:'Critical',color:'#dc2626',sevColor:'#dc2626'}, warn:{tag:'Improve',color:'#f59e0b',sevColor:'#f59e0b'}, pass:{color:'#16a34a'}, info:{color:'#94a3b8'} };
+const SEV = { fail:{tag:'Critical',color:'#dc2626',sevColor:'#dc2626'}, warn:{tag:'Improve',color:'#f59e0b',sevColor:'#f59e0b'}, pass:{color:'#16a34a'}, info:{color:'#94a3b8'}, na:{color:'#cbd5e1'} };
 
 // Quality indicator for saved tiles — 90+ green, 80–89 tan, 70–79 orange, ≤69 red
 function qualityColor(score){
@@ -384,7 +384,7 @@ const PHASE_TEXT={ discovering:'finding pages (sitemap + links)', links:'checkin
 async function crawlOne(root, i, n, psi){
   try{
     return await crawlSite(root,{ max:150, concurrency:6, render:(window.__RENDER?renderPage:null), speed:psi.on, psiKey:psi.key, industry:industryOf(),
-      places:(q)=>fetch('/api/places?q='+encodeURIComponent(q)).then(r=>r.ok?r.json():null).catch(()=>null),
+      places:(q,o)=>fetch('/api/places?q='+encodeURIComponent(q||'')+'&phone='+encodeURIComponent((o&&o.phone)||'')+'&address='+encodeURIComponent((o&&o.address)||'')).then(r=>r.ok?r.json():null).catch(()=>null),
       onPhase:(ph)=>{ if(PHASE_TEXT[ph]) setProgress(i,n,PHASE_TEXT[ph]); },
       onProgress:(d,t)=>setProgress(i,n,'crawling pages ('+d+'/'+t+')') });
   }catch(e){ return { root, error:(e&&e.message)||'crawl failed' }; }
@@ -554,7 +554,7 @@ function findRow(c){
   const col=SEV[c.status].color;
   const showFix = c.status!=='pass'&&c.fix;
   return `<div class="findRow"><span class="dot" style="background:${col}"></span><div>
-    <div class="findLabel">${esc(c.label)} <span class="muted">— ${esc(c.detail)}</span></div>
+    <div class="findLabel">${esc((c.status==='fail'||c.status==='warn')?(c.issue||SEO.problemTitle(c)):c.label)} <span class="muted">— ${esc(c.detail)}</span></div>
     ${showFix?`<div class="findFix"><strong>Fix:</strong> ${esc(c.fix)}</div>`:''}</div></div>`;
 }
 function cardHtml(r){
@@ -587,7 +587,7 @@ function cardHtml(r){
 // "Sitemap: 87 pages · 30 service · 35 location · newest content 2026-09-20" — from one sitemap read, no crawl.
 function sitemapLine(r){ const s=r&&r.sitemap; if(!s) return '';
   return '<div class="muted" style="font-size:13px;margin:4px 0 6px">'+(s.found?'Sitemap: <b>'+s.total+'</b> pages · <b>'+s.service+'</b> service · <b>'+s.location+'</b> location · newest content <b>'+esc(s.newest||'not dated')+'</b>':'No XML sitemap found')+'</div>'; }
-function findRowBrief(c){ return `<div class="findRow"><span class="dot" style="background:${SEV[c.status].color}"></span><div><div class="findLabel">${esc(c.label)} <span class="muted">— ${esc(c.detail)}</span></div></div></div>`; }
+function findRowBrief(c){ return `<div class="findRow"><span class="dot" style="background:${SEV[c.status].color}"></span><div><div class="findLabel">${esc(c.issue||SEO.problemTitle(c))} <span class="muted">— ${esc(c.detail)}</span></div></div></div>`; }
 function renderResults(){
   document.getElementById('results').innerHTML=reports.map(cardHtml).join('');
   const row=document.getElementById('actionRow');
@@ -1134,7 +1134,7 @@ function issueCardHtml(c){
       <span class="sevTag" style="background:${s.sevColor}1a;color:${s.sevColor}">${s.tag}</span>
       <span class="sevTag" style="background:${im.col}1a;color:${im.col}">${im.lbl}</span>
     </div>
-    <h4>${esc(c.label)}</h4>
+    <h4>${esc(c.issue||SEO.problemTitle(c))}</h4>
     <div class="why"><strong>Right now:</strong> ${esc(c.detail)}</div>
     <div class="why"><strong>Why it matters:</strong> ${esc(c.why)}</div>
     <div class="fix"><strong>How to fix:</strong> ${esc(c.fix)}</div>
@@ -1173,7 +1173,7 @@ function reportSection(r){
     </div>
     <p class="execText">${esc(sum)}</p>
     ${top.length?`<div class="execLabel">Top ${top.length} ${top.length>1?'priorities':'priority'}</div>
-      <ol class="execList">${top.map(c=>`<li><strong>${esc(c.label)}</strong> — ${esc(firstSentence(c.why))}</li>`).join('')}</ol>`:''}
+      <ol class="execList">${top.map(c=>`<li><strong>${esc(c.issue||SEO.problemTitle(c))}</strong> — ${esc(firstSentence(c.why))}</li>`).join('')}</ol>`:''}
   </section>`;
 
   const catBreakdown = `<div class="rH2">Category Breakdown</div>
@@ -1341,7 +1341,7 @@ function renderReport(){
           <span style="font-weight:800;color:${x.color}">${x.grade} · ${x.overall}/100</span>
         </div>
         <div class="muted" style="font-size:12px;margin:3px 0 6px">Mobile ${x.mob==null?'—':x.mob} · Desktop ${x.dsk==null?'—':x.dsk} · Local SEO ${x.local==null?'—':x.local+'%'} · AI Search ${x.ai==null?'—':x.ai+'%'} · ${x.crit} critical</div>
-        ${issues.length?`<div style="font-size:13px;color:#0f172a"><strong>Top fixes:</strong> ${issues.map(c=>esc(c.label)).join(' · ')}</div>`:'<div style="font-size:13px;color:#16a34a">No major issues found.</div>'}
+        ${issues.length?`<div style="font-size:13px;color:#0f172a"><strong>Top fixes:</strong> ${issues.map(c=>esc(c.issue||SEO.problemTitle(c))).join(' · ')}</div>`:'<div style="font-size:13px;color:#16a34a">No major issues found.</div>'}
       </div>`;
     }).join('')}`;
 

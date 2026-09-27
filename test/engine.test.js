@@ -93,7 +93,7 @@ test('Unique content: linear 100->500 words for service pages, exempt for utilit
   const c = check(await SEO.auditOne(svc), 'Unique content');
   assert.strictEqual(c.points, 25); assert.ok(Math.abs(c.frac - 0.5) < 0.02, 'frac ' + c.frac);
   const u = check(await SEO.auditOne(util), 'Unique content');
-  assert.strictEqual(u.status, 'info'); assert.strictEqual(u.points, 0);
+  assert.strictEqual(u.status, 'na'); assert.strictEqual(u.points, 0);
 });
 
 test('Gates: presence points lowered; no title -10, no HTTPS -20, noindex on a service page -20', async () => {

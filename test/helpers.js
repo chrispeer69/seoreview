@@ -17,6 +17,7 @@ function engine(routes) {
     const u = String(input);
     if (u.startsWith('/api/proxy')) {
       const t = new URL(u, 'http://x').searchParams.get('url'); const r = routes[t];
+      if (r && r.delays && r.delays.length) await new Promise(res => setTimeout(res, r.delays.shift())); // per-call latency
       return r && (r.status || 200) === 200 ? resp(200, r.body || '', { 'x-final-url': t }) : resp((r && r.status) || 404, '');
     }
     if (u === '/api/linkcheck') {

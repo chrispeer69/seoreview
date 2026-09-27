@@ -122,10 +122,14 @@ function pgStore(pool) {
 
 // ---------- engine result -> contract body ----------
 const SEV_RANK = { critical: 0, serious: 1, moderate: 2, minor: 3 };
+// Severity follows the engine's shortfall severity (points actually lost, or the check's own band):
+// Critical -> critical, High -> serious, Medium -> moderate, Low -> minor.
+const SEV_MAP = { Critical: 'critical', High: 'serious', Medium: 'moderate', Low: 'minor' };
 function severityOf(c) {
-  if (c.status === 'fail') return (c.points || 0) >= 6 ? 'critical' : 'serious';
-  if (c.status === 'warn') return (c.points || 0) >= 4 ? 'moderate' : 'minor';
-  return null;
+  if (c.status !== 'fail' && c.status !== 'warn') return null;
+  if (c.severity && SEV_MAP[c.severity]) return SEV_MAP[c.severity];
+  const w = c.frac != null ? c.frac : c.status === 'warn' ? 0.5 : 0, lost = (c.points || 0) * (1 - w) + (c.penalty || 0);
+  return lost >= 8 ? 'critical' : lost >= 4 ? 'serious' : lost >= 1.5 ? 'moderate' : 'minor';
 }
 const codeOf = label => String(label || '').toLowerCase().replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
 const gradeOf = s => (s == null ? null : s >= 90 ? 'A' : s >= 80 ? 'B' : s >= 70 ? 'C' : s >= 55 ? 'D' : 'F');
@@ -151,7 +155,7 @@ function summarize(res) {
       a.pages.add(p.url);
       if (detail) a.details[detail] = (a.details[detail] || 0) + 1;
       if (SEV_RANK[sev] < SEV_RANK[a.severity]) a.severity = sev;
-      const out = { code, severity: sev, category: c.cat, check: c.label, message: detail ? `${c.label}: ${detail}` : c.label };
+      const out = { code, severity: sev, category: c.cat, check: c.label, problem: c.issue || c.label, message: c.issue || (detail ? `${c.label}: ${detail}` : c.label) };
       if (c.fix) out.fix = c.fix;
       return out;
     }).filter(Boolean).sort((a, b) => SEV_RANK[a.severity] - SEV_RANK[b.severity]);
@@ -159,7 +163,7 @@ function summarize(res) {
       words: p.words == null ? null : p.words, page_type: p.pageType || null, unique_words: p.uniqueWords == null ? null : p.uniqueWords, response_ms: p.loadMs == null ? null : p.loadMs, js_rendered: !!p.jsShell, issues };
   }).sort((a, b) => ((a.score == null ? 101 : a.score) - (b.score == null ? 101 : b.score)) || (b.issues.length - a.issues.length));
 
-  const failed = all.filter(p => p.error).map(p => ({ url: p.url, path: relPath(p.url), title: null, grade: null, score: null, error: String(p.error),
+  const failed = all.filter(p => p.error).map(p => ({ url: p.url, path: relPath(p.url), title: null, grade: null, score: null, error: String(p.error), http_status: p.status || null,
     issues: [{ code: 'fetch_failed', severity: 'serious', message: 'Page could not be fetched — ' + String(p.error) }] }));
 
   // Site-wide findings only a crawl can see (duplicates etc.). Thin / JS-only / missing-H1 are already per-page checks.
@@ -253,7 +257,7 @@ function summarize(res) {
   const server_speed = !pf ? null : {
     avg_ms: pf.avg, median_ms: pf.median, max_ms: pf.max, pages_measured: pf.count,
     verdict: pf.avg < 800 ? 'fast' : pf.avg < 1800 ? 'moderate' : 'slow',
-    slowest: (pf.slow || []).slice(0, 5).map(o => ({ url: o.url, ms: o.ms })),
+    slowest: (pf.slow || []).slice(0, 5).map(o => ({ url: o.url, ms: o.ms, retest_ms: o.retestMs || null, slow_under_crawl_load_only: !!o.loadOnly })),
   };
   const cov = res.coverage || {};
   return {

@@ -10,7 +10,7 @@ test('Soft 404: "page not found" or <50 words fails; a real service page passes;
   assert.strictEqual(_x.soft404Check('service', 'Page Not Found | Co', '', 400).status, 'fail');
   assert.strictEqual(_x.soft404Check('other', 'Gallery', 'Gallery', 20).status, 'fail');
   assert.strictEqual(_x.soft404Check('service', 'Flatbed Towing | Co', 'Flatbed Towing', 600).status, 'pass');
-  assert.strictEqual(_x.soft404Check('home', 'Home', '', 10).status, 'info');
+  assert.strictEqual(_x.soft404Check('home', 'Home', '', 10).status, 'na');
 });
 
 test('Viewport zoom: user-scalable=no / maximum-scale<2 warn; plain viewport passes', () => {
@@ -110,7 +110,7 @@ test('Generic anchors: "Read more" to a service page warns; descriptive anchor p
   const { _x } = engine();
   assert.strictEqual(_x.genericAnchorCheck([{ url: 'https://t/services/flatbed-towing', text: 'Read more', href: '/services/flatbed-towing' }]).status, 'warn');
   assert.strictEqual(_x.genericAnchorCheck([{ url: 'https://t/services/flatbed-towing', text: 'Flatbed towing', href: '/services/flatbed-towing' }]).status, 'pass');
-  assert.strictEqual(_x.genericAnchorCheck([{ url: 'https://t/blog/post', text: 'Read more', href: '/blog/post' }]).status, 'pass', 'blog links are not money pages');
+  assert.strictEqual(_x.genericAnchorCheck([{ url: 'https://t/blog/post', text: 'Read more', href: '/blog/post' }]).status, 'na', 'no links to money pages = N/A');
 });
 
 test('Link health: weakly linked money pages deduct 1 each; internal nofollow warns', () => {
@@ -136,7 +136,7 @@ test('Stale years claim: "51 years" + "since 1973" fails in 2026; a matching cla
   const goodYears = new Date().getUTCFullYear() - 1973;
   const good = _x.yearClaims('Since 1973 — ' + goodYears + ' years in business.'); good.founded.forEach(f => { f.url = 'https://t/'; });
   assert.strictEqual(_x.staleClaimsCheck(good, null).status, 'pass');
-  assert.strictEqual(_x.staleClaimsCheck(_x.yearClaims('We tow cars.'), null).status, 'info');
+  assert.strictEqual(_x.staleClaimsCheck(_x.yearClaims('We tow cars.'), null).status, 'na');
 });
 
 test('Placeholder text: "Lorem ipsum" fails; real copy passes', () => {
@@ -202,7 +202,7 @@ test('Click-to-call at the top: tel in header passes; tel only far down the page
   const { _x } = engine();
   assert.strictEqual(_x.callAboveFoldCheck(doc('<body><header><a href="tel:+16145550100">Call</a></header><p>' + words(900) + '</p></body>'), 'service').status, 'pass');
   assert.strictEqual(_x.callAboveFoldCheck(doc('<body><p>' + words(900) + '</p><a href="tel:+16145550100">Call</a></body>'), 'service').status, 'fail');
-  assert.strictEqual(_x.callAboveFoldCheck(doc('<body></body>'), 'blog').status, 'info');
+  assert.strictEqual(_x.callAboveFoldCheck(doc('<body></body>'), 'blog').status, 'na');
 });
 
 test('Local area code (info): 614 is local for Columbus, 740 is not', () => {
@@ -376,4 +376,65 @@ test('Thin location caps: <150 unique words caps at 70, <300 at 80; other page t
   assert.strictEqual(score(perfect({ pageType: 'service', uniqueWords: 120 })).score, 100);
   const low = score({ pageType: 'location', uniqueWords: 120, checks: [{ cat: 'x', label: 'a', points: 10, status: 'fail' }] });
   assert.strictEqual(low.score, 0, 'a cap never raises a score');
+});
+
+// ---------------- Live-report fixes ----------------
+test('GBP pick: several places — the one with the site phone wins; name match next; never blind', () => {
+  const { pickPlace } = require('../places');
+  const cands = [{ name: 'Columbus Towing Co', formatted_phone_number: '(614) 555-1111' }, { name: 'Roadside Towing & Recovery Inc', formatted_phone_number: '(740) 812-9489' }];
+  assert.strictEqual(pickPlace(cands, { phone: '740-812-9489', name: 'x' }).place.name, 'Roadside Towing & Recovery Inc');
+  assert.strictEqual(pickPlace(cands, { phone: '', name: 'Roadside Towing & Recovery Inc' }).matchedBy, 'name');
+  assert.strictEqual(pickPlace([], { phone: '1' }), null);
+});
+
+test('GBP query uses the business name + phone, never a service+city title', () => {
+  const SEO = engine();
+  assert.strictEqual(SEO.titleBrand('Towing Columbus OH | Roadside Towing & Recovery Inc'), 'Roadside Towing & Recovery Inc');
+  assert.strictEqual(SEO.titleBrand('Towing Columbus OH'), null, 'a title with no brand part gives no name');
+  const q = SEO.gbpQuery({ title: 'Towing Columbus OH', nap: { tel: ['(740) 812-9489'], streets: ['1620 harrisburg pike'], schema: { names: ['Roadside Towing & Recovery Inc'], phones: [], streets: [] } } });
+  same(q, { name: 'Roadside Towing & Recovery Inc', phone: '(740) 812-9489', address: '1620 harrisburg pike' });
+  assert.strictEqual(SEO.gbpQuery({ title: 'Towing Columbus OH', nap: { tel: [], streets: [], schema: { names: [], phones: [], streets: [] } } }).name, null);
+});
+
+test('Severity follows the shortfall, not the weight', () => {
+  const SEO = engine();
+  assert.strictEqual(SEO.checkSeverity({ status: 'warn', points: 2 }), 'Low');          // loses 1
+  assert.strictEqual(SEO.checkSeverity({ status: 'fail', points: 3 }), 'Medium');       // loses 3
+  assert.strictEqual(SEO.checkSeverity({ status: 'warn', points: 25, frac: 0.9 }), 'Medium'); // loses 2.5 of a heavy check
+  assert.strictEqual(SEO.checkSeverity({ status: 'fail', points: 3, penalty: 20 }), 'Critical');
+  assert.strictEqual(SEO.checkSeverity({ status: 'warn', points: 25, frac: 0.5, sev: 'High' }), 'High', 'explicit band wins');
+});
+
+test('Problem-state titles: JS weight, title length, inlinks, insurance', () => {
+  const SEO = engine(); const { _x } = SEO;
+  assert.strictEqual(_x.weightCheck(50000, { scripts: [], css: [], images: [], inlineJs: 0 }, { js: 697344, css: 0, img: 0, top: [] }).problem, 'JavaScript too heavy: 681 KB');
+  assert.strictEqual(SEO.problemTitle({ label: 'Title length optimal', status: 'warn', detail: '65 characters' }), 'Title too long: 65 chars');
+  assert.strictEqual(SEO.problemTitle({ label: 'Insurance mentioned', status: 'fail', detail: 'No mention of insurance' }), 'No insurance mention');
+  const f = _x.onPageLinkFindings([{ url: 'https://t/services/a', pageType: 'service', inlinks: 2, clickDepth: 1, _anchors: [] }]).find(x => x.label === 'Money pages well linked');
+  assert.match(f.evidence[0].snippet, /2 inlinks/); assert.match(SEO.problemTitle(f), /1 service\/location page has <3 internal links/);
+});
+
+test('Nothing to evaluate = N/A (not fail) and N/A is excluded from the score', async () => {
+  const u = 'https://t.example/services/towing';
+  const SEO = engine({ [u]: { body: page({ body: '<h1>Towing</h1><p>' + words(600) + '</p>' }) } });
+  const r = await SEO.auditOne(u);
+  ['Images have alt text', 'Images have dimensions', 'Image efficiency'].forEach(l => assert.strictEqual(r.checks.find(c => c.label === l).status, 'na', l));
+  const withImg = SEO.score(Object.assign({}, r, { checks: r.checks.map(c => c.label === 'Images have alt text' ? Object.assign({}, c, { status: 'fail' }) : c) }));
+  assert.ok(SEO.score(r).score > withImg.score, 'N/A does not cost points');
+});
+
+test('Slow pages are retested alone twice; fast retests flag "slow under crawl load only"', async () => {
+  const fast = engine({ 'https://t/a': { body: page({ body: words(80) }) } });
+  const p1 = { url: 'https://t/a', loadMs: 2600 }; await fast.retestSlowPages([p1]);
+  assert.strictEqual(p1.retestMs.length, 2); assert.strictEqual(p1.slowUnderLoadOnly, true);
+  const slow = engine({ 'https://t/b': { body: page({ body: words(80) }), delays: [2100, 2100] } });
+  const p2 = { url: 'https://t/b', loadMs: 2600 }; await slow.retestSlowPages([p2]);
+  assert.ok(p2.retestMs.every(ms => ms >= 2000)); assert.strictEqual(p2.slowUnderLoadOnly, false);
+});
+
+test('Citable facts evidence lists the missing facts', async () => {
+  const SEO = engine(); await SEO._x.loadIndustry('towing');
+  const c = SEO._x.citableFactsCheck('Open 24/7.', 'home', []);
+  same(c.evidence.map(e => e.snippet), ['missing: licence #', 'missing: service-area list', 'missing: pricing']);
+  assert.match(SEO.problemTitle(c), /Missing citable facts: licence #, service-area list, pricing/);
 });

@@ -353,9 +353,11 @@ function localEntities(text){
 const CONTENT_FULL={ blog:800 };
 function uniqueContentCheck(type, words, strippedAcrossSite){
   const why='Search engines and AI rank the words that are unique to this page — not the header, menus, footer and other text repeated on every page. Pages without enough of their own content rarely rank.';
-  if(type==='utility'||type==='archive') return {label:'Unique content',points:0,status:'info',detail:'Exempt ('+type+' page) · '+words+' unique words',why,fix:''};
+  if(type==='utility'||type==='archive') return {label:'Unique content',points:0,status:'na',detail:'Exempt ('+type+' page) · '+words+' unique words',why,fix:''};
   const full=CONTENT_FULL[type]||500, frac=Math.max(0,Math.min(1,(words-100)/(full-100)));
-  return {label:'Unique content',points:25,frac,status:frac>=1?'pass':frac<=0?'fail':'warn',
+  // Severity by words, not points: critical under 150, high under 300, medium under 500 (blog: low up to 800).
+  const sev=frac>=1?null:words<150?'Critical':words<300?'High':words<500?'Medium':'Low';
+  return {label:'Unique content',points:25,frac,sev,status:frac>=1?'pass':words<150?'fail':'warn',
     detail:words+' words unique to this page (full credit at '+full+'+'+(strippedAcrossSite?', site-wide boilerplate removed)':', header/nav/footer removed)'),
     why, fix:'Add genuinely useful, page-specific content — what the service involves, pricing factors, the areas and roads you cover, FAQs — aiming for '+full+'+ words that are not repeated on other pages.'};
 }
@@ -593,7 +595,7 @@ async function auditOne(raw, prefetchedHtml){
     h1.length===0?'Add a single visible <h1> with your main service + city.':'Keep one <h1> and demote the others to <h2>.');
   add(CONTENT,'Uses subheadings (H2)',3, h2.length>0?'pass':'warn',h2.length+' H2 tag(s)','Subheadings make the page easy to skim for customers and easy to understand for search engines and AI.','Break content into sections with descriptive H2 headings.');
   checks.push(Object.assign({cat:CONTENT}, uniqueContentCheck(pageType, mainWords, false)));
-  checks.push({cat:CONTENT,label:'Unique vs sibling pages',points:0,status:'info',detail:'Compared against the site\'s other pages in a whole-site crawl',why:'',fix:''});
+  checks.push({cat:CONTENT,label:'Unique vs sibling pages',points:0,status:'na',detail:'Compared against the site\'s other pages in a whole-site crawl',why:'',fix:''});
   if(pageType==='location') checks.push(Object.assign({cat:LOCAL}, localDetailCheck(entities, false)));
 
   add(TECH,'Served over HTTPS',3, ssl?'pass':'fail', ssl?'Secure':'Not secure','The padlock in the browser bar. Google ranks secure sites higher and browsers scare visitors away from sites without it.','Install an SSL certificate (free via Let\'s Encrypt or your host) and force HTTPS.');
@@ -617,17 +619,17 @@ async function auditOne(raw, prefetchedHtml){
     selfReview?'Remove aggregateRating / review from the LocalBusiness / Organization JSON-LD. Show your real Google reviews on your website — that’s what builds trust with visitors and AI.':'');
   add(LOCAL,'Click-to-call phone link',4, tel>0?'pass':'warn', tel>0?(tel+' tel: link(s)'):'None found','A tappable phone number turns a phone visitor into a phone call with one tap. Missing it quietly costs you leads.','Wrap the phone number in <a href="tel:+1...">.');
   const mapPage=pageType==='home'||pageType==='location'||/contact|about|location/i.test(url);
-  if(!mapPage) checks.push({cat:LOCAL,label:'Map / location reference',points:0,status:'info',detail:'Checked on the homepage, contact, about and location pages',why:'',fix:''});
+  if(!mapPage) checks.push({cat:LOCAL,label:'Map / location reference',points:0,status:'na',detail:'Checked on the homepage, contact, about and location pages',why:'',fix:''});
   else add(LOCAL,'Map / location reference',3, hasMap?'pass':'warn', hasMap?'Map or directions link found':'No map embed or directions link','A map and visible address prove to Google (and customers) exactly where you serve.','Embed a Google Map and show the full address (matching your Google Business Profile).');
 
   add(SOCIAL,'Open Graph tags',5, ogCount>=2?'pass':(ogCount===1?'warn':'fail'), ogCount+' of 3 core OG tags','Controls how your link looks when shared on Facebook, in texts, and on LinkedIn. A bare, ugly link looks unprofessional and gets ignored.','Add og:title, og:description, and og:image meta tags.');
   add(SOCIAL,'Twitter / X card',3, twCard?'pass':'warn', twCard?'Configured':'Missing','Controls the preview when your link is shared on X (Twitter).','Add <meta name="twitter:card" content="summary_large_image">.');
 
-  add(MEDIA,'Images have alt text',6, !imgs.length?'warn':(withAlt/imgs.length>=0.8?'pass':(withAlt/imgs.length>=0.4?'warn':'fail')),
-    imgs.length?(withAlt+' of '+imgs.length+' images have alt text'):'No images detected in HTML',
+  add(MEDIA,'Images have alt text',6, !imgs.length?'na':(withAlt/imgs.length>=0.8?'pass':(withAlt/imgs.length>=0.4?'warn':'fail')),
+    imgs.length?(withAlt+' of '+imgs.length+' images have alt text'):'N/A — no images in the HTML',
     'Alt text describes images for visually-impaired visitors and helps you show up in Google Images — a free spot to work in your service and city.',
     'Add descriptive alt text to every meaningful image (e.g. "tow truck in Columbus OH").');
-  add(MEDIA,'Images have dimensions',2, !imgs.length?'pass':(withDim/Math.max(1,imgs.length)>=0.6?'pass':'warn'),
+  add(MEDIA,'Images have dimensions',2, !imgs.length?'na':(withDim/Math.max(1,imgs.length)>=0.6?'pass':'warn'),
     imgs.length?(withDim+' of '+imgs.length+' images set width/height'):'n/a','Telling the browser each image size stops the page from jumping around as it loads (something Google measures and dislikes).','Add width and height attributes to images.');
 
   const assets=pageAssets(doc, url);
@@ -677,7 +679,7 @@ async function auditOne(raw, prefetchedHtml){
     title, h1text:(h1[0]&&h1[0].textContent||'').trim(), desc, words, jsShell, loadMs,
     bodySig:bodyText.slice(0,600).replace(/\s+/g,' ').toLowerCase().trim(),
     engineVersion:ENGINE_VERSION, pageType, mainWords, entities, links, datePublished:dates.published, dateModified:dates.modified,
-    nap, claims, h1Glue, smsTel, bytes,
+    nap, claims, h1Glue, smsTel, bytes, siteName:((doc.querySelector('meta[property="og:site_name"]')||{getAttribute:()=>null}).getAttribute('content')||'').trim()||null,
     stats:{images:imgs.length, scripts:doc.querySelectorAll('script').length, stylesheets:doc.querySelectorAll('link[rel="stylesheet"]').length, sizeKb, words},
     aux:{robots:null,sitemap:null}, _origin:origin };
   // Main-content text blocks for the crawl's cross-page analysis — kept out of JSON (saved reports, API results).
@@ -822,6 +824,112 @@ async function addSpeed(r, key){
   }
 }
 
+// ---------- Severity + problem-state titles ----------
+// Severity follows the score shortfall (points actually lost, plus any penalty), not the check's weight; a check can
+// fix its own severity (c.sev) where the rule is explicit (sibling overlap, unique content).
+const SEV_RANK={ Critical:4, High:3, Medium:2, Low:1 };
+function shortfallSeverity(lost){ return lost>=8?'Critical':lost>=4?'High':lost>=1.5?'Medium':'Low'; }
+function checkSeverity(c){
+  if(c.status!=='fail'&&c.status!=='warn') return null;
+  if(c.sev) return c.sev;
+  const w=c.frac!=null?c.frac:c.status==='warn'?0.5:0;
+  return shortfallSeverity((c.points||0)*(1-w)+(c.penalty||0));
+}
+// What is wrong, in words — shown instead of the check's name whenever it warns or fails
+// ("JavaScript too heavy: 681 KB", "No insurance mention", "Title too long: 65 chars").
+function problemTitle(c){
+  if(c.problem) return c.problem;
+  const d=String(c.detail||''), n=re=>{ const m=d.match(re); return m?m[1]:null; };
+  switch(c.label){
+    case 'Page is indexable': return 'Page is set to noindex';
+    case 'Canonical URL set': return /No canonical/.test(d)?'No canonical tag':/redirects/.test(d)?'Canonical points to a redirect':/returns HTTP (\d+)/.test(d)?'Canonical target returns '+n(/returns HTTP (\d+)/):/noindex/.test(d)?'Canonical target is noindex':'Canonical URL is invalid';
+    case 'Title tag present': return 'No title tag';
+    case 'Title length optimal': { const k=+n(/(\d+) characters/); return k>60?'Title too long: '+k+' chars':'Title too short: '+k+' chars'; }
+    case 'Single title tag': return n(/(\d+) title tags/)+' title tags on the page';
+    case 'Meta description present': return 'No meta description';
+    case 'Description length optimal': { const k=+n(/(\d+) characters/); return k>160?'Meta description too long: '+k+' chars':'Meta description too short: '+k+' chars'; }
+    case 'Exactly one H1 heading': { const k=+n(/(\d+) H1/); return k===0?'No H1 heading':k+' H1 headings on one page'; }
+    case 'Uses subheadings (H2)': return 'No H2 subheadings';
+    case 'Unique content': return 'Thin content: '+n(/^(\d+) words/)+' unique words';
+    case 'Unique vs sibling pages': return n(/^(\d+)%/)+'% of the text is shared with '+(n(/\(([^)]+)\)$/)||'another page');
+    case 'Local detail': return 'Only '+n(/^(\d+)/)+' local details (roads, exits, landmarks)';
+    case 'Served over HTTPS': return 'Not served over HTTPS';
+    case 'Mobile viewport set': return 'No mobile viewport tag';
+    case 'No mixed (insecure) content': return n(/^(\d+)/)+' insecure http:// resources';
+    case 'Character encoding declared': return 'No character encoding declared';
+    case 'Language declared': return 'No lang attribute on <html>';
+    case 'Favicon present': return 'No favicon';
+    case 'LocalBusiness structured data': return /missing (.+)$/.test(d)?'LocalBusiness schema missing '+n(/missing (.+)$/):/only/.test(d)?'Organization schema only — no LocalBusiness':'No LocalBusiness schema';
+    case 'Review / rating schema': return 'Self-serving review markup on the business';
+    case 'Click-to-call phone link': return 'No click-to-call link';
+    case 'Map / location reference': return 'No map or directions link';
+    case 'Open Graph tags': return 'Only '+n(/^(\d+) of 3/)+' of 3 Open Graph tags';
+    case 'Twitter / X card': return 'No Twitter/X card';
+    case 'Images have alt text': { const a=+n(/^(\d+) of/), t=+n(/of (\d+) images/); return (t-a)+' of '+t+' images missing alt text'; }
+    case 'Images have dimensions': { const a=+n(/^(\d+) of/), t=+n(/of (\d+) images/); return (t-a)+' of '+t+' images without width/height'; }
+    case 'Limited render-blocking scripts': return n(/^(\d+)/)+' render-blocking scripts in <head>';
+    case 'Q&A / FAQ structured data': return 'No FAQ schema';
+    case 'Organization / entity data': return /no sameAs/i.test(d)?'Organization schema has no sameAs links':'No Organization schema';
+    case 'Semantic main-content region': return 'No <main> or <article> region';
+    case 'Content readable without JavaScript': return 'Content only appears after JavaScript runs';
+    case 'Soft 404': return /says/.test(d)?'"Not found" page answers 200 (soft 404)':'Near-empty page: only '+n(/only (\d+) words/)+' words of its own (soft 404)';
+    case 'Viewport allows zoom': return 'Pinch-zoom is disabled';
+    case 'Heading hierarchy': return 'Heading levels skip: '+(n(/^(H\d → H\d)/)||'a level');
+    case 'Specific H1': return 'Generic H1: "'+(n(/"([^"]+)"/)||'')+'"';
+    case 'Meta description differs from title': return 'Meta description repeats the title';
+    case 'Descriptive links to money pages': return n(/^(\d+) link/)+' "'+(n(/say only "([^"]+)"/)||'read more')+'" links to money pages';
+    case 'Years-in-business claims current': return 'Stale claim: "'+n(/"(\d+ years)"/)+'" (founded '+n(/founded (\d{4})/)+')';
+    case 'No placeholder text': return 'Placeholder text: "'+n(/"([^"]+)"/)+'"';
+    case 'Real privacy policy (not the WordPress default)': return 'WordPress sample privacy policy still published';
+    case 'JSON-LD syntax valid': return n(/^(\d+) of/)+' JSON-LD block(s) do not parse';
+    case 'One business entity with a stable @id': return /no @id/.test(d)?'Business schema has no @id':n(/^(\d+)/)+' separate business entities in the schema';
+    case 'Schema NAP matches the page': return /telephone/.test(d)?'Schema phone is not the phone on the page':'Schema address differs from the page';
+    case 'Schema hours match the page': return 'Schema hours contradict the 24/7 claim';
+    case 'Service schema': return 'No Service schema on a service page';
+    case 'Breadcrumb schema': return 'No breadcrumb schema';
+    case 'FAQ schema matches the visible FAQ': return 'FAQ schema doesn\'t match the page ('+n(/^(\d+ of \d+)/)+')';
+    case 'Valid schema.org types': return 'Invalid schema type: '+(n(/types: (.+)$/)||'');
+    case 'License / registration numbers shown': return 'No license / registration number on the page';
+    case 'Pricing transparency': return /Claims/.test(d)?'Claims "'+n(/Claims "([^"]+)"/)+'" but shows no prices':'No prices or pricing page';
+    case 'Insurance mentioned': return 'No insurance mention';
+    case 'Question headings with direct answers': return /No question/.test(d)?'No question-form headings':'Question headings without a short direct answer';
+    case 'Citable facts': return 'Missing citable facts: '+(n(/Missing: (.+)$/)||'licence #, service areas, hours, prices');
+    case 'Click-to-call at the top (mobile)': return /No tel/.test(d)?'No phone link on the page':'No tap-to-call near the top of the page';
+    case 'Mobile speed score': return 'Slow on mobile: '+(n(/^(\d+)\/100/)||'?')+'/100';
+    case 'Desktop speed score': return 'Slow on desktop: '+(n(/^(\d+)\/100/)||'?')+'/100';
+    case 'Largest Contentful Paint (mobile)': return 'Main content appears late: '+(n(/^([\d.]+ ?m?s)/)||d.split(' ')[0]);
+    case 'Layout stability (mobile CLS)': return 'Page jumps while loading: CLS '+d.split(' ')[0];
+    case 'robots.txt present': return 'No valid robots.txt';
+    case 'XML sitemap present': return 'No XML sitemap';
+    case 'AI search crawlers allowed': return 'AI search crawlers blocked: '+(n(/Blocking: (.+)$/)||'all');
+    // site findings
+    case 'HTTPS + www redirects': return 'Domain variants do not redirect cleanly: '+d;
+    case 'Redirect chains and loops': return d;
+    case 'Duplicate URL variants': return d;
+    case 'Sitemap lists only live, indexable URLs': return d;
+    case 'Sitemap lastmod dates': return d;
+    case 'robots.txt allows CSS, JS and key pages': return d;
+    case 'Core Web Vitals (real users)': return 'Real-user Core Web Vitals are '+(n(/data: ([a-z ]+)/)||'poor');
+    case 'Money pages well linked': return d.replace(/ \(−1 each\)$/,'');
+    case 'No internal nofollow links': return d;
+    case 'Blog posts have their own dates': return d;
+    case 'Copyright year current': return 'Copyright year out of date: '+d;
+    case 'Consistent arrival-time claims': return 'Contradictory arrival times: '+(n(/promise (.+?) minutes/)||'')+' min';
+    case 'Consistent hours claims': return 'Contradictory hours: '+d;
+    case 'Consistent years-in-business claims': return 'Contradictory years in business: '+d;
+    case 'Google reviews shown on the site': return 'No Google reviews shown on the site';
+    case 'Reviews page linked': return 'Reviews page is not linked from anywhere';
+    case 'Google Business Profile matches the site': return 'Google Business Profile differs from the site: '+d;
+    case 'About page names the owner / founding': return /No About/.test(d)?'No About page':'About page has no owner or founding details';
+    case 'Form endpoints respond': return d;
+    case 'Privacy policy covers the tracking in use': return d;
+    case 'One business name everywhere': return 'Business name differs: '+d;
+    case 'No Bingbot-specific blocks': return d;
+  }
+  if(/^Service coverage/.test(c.label)) return 'Only '+d.split(' · ')[0];
+  if(/^Location coverage/.test(c.label)) return 'Missing town pages: '+d;
+  return c.label+': '+d;
+}
 // A category's percentage for display. AI Search never shows above 95 anywhere (live AI answers are not observed).
 function catPercent(name, b){ return b&&b.t?Math.min(name===AISEARCH?95:100, Math.round(100*b.e/b.t)):null; }
 function score(r){
@@ -829,7 +937,9 @@ function score(r){
   let earned=0,total=0,scored=0; const counts={pass:0,warn:0,fail:0}; const byCat={};
   r.checks.forEach(c=>{
     if(c.status==='pass')counts.pass++; else if(c.status==='warn')counts.warn++; else if(c.status==='fail')counts.fail++;
-    if(c.status==='info'||!c.points) return;
+    // problem-state title + shortfall severity for anything that warns or fails (recomputed on every score)
+    if(c.status==='fail'||c.status==='warn'){ c.issue=problemTitle(c); c.severity=checkSeverity(c); } else { delete c.issue; delete c.severity; }
+    if(c.status==='info'||c.status==='na'||!c.points) return; // info = not verifiable, na = nothing to evaluate
     scored++;
     const w= c.frac!=null ? c.frac : c.status==='pass'?1: c.status==='warn'?0.5:0; // frac = partial credit
     earned+=c.points*w; total+=c.points;
@@ -932,15 +1042,23 @@ function crossPageIssues(pages){
 }
 // What the sitemap says about a site, without crawling it: page count, service / location pages (by URL), newest
 // lastmod. Used by homepage snapshots and snapshot comparisons.
+// THE page-type classifier for a set of URLs — used by both the sitemap columns (sitemapSummary) and the crawl's
+// coverage, so the two always agree. Each URL is typed by classifyPage (or typeOf), then a service/location/other
+// URL with 2+ URLs under its path in the same set is a hub (a directory page, not a page of its own).
+function pageTypesFor(urls, typeOf){
+  const pathOf=u=>{ try{ return new URL(u).pathname.replace(/\/+$/,'').toLowerCase(); }catch(e){ return ''; } };
+  const paths=urls.map(pathOf), types={};
+  urls.forEach((u,i)=>{ let t=typeOf?typeOf(u):classifyPage(u,[]);
+    if(paths[i] && (t==='service'||t==='location'||t==='other') && paths.filter((q,j)=>j!==i&&q.indexOf(paths[i]+'/')===0).length>=2) t='hub';
+    types[u]=t; });
+  return types;
+}
 async function sitemapSummary(root){
   let disc; try{ disc=await discoverPages(root, 5000, null); }catch(e){ return { found:false }; }
   const urls=(disc&&disc.sitemapUrls)||[];
   if(!urls.length) return { found:false };
-  const paths=urls.map(u=>{ try{ return new URL(u).pathname.replace(/\/+$/,'').toLowerCase(); }catch(e){ return ''; } });
-  let service=0, location=0;
-  urls.forEach((u,i)=>{ const t=classifyPage(u,[]); if(t!=='service'&&t!=='location') return;
-    const kids=paths.filter((q,j)=>j!==i && paths[i] && q.indexOf(paths[i]+'/')===0).length; if(kids>=2) return; // a hub, not a page of its own
-    if(t==='service') service++; else location++; });
+  const types=Object.values(pageTypesFor(urls));
+  const service=types.filter(t=>t==='service').length, location=types.filter(t=>t==='location').length;
   const times=Object.values(disc.lastmod||{}).map(d=>Date.parse(d)).filter(t=>!isNaN(t)&&t<Date.now()+2*864e5);
   return { found:true, total:urls.length, service, location, newest:times.length?new Date(Math.max(...times)).toISOString().slice(0,10):null };
 }
@@ -951,12 +1069,13 @@ async function sitemapSummary(root){
 //  - near-duplicates: 5-word shingles, Jaccard, against every other non-utility page;
 //  - local detail on a location page counts only entities no other location page names.
 const NEAR_DUP=0.8;
-function crossPageContent(pages){
+function crossPageContent(pages, sitemapUrls){
   const N=pages.length;
   const pathOf=u=>{ try{ return new URL(u).pathname.replace(/\/+$/,'').toLowerCase(); }catch(e){ return ''; } };
-  pages.forEach(p=>{ const me=pathOf(p.url); if(!me || p.pageType==='home') return;
-    const kids=pages.filter(q=>q!==p && pathOf(q.url).indexOf(me+'/')===0).length;
-    if(kids>=2 && (p.pageType==='service'||p.pageType==='location'||p.pageType==='other')) p.pageType='hub'; });
+  // Same classifier as the sitemap columns, over the crawled pages plus the sitemap's URLs.
+  const byUrl={}; pages.forEach(p=>{ byUrl[p.url]=p; });
+  const types=pageTypesFor([...new Set(pages.map(p=>p.url).concat(sitemapUrls||[]))], u=>byUrl[u]?byUrl[u].pageType:classifyPage(u,[]));
+  pages.forEach(p=>{ p.pageType=types[p.url]; });
   const groupOf=p=>{ const s=pathSegs(p.url); return s.length>=2?s[0]:'/'; };
   // A location page's own place name (from its URL slug) is masked before blocks are compared, so a template sentence
   // with only the city swapped ("…reaches Dublin day or night…") is recognised as the same block on every city page.
@@ -995,9 +1114,11 @@ function crossPageContent(pages){
   const setCheck=(p,label,cat,chk)=>{ const i=p.checks.findIndex(c=>c.label===label); const c=Object.assign({cat},chk); if(i>=0) p.checks[i]=c; else p.checks.push(c); };
   pages.forEach(p=>{
     setCheck(p,'Unique content','On-Page Content',uniqueContentCheck(p.pageType,p.uniqueWords,true));
-    if(p.pageType==='utility') setCheck(p,'Unique vs sibling pages','On-Page Content',{label:'Unique vs sibling pages',points:0,status:'info',detail:'Exempt (utility page)',why:'',fix:''});
+    if(p.pageType==='utility') setCheck(p,'Unique vs sibling pages','On-Page Content',{label:'Unique vs sibling pages',points:0,status:'na',detail:'Exempt (utility page)',why:'',fix:''});
     else { const sim=p._maxSim||0, frac=1-sim, rel=p._simWith?(p._simWith.replace(/^https?:\/\/[^/]+/,'')||'/'):'';
-      setCheck(p,'Unique vs sibling pages','On-Page Content',{label:'Unique vs sibling pages',points:15,frac,status:sim<0.2?'pass':sim>=NEAR_DUP?'fail':'warn',
+      // Overlap bands: under 40% is normal site furniture (not a problem); 40–60% medium, 60–80% high, over 80% critical.
+      const sev=sim<0.4?null:sim<0.6?'Medium':sim<0.8?'High':'Critical';
+      setCheck(p,'Unique vs sibling pages','On-Page Content',{label:'Unique vs sibling pages',points:15,frac,sev,status:sim<0.4?'pass':sim<0.6?'warn':'fail',
         detail:Math.round(sim*100)+'% overlap with its closest sibling'+(rel?' ('+rel+')':''),
         why:'Pages that repeat another page\'s text (the same template with the city or service swapped) compete with each other and look like doorway pages; Google picks one and ignores the rest.',
         fix:'Rewrite this page so most of its text is specific to it — its own service details, local specifics and FAQs — instead of the shared template.'}); }
@@ -1074,7 +1195,8 @@ const RE_LEGACY_IMG=/\.(jpe?g|png|gif|bmp|tiff?)(\?|$)/i, RE_MODERN_IMG=/\.(webp
 // Page weight: HTML + JS + CSS + images. Asset sizes are measured (crawl, key pages) or unknown (HTML-only estimate).
 function weightCheck(bytes, a, m){
   const js=a.inlineJs+(m?m.js:0), total=bytes+(m?m.js+m.css+m.img:0), heavy=total>2e6||js>5e5;
-  return { label:'Reasonable page weight', points:3, status:heavy?'warn':'pass',
+  const problem=js>5e5?'JavaScript too heavy: '+kb(js):total>2e6?'Page too heavy: '+kb(total):null;
+  return { label:'Reasonable page weight', points:3, status:heavy?'warn':'pass', problem,
     detail:m?('Total '+kb(total)+' (HTML '+kb(bytes)+' · JS '+kb(js)+' · CSS '+kb(m.css)+' · images '+kb(m.img)+')')
             :('HTML '+kb(bytes)+' · inline JS '+kb(a.inlineJs)+' · '+a.scripts.length+' scripts, '+a.images.length+' images (asset sizes measured on key pages in a site crawl)'),
     evidence:m&&m.top?m.top.map(x=>({ snippet:x.url+' — '+kb(x.bytes) })):[],
@@ -1084,12 +1206,13 @@ function weightCheck(bytes, a, m){
 // Image efficiency: >150 KB images and old formats warn; eager images below the first screen are noted (info).
 function imageCheck(a, sizes){
   const imgs=a.images;
-  if(!imgs.length) return { label:'Image efficiency', points:4, status:'pass', detail:'No images in the HTML', evidence:[], why:'', fix:'' };
+  if(!imgs.length) return { label:'Image efficiency', points:4, status:'na', detail:'N/A — no images in the HTML', evidence:[], why:'', fix:'' };
   const heavy=sizes?imgs.map(i=>({url:i.url, bytes:sizes[i.url]})).filter(x=>x.bytes>150*1024).sort((a,b)=>b.bytes-a.bytes):[];
   const legacy=imgs.filter(i=>RE_LEGACY_IMG.test(i.url)||(!RE_MODERN_IMG.test(i.url)&&sizes&&sizes['ct:'+i.url]&&!/webp|avif|svg/i.test(sizes['ct:'+i.url])));
   const eager=imgs.filter(i=>i.idx>=3&&!i.lazy);
   const ev=heavy.slice(0,5).map(x=>({ snippet:x.url+' — '+kb(x.bytes) })).concat(heavy.length?[]:legacy.slice(0,5).map(x=>({ snippet:x.url })));
-  return { label:'Image efficiency', points:4, status:(heavy.length||legacy.length)?'warn':'pass',
+  const problem=heavy.length?(heavy.length+' image'+(heavy.length===1?'':'s')+' over 150 KB (largest '+kb(heavy[0].bytes)+')'):legacy.length?(legacy.length+' of '+imgs.length+' images are JPG/PNG, not WebP/AVIF'):null;
+  return { label:'Image efficiency', points:4, status:(heavy.length||legacy.length)?'warn':'pass', problem,
     detail:(sizes?heavy.length+' image'+(heavy.length===1?'':'s')+' over 150 KB · ':'')+legacy.length+' of '+imgs.length+' in JPG/PNG/GIF (not WebP/AVIF)'+(eager.length?' · '+eager.length+' below-the-fold image'+(eager.length===1?' is':'s are')+' not lazy-loaded (info)':''),
     evidence:ev, why:'Images are usually most of a page\'s weight. Large JPG/PNG files slow the page on phones; WebP/AVIF are ~30–50% smaller.',
     fix:'Convert photos to WebP/AVIF, resize them to the size they display at (under ~150 KB), and add loading="lazy" to images below the first screen.' };
@@ -1106,11 +1229,11 @@ function headingHierarchyCheck(doc){
   for(let i=1;i<hs.length;i++){ if(hs[i].lv>hs[i-1].lv+1 && hs[i-1].lv>=1)
     return { label:'Heading hierarchy', points:1, status:'warn', detail:'H'+hs[i-1].lv+' → H'+hs[i].lv+' skips a level', evidence:[{ snippet:'<h'+hs[i-1].lv+'>'+hs[i-1].t+'</h'+hs[i-1].lv+'> → <h'+hs[i].lv+'>'+hs[i].t+'</h'+hs[i].lv+'>' }],
       why:'Headings are the page outline for search engines, AI and screen readers; skipped levels blur the structure.', fix:'Use headings in order (H2, then H3 under it) — style them with CSS instead of picking a smaller tag.' }; }
-  return { label:'Heading hierarchy', points:1, status:'pass', detail:hs.length+' headings in order', evidence:[], why:'', fix:'' };
+  return { label:'Heading hierarchy', points:1, status:hs.length<2?'na':'pass', detail:hs.length<2?'N/A — fewer than 2 headings':hs.length+' headings in order', evidence:[], why:'', fix:'' };
 }
 const RE_NOT_FOUND=/\b(page\s+not\s+found|not\s+found|404|page\s+(can(no|’|')t|could\s*n[o’']t)\s+be\s+found|no\s+longer\s+available)\b/i;
 function soft404Check(type, title, h1, words){
-  if(type==='home'||type==='utility'||type==='archive') return { label:'Soft 404', points:0, status:'info', detail:'Not checked on '+type+' pages', evidence:[], why:'', fix:'' };
+  if(type==='home'||type==='utility'||type==='archive') return { label:'Soft 404', points:0, status:'na', detail:'Not checked on '+type+' pages', evidence:[], why:'', fix:'' };
   const msg=[title,h1].find(t=>RE_NOT_FOUND.test(t||''));
   const bad=!!msg || words<50;
   return { label:'Soft 404', points:4, status:bad?'fail':'pass',
@@ -1271,7 +1394,7 @@ function slugTerms(u, type){
 }
 function titleQualityCheck(title, url, type){
   const t=String(title||'').trim();
-  if(!t) return { label:'Title quality', points:0, status:'info', detail:'No title (see Title tag present)', evidence:[], why:'', fix:'' };
+  if(!t) return { label:'Title quality', points:0, status:'na', detail:'No title (see Title tag present)', evidence:[], why:'', fix:'' };
   const seps=(t.match(RE_TITLE_SEP)||[]).length, trailing=/[-–—|•·:]\s*$/.test(t), px=titlePixels(t);
   const money=type==='service'||type==='location', terms=money?slugTerms(url,type):[];
   const missing=money&&terms.length&&!terms.some(w=>t.toLowerCase().includes(w.toLowerCase()));
@@ -1281,7 +1404,7 @@ function titleQualityCheck(title, url, type){
   if(trailing) probs.push({ s:'fail', t:'ends with a separator' });
   if(px>580) probs.push({ s:'warn', t:'~'+px+'px wide (Google cuts at ~580px)' });
   const st=probs.some(p=>p.s==='fail')?'fail':probs.length?'warn':'pass';
-  return { label:'Title quality', points:4, status:st, detail:st==='pass'?('"'+snip(t,70)+'" · ~'+px+'px'):('Title '+probs.map(p=>p.t).join(', ')),
+  return { label:'Title quality', points:4, status:st, problem:st==='pass'?null:'Title '+probs.map(p=>p.t).join(', '), detail:st==='pass'?('"'+snip(t,70)+'" · ~'+px+'px'):('Title '+probs.map(p=>p.t).join(', ')),
     evidence:st==='pass'?[]:[{ snippet:'<title>'+snip(t,120)+'</title>' }],
     why:'The title is the headline in Google. On a money page it has to name the service or the town, once, and fit on screen.',
     fix:money?'Lead with the '+(type==='location'?'service + town':'service')+', then the brand once: "'+(type==='location'?'Towing in '+(terms[0]||'Town'):(terms.join(' ')||'Service'))+' | Brand" — at most two separators.':'Keep one or two separators and under ~580px (≈55 characters).' };
@@ -1289,7 +1412,7 @@ function titleQualityCheck(title, url, type){
 const GENERIC_H1=/^(gallery|contact( us)?|inquire|services|pay now|home|about( us)?|blog|welcome|untitled|page)$/i;
 function genericH1Check(h1){
   const t=String(h1||'').replace(/\s+/g,' ').trim();
-  if(!t) return { label:'Specific H1', points:0, status:'info', detail:'No H1 (see Exactly one H1 heading)', evidence:[], why:'', fix:'' };
+  if(!t) return { label:'Specific H1', points:0, status:'na', detail:'No H1 (see Exactly one H1 heading)', evidence:[], why:'', fix:'' };
   const bad=GENERIC_H1.test(t);
   return { label:'Specific H1', points:3, status:bad?'fail':'pass', detail:bad?('H1 is just "'+t+'"'):('H1: "'+snip(t,70)+'"'), evidence:bad?[{ snippet:'<h1>'+t+'</h1>' }]:[],
     why:'A one-word H1 like "Gallery" or "Contact" tells Google and AI nothing about the business, service or town.',
@@ -1302,7 +1425,9 @@ function descEqualsTitleCheck(title, desc){
 }
 const RE_GENERIC_ANCHOR=/^(click here|read more|learn more|more|here|details|view more|see more|find out more|more info|continue reading|click)$/i;
 function genericAnchorCheck(anchors){
-  const bad=anchors.filter(a=>RE_GENERIC_ANCHOR.test(a.text||'') && /^(service|location)$/.test(classifyPage(a.url,[])));
+  const toMoney=anchors.filter(a=>/^(service|location)$/.test(classifyPage(a.url,[])));
+  if(!toMoney.length) return { label:'Descriptive links to money pages', points:1, status:'na', detail:'N/A — no links to service or location pages', evidence:[], why:'', fix:'' };
+  const bad=toMoney.filter(a=>RE_GENERIC_ANCHOR.test(a.text||''));
   return { label:'Descriptive links to money pages', points:1, status:bad.length?'warn':'pass',
     detail:bad.length?(bad.length+' link'+(bad.length===1?'':'s')+' to service/location pages say only "'+bad[0].text+'"'):'Links to service/location pages use descriptive text',
     evidence:bad.slice(0,5).map(a=>({ snippet:'<a href="'+a.href+'">'+a.text+'</a>' })),
@@ -1339,8 +1464,8 @@ function yearClaims(text){
 }
 function staleClaimsCheck(pageClaims, siteFounded){
   const founded=siteFounded||(pageClaims.founded[0]&&pageClaims.founded[0]);
-  if(!pageClaims.years.length && !pageClaims.founded.length) return { label:'Years-in-business claims current', points:0, status:'info', detail:'No years-in-business claims', evidence:[], why:'', fix:'' };
-  if(!founded||!pageClaims.years.length) return { label:'Years-in-business claims current', points:0, status:'info', detail:'Claims found but nothing to check them against', evidence:pageClaims.years.concat(pageClaims.founded).slice(0,2).map(c=>({ snippet:c.snippet })), why:'', fix:'' };
+  if(!pageClaims.years.length && !pageClaims.founded.length) return { label:'Years-in-business claims current', points:0, status:'na', detail:'No years-in-business claims', evidence:[], why:'', fix:'' };
+  if(!founded||!pageClaims.years.length) return { label:'Years-in-business claims current', points:0, status:'na', detail:'Claims found but nothing to check them against', evidence:pageClaims.years.concat(pageClaims.founded).slice(0,2).map(c=>({ snippet:c.snippet })), why:'', fix:'' };
   const actual=nowYear()-founded.year;
   const bad=pageClaims.years.filter(c=>c.atLeast?c.n>actual+1:Math.abs(c.n-actual)>1);
   return { label:'Years-in-business claims current', points:3, status:bad.length?'fail':'pass',
@@ -1459,7 +1584,7 @@ function locationCoverage(ok, market){
 // Click-to-call near the top of the page. Estimated from document order (no mobile layout render): a tel: link in
 // the header/nav, in a fixed/sticky call bar, or within the first ~1,200 characters of visible text.
 function callAboveFoldCheck(doc, type){
-  if(!/^(home|service|location)$/.test(type)) return { label:'Click-to-call at the top (mobile)', points:0, status:'info', detail:'Checked on the homepage and money pages', evidence:[], why:'', fix:'' };
+  if(!/^(home|service|location)$/.test(type)) return { label:'Click-to-call at the top (mobile)', points:0, status:'na', detail:'Checked on the homepage and money pages', evidence:[], why:'', fix:'' };
   const tels=[...doc.querySelectorAll('a[href^="tel:"]')];
   if(!tels.length) return { label:'Click-to-call at the top (mobile)', points:3, status:'fail', detail:'No tel: link on the page', evidence:[], why:'On a phone the first screen decides the call. A tap-to-call button there is the single biggest conversion win for a local service.', fix:'Put a tap-to-call button in the header (sticky on mobile).' };
   const body=doc.body; const full=(body&&body.textContent||'');
@@ -1473,7 +1598,7 @@ function callAboveFoldCheck(doc, type){
 function areaCodeCheck(doc, market){
   const codes=market&&market.areaCodes;
   const nums=[...new Set([...doc.querySelectorAll('a[href^="tel:"]')].map(a=>(a.getAttribute('href')||'').replace(/\D/g,'').replace(/^1(?=\d{10}$)/,'')).filter(d=>d.length===10))];
-  if(!codes||!nums.length) return { label:'Local area code', points:0, status:'info', detail:nums.length?'No market area codes supplied':'No phone link', evidence:[], why:'', fix:'' };
+  if(!codes||!nums.length) return { label:'Local area code', points:0, status:'na', detail:nums.length?'No market area codes supplied':'No phone link', evidence:[], why:'', fix:'' };
   const local=nums.filter(n=>codes.includes(n.slice(0,3)));
   return { label:'Local area code', points:0, status:'info', detail:local.length?('Local number ('+local[0].slice(0,3)+')'):('Phone '+nums[0].slice(0,3)+' is not a local '+codes.join('/')+' number'),
     evidence:[{ snippet:'tel:'+nums[0] }], why:'A local area code reassures callers they are reaching a nearby business.', fix:'' };
@@ -1540,7 +1665,7 @@ const SCHEMA_TYPES=new Set(('Thing Action CreativeWork Article BlogPosting NewsA
 const isKnownType=t=>SCHEMA_TYPES.has(t)||isLocalType(t)||ORG_TYPES.test(t)||/:/.test(t);
 function jsonLdSyntaxCheck(doc){
   const scripts=[...doc.querySelectorAll('script[type="application/ld+json"]')];
-  if(!scripts.length) return { label:'JSON-LD syntax valid', points:0, status:'info', detail:'No JSON-LD on the page', evidence:[], why:'', fix:'' };
+  if(!scripts.length) return { label:'JSON-LD syntax valid', points:0, status:'na', detail:'No JSON-LD on the page', evidence:[], why:'', fix:'' };
   const bad=[]; scripts.forEach((s,i)=>{ try{ JSON.parse(s.textContent); }catch(e){ bad.push({ snippet:'<script type="application/ld+json"> #'+(i+1)+': '+snip(e.message,60)+' — '+snip(s.textContent,80) }); } });
   return { label:'JSON-LD syntax valid', points:3, status:bad.length?'fail':'pass', detail:bad.length?(bad.length+' of '+scripts.length+' JSON-LD blocks do not parse'):(scripts.length+' JSON-LD block'+(scripts.length===1?'':'s')+' parse cleanly'),
     evidence:bad, why:'A JSON-LD block with a syntax error is thrown away whole — none of its structured data counts.', fix:'Fix the JSON (usually a trailing comma or an unescaped quote) and re-test in Google\'s Rich Results Test.' };
@@ -1554,7 +1679,7 @@ function businessEntityCheck(nodes){
   const refs=v=>[].concat(v||[]).map(x=>x&&typeof x==='object'?x['@id']:x).filter(Boolean);
   const linked=new Set(); biz.forEach(n=>{ refs(n.parentOrganization).concat(refs(n.branchOf),refs(n.subOrganization)).forEach(id=>{ if(keys.includes(id)&&n['@id']){ linked.add(id); linked.add(n['@id']); } }); });
   if(linked.size) keys=keys.filter(k=>!linked.has(k)).concat(['linked:'+[...linked].sort().join('|')]);
-  if(!biz.length) return { label:'One business entity with a stable @id', points:0, status:'info', detail:'No business entity in the schema', evidence:[], why:'', fix:'' };
+  if(!biz.length) return { label:'One business entity with a stable @id', points:0, status:'na', detail:'No business entity in the schema', evidence:[], why:'', fix:'' };
   const noId=biz.every(n=>!n['@id']);
   const st=keys.length>1?'warn':noId?'warn':'pass';
   return { label:'One business entity with a stable @id', points:2, status:st,
@@ -1564,7 +1689,7 @@ function businessEntityCheck(nodes){
 }
 function schemaNapCheck(nap){
   const s=nap&&nap.schema||{};
-  if(!s.phones.length&&!s.streets.length) return { label:'Schema NAP matches the page', points:0, status:'info', detail:'No phone or street address in the schema', evidence:[], why:'', fix:'' };
+  if(!s.phones.length&&!s.streets.length) return { label:'Schema NAP matches the page', points:0, status:'na', detail:'No phone or street address in the schema', evidence:[], why:'', fix:'' };
   const vis=new Set((nap.tel||[]).concat(nap.visible||[])), streets=new Set(nap.streets||[]), probs=[];
   s.phones.forEach(p=>{ if(!vis.has(p)) probs.push('schema telephone '+p+' is not on the page'); });
   s.streets.forEach(a=>{ if(streets.size && !streets.has(a)) probs.push('schema street "'+a+'" differs from the page ("'+[...streets][0]+'")'); });
@@ -1583,7 +1708,7 @@ function schema247(nodes){
   return { known, all };
 }
 function openingHoursCheck(nodes, pageText){
-  const s=schema247(nodes); if(!s.known) return { label:'Schema hours match the page', points:0, status:'info', detail:'No opening hours in the schema', evidence:[], why:'', fix:'' };
+  const s=schema247(nodes); if(!s.known) return { label:'Schema hours match the page', points:0, status:'na', detail:'No opening hours in the schema', evidence:[], why:'', fix:'' };
   const claims=RE_24_7.test(pageText);
   const bad=claims&&!s.all;
   return { label:'Schema hours match the page', points:1, status:bad?'warn':'pass', detail:bad?'Page says 24/7 but the schema hours are not 24/7':(s.all?'Schema says 24/7':'Schema lists set hours'),
@@ -1711,8 +1836,11 @@ function citableFactsCheck(pageText, type, anchors){
   if(areaLinks>=3||/\b(serving|service area|we serve|areas? served)\b[^.]{0,120}(,[^.,]{2,30}){2,}/i.test(pageText)) facts.push('service-area list');
   if(RE_24_7.test(pageText)||RE_HOURS.test(pageText)) facts.push('hours');
   if(RE_PRICE.test(pageText)) facts.push('pricing');
-  return { label:'Citable facts', points:2, status:facts.length>=2?'pass':facts.length?'warn':'fail', detail:facts.length?('States '+facts.join(', ')):'No licence #, service areas, hours or prices',
-    evidence:facts.map(f=>({ snippet:f })), why:'AI answers quote concrete facts — licence numbers, areas served, hours, prices. Pages without them get summarised vaguely or skipped.',
+  // Evidence lists what is MISSING — the facts to add.
+  const ALL={ 'licence #':/^licence/, 'service-area list':/^service-area/, 'hours':/^hours/, 'pricing':/^pricing/ };
+  const missing=Object.keys(ALL).filter(k=>!facts.some(f=>ALL[k].test(f)));
+  return { label:'Citable facts', points:2, status:facts.length>=2?'pass':facts.length?'warn':'fail', detail:(facts.length?'States '+facts.join(', ')+' · ':'')+(missing.length?'Missing: '+missing.join(', '):'All four present'),
+    evidence:missing.map(f=>({ snippet:'missing: '+f })), why:'AI answers quote concrete facts — licence numbers, areas served, hours, prices. Pages without them get summarised vaguely or skipped.',
     fix:'State the facts plainly on the page: licence numbers, the towns you serve, your hours and typical prices.' };
 }
 function aiSiteFindings(ok, ctx){
@@ -1812,6 +1940,29 @@ function crawlGraph(pages, base, redirected, keyOf){
   const chains=redirected.map(x=>{ const r=resolve(x.url); return { from:x.url, chain:r.chain, hops:r.chain.length-1, loop:r.loop, final:r.loop?null:r.chain[r.chain.length-1] }; });
   return { chains };
 }
+// What to look the business up by on Google: its NAME (schema name, else og:site_name, else the brand part of the
+// homepage title — never a "Towing Columbus OH" service+city phrase), its PHONE and its street ADDRESS.
+function titleBrand(title){
+  const parts=String(title||'').split(/\s[|–—·:-]\s|\s?\|\s?/).map(x=>x.trim()).filter(Boolean);
+  if(parts.length<2) return null;
+  const generic=/^(home|welcome|official site)$|\b(towing|tow truck|roadside|repair|services?|near me|\d{5}|[A-Z]{2}$)\b/i;
+  return parts.slice().reverse().find(p=>/\b(inc|llc|co|company|corp|ltd|&)\b/i.test(p))||parts.slice().reverse().find(p=>!generic.test(p))||null;
+}
+function gbpQuery(home, pages){
+  const nap=(home&&home.nap)||{}, sch=nap.schema||{};
+  const name=sch.names&&sch.names[0]||(home&&home.siteName)||titleBrand(home&&home.title)||null;
+  const phone=(sch.phones&&sch.phones[0])||(nap.tel&&nap.tel[0])||null;
+  const street=(sch.streets&&sch.streets[0])||(nap.streets&&nap.streets[0])||null;
+  return { name, phone, address:street };
+}
+// Re-time each page that took over 2s during the crawl: two sequential fetches, no other traffic.
+async function retestSlowPages(pages){
+  for(const p of pages.filter(x=>x.loadMs!=null&&x.loadMs>2000)){
+    const ms=[];
+    for(let i=0;i<2;i++){ const t0=Date.now(); try{ await fetchHtml(p.url); ms.push(Date.now()-t0); }catch(e){ ms.push(null); } }
+    p.retestMs=ms; p.slowUnderLoadOnly=ms.every(v=>v!=null&&v<2000);
+  }
+}
 async function crawlSite(root, opts){
   opts=opts||{};
   resetLinkCache();
@@ -1850,7 +2001,8 @@ async function crawlSiteRun(root, opts){
       const meta=_fetchMeta.get(u)||{};
       r.httpStatus=st&&st.status||meta.status||null; r.finalUrl=meta.finalUrl||u; r.headers=st&&st.headers||null; r.rendered=!!r._rendered;
       pages.push(r); (r.links||[]).forEach(enqueue); }
-    catch(e){ pages.push({ url:u, error:(e&&e.reason)||(e&&e.message)||'failed' }); }
+    catch(e){ const meta=_fetchMeta.get(u)||{};
+      pages.push({ url:u, error:(e&&e.reason)||(e&&e.message)||'failed', status:(st&&st.status)||meta.status||null, challenged:!!(st&&st.challenged) }); }
   }
   async function worker(){
     while(true){
@@ -1879,7 +2031,7 @@ async function crawlSiteRun(root, opts){
   if(!ok.length) return { error:'No page could be audited — the site may block automated access or is unavailable.', root:disc.base,
     pages, coverage:{ discovered:queued.size, audited:0, failed:pages.length, capped, cap:max, via:disc.via, rendered, renderAvailable:!!render } };
   const graph=crawlGraph(ok, disc.base, redirected, keyOf);
-  const content=crossPageContent(ok);
+  const content=crossPageContent(ok, disc.sitemapUrls||[]);
 
   // Link health: every internal link target on the audited pages, status-checked (cached from the crawl queue).
   phase('links');
@@ -1939,11 +2091,14 @@ async function crawlSiteRun(root, opts){
   if(typeof opts.places==='function'){
     try{
       const home=ok.find(p=>p.url===disc.base+'/'||p.url===disc.base)||ok[0];
-      const bizName=(home&&home.title?home.title.split(/[|\-–—:·]/)[0].trim():'')||disc.base.replace(/^https?:\/\//,'').replace(/^www\./,'').split('.')[0];
-      const pl=await opts.places(bizName);
-      local=(pl&&(pl.name||pl.rating!=null||pl.address))
-        ? { found:true, name:pl.name||bizName, rating:pl.rating, reviews:pl.reviews, address:pl.address, phone:pl.phone, website:pl.website, mapsUrl:pl.mapsUrl, hours:pl.hours||null }
-        : { found:false, query:bizName };
+      const q=gbpQuery(home, ok);
+      if(!q.name&&!q.phone&&!q.address) local={ found:false, query:q, reason:'No business name, phone or address on the site to search with' };
+      else {
+        const pl=await opts.places(q.name||'', { phone:q.phone, address:q.address });
+        local=(pl&&pl.found!==false&&(pl.name||pl.rating!=null||pl.address))
+          ? { found:true, name:pl.name||q.name, rating:pl.rating, reviews:pl.reviews, address:pl.address, phone:pl.phone, website:pl.website, mapsUrl:pl.mapsUrl, hours:pl.hours||null, matchedBy:pl.matchedBy||null, query:q }
+          : { found:false, query:q };
+      }
     }catch(e){ local=null; }
   }
   // Site findings (each deducts from its component).
@@ -1990,11 +2145,14 @@ async function crawlSiteRun(root, opts){
   const aiSearch=aiCat.t?Math.min(95,Math.round(100*aiCat.e/aiCat.t)):null; // never 100: live AI answers are not observed
   const siteBreakdown={ final:siteScore, pageAverage, siteLevel, weights:SITE_WEIGHTS, coverage, freshness, linkHealth, duplication, technical, penalties, caps, aiSearch };
   const findingsOut=siteFindings.map(f=>{ const o=Object.assign({},f); return o; });
+  // Pages over 2s under crawl load are fetched again, one at a time, twice: a page that is fast on its own is slow
+  // only under crawl concurrency ("slow under crawl load only"), not for a visitor.
+  await retestSlowPages(ok);
   const times=ok.map(p=>p.loadMs).filter(v=>v!=null);
   let perf=null;
   if(times.length){ const sorted=times.slice().sort((a,b)=>a-b); const avg=Math.round(times.reduce((a,b)=>a+b,0)/times.length);
     perf={ avg, median:sorted[Math.floor(sorted.length/2)], max:sorted[sorted.length-1], count:times.length,
-      slow:ok.filter(p=>p.loadMs!=null&&p.loadMs>2000).map(p=>({url:p.url,ms:p.loadMs})).sort((a,b)=>b.ms-a.ms) }; }
+      slow:ok.filter(p=>p.loadMs!=null&&p.loadMs>2000).map(p=>({url:p.url,ms:p.loadMs,retestMs:p.retestMs||null,loadOnly:!!p.slowUnderLoadOnly})).sort((a,b)=>b.ms-a.ms) }; }
   const crossPage=Object.assign(cpEarly, content, { redirectChains:graph.chains, brokenLinks, redirectLinks, orphans,
     sitemapRedirects:redirected.filter(x=>smKeys.has(keyOf(x.url))), sitemapBroken:broken.filter(x=>smKeys.has(keyOf(x.url))) });
   ok.forEach(p=>{ p.linkCount=(p.links||[]).length; delete p.links; delete p._blocks; delete p._bh; delete p._sh; delete p._ownText; delete p._simWith; delete p._place; }); // working data, not results (crawl results get saved)
@@ -2008,21 +2166,27 @@ async function crawlSiteRun(root, opts){
 const COMPONENT_NAMES={ technical:'Technical (site)', linkHealth:'Link health', freshness:'Freshness', duplication:'Duplication', coverage:'Coverage' };
 function sevLabel(v){ return v>=6?'Critical':v>=3?'High':v>=1.5?'Medium':'Low'; }
 function allFindings(res){
+  // Page checks that warn/fail, grouped by check across pages. Title = the problem on the worst page; severity = the
+  // worst page's shortfall severity; rank = severity x pages affected.
   const ok=(res.pages||[]).filter(p=>!p.error), byLabel={};
   ok.forEach(p=>(p.checks||[]).forEach(c=>{ if(c.status!=='fail'&&c.status!=='warn') return; if(!c.points&&!c.penalty) return;
-    const k=c.label, e=byLabel[k]||(byLabel[k]={ title:c.label, category:c.cat, points:c.points||0, fails:0, warns:0, pages:[], evidence:null, detail:c.detail, fix:c.fix, penalty:0 });
-    if(c.status==='fail') e.fails++; else e.warns++; e.pages.push(p.url); e.penalty=Math.max(e.penalty,c.penalty||0);
-    if(!e.evidence){ const ev=(c.evidence||[])[0]; e.evidence=ev?{ url:ev.url||p.url, snippet:ev.snippet }:{ url:p.url, snippet:c.detail }; } }));
-  const page=Object.values(byLabel).map(e=>{ const st=e.fails>=e.warns?'fail':'warn', sev=(st==='fail'?1:0.5)*Math.max(e.points,1)+(e.penalty?e.penalty/2:0);
-    return { title:e.title, category:e.category, scope:'page', status:st, severity:sevLabel(sev), sev, pagesAffected:e.pages.length, urls:e.pages.slice(0,5), evidence:e.evidence, detail:e.detail, fix:e.fix, rank:sev*e.pages.length }; });
+    const sevName=c.severity||checkSeverity(c), rank=SEV_RANK[sevName]||1, issue=c.issue||problemTitle(c);
+    const e=byLabel[c.label]||(byLabel[c.label]={ label:c.label, category:c.cat, fails:0, warns:0, pages:[], worst:null, fix:c.fix });
+    if(c.status==='fail') e.fails++; else e.warns++; e.pages.push(p.url);
+    const ev=(c.evidence||[])[0];
+    if(!e.worst||rank>e.worst.rank) e.worst={ rank, sevName, issue, detail:c.detail, evidence:ev?{ url:ev.url||p.url, snippet:ev.snippet }:{ url:p.url, snippet:c.detail } }; }));
+  const page=Object.values(byLabel).map(e=>{ const w=e.worst, n=e.pages.length;
+    return { title:w.issue+(n>1?' (worst of '+n+' pages)':''), check:e.label, category:e.category, scope:'page', status:e.fails>=e.warns?'fail':'warn', severity:w.sevName, sev:w.rank,
+      pagesAffected:n, urls:e.pages.slice(0,5), evidence:w.evidence, detail:w.detail, fix:e.fix, rank:w.rank*n }; });
   const capped=ok.filter(p=>p._score&&p._score.cap&&p._score.cap.applied!==false);
-  if(capped.length) page.push({ title:'Thin location pages (score capped)', category:'On-Page Content', scope:'page', status:'fail', severity:'High', sev:5,
+  if(capped.length) page.push({ title:capped.length+' thin location page'+(capped.length===1?'':'s')+' capped at '+(capped.some(p=>p._score.cap.max===70)?'70–80':'80'), check:'Thin location cap', category:'On-Page Content', scope:'page', status:'fail', severity:'High', sev:3,
     pagesAffected:capped.length, urls:capped.slice(0,5).map(p=>p.url), evidence:{ url:capped[0].url, snippet:capped[0]._score.cap.reason+' → capped at '+capped[0]._score.cap.max },
-    detail:capped.length+' location page'+(capped.length===1?'':'s')+' capped at 70 (<150 unique words) or 80 (<300)', fix:'Write 300+ words that only this town\'s page has: its roads, exits, landmarks, local FAQs.', rank:5*capped.length });
-  const site=(res.siteFindings||[]).filter(f=>f.status==='fail'||f.status==='warn').map(f=>{ const sev=(f.status==='fail'?1:0.5)*Math.max(f.points,1);
+    detail:capped.length+' location page'+(capped.length===1?'':'s')+' capped at 70 (<150 unique words) or 80 (<300)', fix:'Write 300+ words that only this town’s page has: its roads, exits, landmarks, local FAQs.', rank:3*capped.length });
+  // Site findings: severity from the points they take off their component (fail = all, warn = half).
+  const site=(res.siteFindings||[]).filter(f=>f.status==='fail'||f.status==='warn').map(f=>{ const sevName=shortfallSeverity(f.status==='fail'?f.points:f.points/2), rank=SEV_RANK[sevName];
     const urls=[...new Set((f.evidence||[]).map(e=>e.url).filter(Boolean))];
-    return { title:f.label, category:COMPONENT_NAMES[f.component]||f.component, scope:'site', status:f.status, severity:sevLabel(sev), sev, pagesAffected:Math.max(1,urls.length), urls:urls.slice(0,5),
-      evidence:(f.evidence||[])[0]||{ snippet:f.detail }, detail:f.detail, fix:f.fix, rank:sev*Math.max(1,urls.length) }; });
+    return { title:problemTitle(f), check:f.label, category:COMPONENT_NAMES[f.component]||f.component, scope:'site', status:f.status, severity:sevName, sev:rank, pagesAffected:Math.max(1,urls.length), urls:urls.slice(0,5),
+      evidence:(f.evidence||[])[0]||{ snippet:f.detail }, detail:f.detail, fix:f.fix, rank:rank*Math.max(1,urls.length) }; });
   return page.concat(site).sort((a,b)=>b.rank-a.rank||b.sev-a.sev);
 }
 function topFixesHTML(list){
@@ -2045,6 +2209,13 @@ function findingsByCategoryHTML(list, root){
       +(f.urls.length?'<div style="font-size:12px;color:#475569">'+f.urls.map(rel).join(' · ')+(f.pagesAffected>5?' · …':'')+'</div>':'')
       +(f.evidence&&f.evidence.snippet?'<div style="font-size:12px;font-family:ui-monospace,Consolas,monospace;background:#f8fafc;border:1px solid #eef2f7;border-radius:4px;padding:4px 6px;margin:4px 0;word-break:break-word">'+(f.evidence.url?rel(f.evidence.url)+' — ':'')+esc(snip(f.evidence.snippet,220))+'</div>':'')
       +(f.fix?'<div style="font-size:12px"><b>Fix:</b> '+esc(f.fix)+'</div>':'')+'</div>').join('')+'</details>').join('');
+}
+// Pages the crawl found but could not load, with the HTTP status and the error.
+function failedPagesHTML(res){
+  const f=(res.pages||[]).filter(p=>p.error); if(!f.length) return '';
+  return '<h3 style="margin:22px 0 8px;font-size:15px">Pages that failed to load ('+f.length+')</h3><div style="overflow:auto"><table style="border-collapse:collapse;width:100%;font-size:13px">'
+    +'<tr><th style="text-align:left;padding:5px 8px;border-bottom:2px solid #e2e8f0;font-size:12px;color:#64748b">URL</th><th style="text-align:left;padding:5px 8px;border-bottom:2px solid #e2e8f0;font-size:12px;color:#64748b">Status</th><th style="text-align:left;padding:5px 8px;border-bottom:2px solid #e2e8f0;font-size:12px;color:#64748b">Error</th></tr>'
+    +f.map(p=>'<tr style="border-bottom:1px solid #eef2f7"><td style="padding:5px 8px;word-break:break-all">'+esc(p.url)+'</td><td style="padding:5px 8px">'+(p.status||'—')+(p.challenged?' (bot challenge)':'')+'</td><td style="padding:5px 8px;color:#475569">'+esc(snip(p.error,140))+'</td></tr>').join('')+'</table></div>';
 }
 // Industry taxonomy × site(s): ✓ own page · ◐ mentioned only · ✗ missing.
 function coverageMatrixHTML(results){
@@ -2197,7 +2368,7 @@ function siteReportHTML(res){
         +'<div style="font-size:15px"><b>Average page response: <span style="color:'+col+'">'+fmt(v)+'</span></b> &nbsp;·&nbsp; median '+fmt(pf.median)+' &nbsp;·&nbsp; slowest '+fmt(pf.max)+' &nbsp;<span style="color:#64748b">(across '+pf.count+' pages)</span></div>'
         +'<div style="color:'+col+';font-weight:700;margin-top:2px">'+verdict+'</div>'
         +'<div style="font-size:12px;color:#64748b;margin-top:4px">Measured live while crawling (server + network time to fetch each page). Slow responses mean a slower experience for visitors and search engines, which can hurt rankings and reduce how often your pages get crawled and indexed.</div>'
-        +((pf.slow&&pf.slow.length)?('<div style="margin-top:8px"><b style="color:#b91c1c">Slowest pages (over 2s):</b><div style="font-size:12px;color:#475569;margin-top:3px;line-height:1.7">'+pf.slow.slice(0,8).map(o=>esc(o.url.replace(res.root,'')||'/')+' — <b>'+fmt(o.ms)+'</b>').join('<br>')+(pf.slow.length>8?'<br>…and '+(pf.slow.length-8)+' more':'')+'</div></div>'):'')
+        +((pf.slow&&pf.slow.length)?('<div style="margin-top:8px"><b style="color:#b91c1c">Slowest pages (over 2s):</b><div style="font-size:12px;color:#475569;margin-top:3px;line-height:1.7">'+pf.slow.slice(0,8).map(o=>esc(o.url.replace(res.root,'')||'/')+' — <b>'+fmt(o.ms)+'</b>'+(o.retestMs?' · retested alone: '+o.retestMs.map(fmt).join(', ')+(o.loadOnly?' <span style="color:#16a34a;font-weight:700">slow under crawl load only</span>':' <span style="color:#b91c1c;font-weight:700">slow on its own</span>'):'')).join('<br>')+(pf.slow.length>8?'<br>…and '+(pf.slow.length-8)+' more':'')+'</div></div>'):'')
       +'</div>';
   })();
   const loc=res.local;
@@ -2248,6 +2419,7 @@ function siteReportHTML(res){
       out+=issue('JavaScript-rendered (invisible to AI/Bing)', cp.jsRendered, u=>esc(u.replace(res.root,'')||'/'));
       out+=issue('Missing H1', cp.missingH1, u=>esc(u.replace(res.root,'')||'/'));
       return out||'<div style="color:#16a34a;font-size:13px">No site-wide issues detected across audited pages.</div>'; })()
+    +failedPagesHTML(res)
     +findingsByCategoryHTML(allFindings(res), res.root)
     +coverageMatrixHTML([res])
     +stackHTML(res.stack)
@@ -2269,7 +2441,7 @@ function reportHTML(r){
   const passes=r.checks.filter(c=>c.status==='pass');
   const cats=Object.keys(sc.byCat);
   const F="font-family:'Inter',system-ui,Arial,sans-serif;color:#0f172a";
-  const card=c=>{const scol=c.status==='fail'?'#dc2626':'#f59e0b';return '<div style="border:1px solid #e2e8f0;border-left:5px solid '+scol+';border-radius:6px;padding:12px 14px;margin:0 0 10px"><div style="font-weight:800">'+esc(c.label)+'</div>'+(c.detail?'<div style="font-size:13px;color:#475569;margin-top:3px"><b>Now:</b> '+esc(c.detail)+'</div>':'')+(c.why?'<div style="font-size:13px;color:#475569;margin-top:3px"><b>Why:</b> '+esc(c.why)+'</div>':'')+(c.fix?'<div style="font-size:13px;margin-top:3px"><b>Fix:</b> '+esc(c.fix)+'</div>':'')+'</div>';};
+  const card=c=>{const scol=c.status==='fail'?'#dc2626':'#f59e0b';return '<div style="border:1px solid #e2e8f0;border-left:5px solid '+scol+';border-radius:6px;padding:12px 14px;margin:0 0 10px"><div style="font-weight:800">'+esc(c.issue||problemTitle(c))+'</div>'+(c.detail?'<div style="font-size:13px;color:#475569;margin-top:3px"><b>Now:</b> '+esc(c.detail)+'</div>':'')+(c.why?'<div style="font-size:13px;color:#475569;margin-top:3px"><b>Why:</b> '+esc(c.why)+'</div>':'')+(c.fix?'<div style="font-size:13px;margin-top:3px"><b>Fix:</b> '+esc(c.fix)+'</div>':'')+'</div>';};
   let speed='';
   if(r.speed&&((r.speed.mobile&&!r.speed.mobile.error)||(r.speed.desktop&&!r.speed.desktop.error))){
     const m=r.speed.mobile,d=r.speed.desktop;
@@ -2303,7 +2475,7 @@ function findingsHTML(r){
   const sc=score(r);
   const issues=r.checks.filter(c=>c.status==='fail'||c.status==='warn').sort((a,b)=>(a.status===b.status?b.points-a.points:(a.status==='fail'?-1:1)));
   const col=sc.score>=91?'#16a34a':sc.score>=80?'#ea580c':'#dc2626';
-  const rows=issues.map(c=>`<li style="margin:6px 0"><b style="color:${c.status==='fail'?'#b91c1c':'#b45309'}">${esc(c.label)}</b>${c.fix?`<br><span style="opacity:.8">${esc(c.fix)}</span>`:''}</li>`).join('');
+  const rows=issues.map(c=>`<li style="margin:6px 0"><b style="color:${c.status==='fail'?'#b91c1c':'#b45309'}">${esc(c.issue||problemTitle(c))}</b>${c.fix?`<br><span style="opacity:.8">${esc(c.fix)}</span>`:''}</li>`).join('');
   return `<div>
     <div style="font-size:20px;font-weight:800;color:${col}">Grade ${sc.grade} · ${sc.score}/100</div>
     <div style="opacity:.8;font-size:13px;margin:2px 0 8px">${sc.counts.fail} critical · ${sc.counts.warn} to improve · ${sc.counts.pass} passing</div>
@@ -2433,12 +2605,12 @@ function comparisonHTML(items){
 }
 const API={ BRAND, PROXIES, TAGS, AI_BOTS, AISEARCH, PROJECT_FIXES, sleep, esc, isQuick, setAbort,
   fetchHtml, fetchAux, aiCrawlerStatus, auditOne, addAux, fetchPSI, addSpeed, score, audit,
-  ENGINE_VERSION, engineFooterHTML, catPercent, measureAssets, loadIndustry, allFindings, discoverPages, sitemapSummary, crossPageIssues, crawlSite, siteReportHTML, siteTopIssues, siteComparisonHTML, speedRunsHTML, aiExplainerHTML, ctaBlockHTML, PSI_RUNS,
+  ENGINE_VERSION, engineFooterHTML, failedPagesHTML, retestSlowPages, pageTypesFor, gbpQuery, titleBrand, problemTitle, checkSeverity, shortfallSeverity, catPercent, measureAssets, loadIndustry, allFindings, discoverPages, sitemapSummary, crossPageIssues, crawlSite, siteReportHTML, siteTopIssues, siteComparisonHTML, speedRunsHTML, aiExplainerHTML, ctaBlockHTML, PSI_RUNS,
   reportHTML, findingsHTML, emailHTML, emailText, comparisonHTML,
   // building blocks, exposed for tests
   classifyPage, mainContent, localEntities, countClaims, h1Glued, smsLabelTelLinks, businessSchema, ldNodes, AI_SEARCH_BOTS, AI_TRAINING_BOTS,
   // individual checks, for unit tests
-  _x:{ soft404Check, viewportZoomCheck, headingHierarchyCheck, imageCheck, weightCheck, pageAssets, robotsRulesFor, robotsAllowed, chainOf, technicalFindings, applyDeductions, titleQualityCheck, titlePixels, genericH1Check, descEqualsTitleCheck, genericAnchorCheck, onPageLinkFindings, yearClaims, staleClaimsCheck, placeholderCheck, defaultPrivacyCheck, contentFreshnessFindings, contradictionFindings, serviceCoverage, locationCoverage, callAboveFoldCheck, areaCodeCheck, localFindings, jsonLdSyntaxCheck, businessEntityCheck, schemaNapCheck, openingHoursCheck, serviceSchemaCheck, breadcrumbCheck, faqMatchCheck, schemaTypesCheck, licenseCheck, pricingCheck, insuranceCheck, trustFindings, resolveAsyncFindings, questionAnswerCheck, citableFactsCheck, aiSiteFindings, stackFingerprint, loadIndustry, setMarket:(m)=>{ _market=m; } } };
+  _x:{ soft404Check, viewportZoomCheck, headingHierarchyCheck, imageCheck, weightCheck, pageAssets, robotsRulesFor, robotsAllowed, chainOf, technicalFindings, applyDeductions, titleQualityCheck, uniqueContentCheck, titlePixels, genericH1Check, descEqualsTitleCheck, genericAnchorCheck, onPageLinkFindings, yearClaims, staleClaimsCheck, placeholderCheck, defaultPrivacyCheck, contentFreshnessFindings, contradictionFindings, serviceCoverage, locationCoverage, callAboveFoldCheck, areaCodeCheck, localFindings, jsonLdSyntaxCheck, businessEntityCheck, schemaNapCheck, openingHoursCheck, serviceSchemaCheck, breadcrumbCheck, faqMatchCheck, schemaTypesCheck, licenseCheck, pricingCheck, insuranceCheck, trustFindings, resolveAsyncFindings, questionAnswerCheck, citableFactsCheck, aiSiteFindings, stackFingerprint, loadIndustry, setMarket:(m)=>{ _market=m; } } };
 root.SEO=API;
 if(typeof module!=="undefined"&&module.exports) module.exports=API;
 })(typeof window!=="undefined"?window:globalThis);

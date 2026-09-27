@@ -517,27 +517,14 @@ app.post('/api/lead', rateLimit({ windowMs: 600000, max: 5 }), async (req, res) 
 });
 
 // ---------- Google Places reviews (server-side, optional) ----------
-async function placesLookup(query) {
-  const key = process.env.PLACES_API_KEY;
-  const ts = await fetch(`https://maps.googleapis.com/maps/api/place/textsearch/json?query=${encodeURIComponent(query)}&key=${key}`).then(r => r.json());
-  const first = ts.results && ts.results[0];
-  if (!first) return { found: false };
-  const det = await fetch(`https://maps.googleapis.com/maps/api/place/details/json?place_id=${first.place_id}&fields=name,rating,user_ratings_total,url,formatted_address,formatted_phone_number,reviews,website,opening_hours&key=${key}`).then(r => r.json());
-  const d = det.result || {};
-  return {
-    found: true,
-    name: d.name, rating: d.rating, reviews: d.user_ratings_total,
-    address: d.formatted_address, phone: d.formatted_phone_number, mapsUrl: d.url, website: d.website || null,
-    // GBP hours; open247 = Google's "open 24 hours" (one period opening Sunday 00:00 with no close).
-    hours: d.opening_hours ? { weekdayText: d.opening_hours.weekday_text || [], open247: !!(d.opening_hours.periods && d.opening_hours.periods.length === 1 && d.opening_hours.periods[0].open && d.opening_hours.periods[0].open.time === '0000' && !d.opening_hours.periods[0].close) } : null,
-    recent: (d.reviews || []).slice(0, 3).map(x => ({ author: x.author_name, rating: x.rating, text: x.text, when: x.relative_time_description })),
-  };
-}
+// Name + phone (address fallback), phone match wins — see places.js.
+const { makePlacesLookup } = require('./places');
+const placesLookup = (name, opts) => makePlacesLookup(u => fetch(u).then(r => r.json()), process.env.PLACES_API_KEY)(name, opts);
 app.get('/api/places', rateLimit({ windowMs: 60000, max: 20 }), async (req, res) => {
   if (!cfg.places) return res.status(503).json({ error: 'places_not_configured' });
-  const query = (req.query.q || req.query.name || '').trim();
-  if (!query) return res.status(400).json({ error: 'q_required' });
-  try { res.json(await placesLookup(query)); }
+  const query = (req.query.q || req.query.name || '').trim(), phone = (req.query.phone || '').trim(), address = (req.query.address || '').trim();
+  if (!query && !phone && !address) return res.status(400).json({ error: 'q_required' });
+  try { res.json(await placesLookup(query, { phone, address })); }
   catch (e) { res.status(502).json({ error: 'places_failed' }); }
 });
 

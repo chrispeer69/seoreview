@@ -8,11 +8,12 @@ const path = require('path');
 const zlib = require('zlib');
 const headless = require('../headless-audit');
 
-async function crawl(domain, root) {
+async function crawl(domain, root, override) {
   const fx = JSON.parse(zlib.gunzipSync(fs.readFileSync(path.join(__dirname, 'fixtures', domain + '.json.gz'))).toString('utf8'));
   const get = k => { if (k in fx.calls) return fx.calls[k]; throw Object.assign(new Error('not in fixture: ' + k), { code: 502 }); };
   const deps = { renderEnabled: false, placesEnabled: false, proxyFetch: async t => get('proxy:' + t), linkCheck: async t => get('check:' + t),
     directFetch: async u => get('direct:' + String(u).replace(/([?&])key=[^&]*/, '$1key=_')), renderFetch: async () => null, placesLookup: async () => null };
+  Object.assign(deps, (override && override(deps, get)) || {});
   const out = await headless.crawlSite(deps, root, { maxPages: 150, concurrency: 4, psiKey: 'x', now: fx.recorded, industry: 'towing' });
   return out.result;
 }
@@ -95,4 +96,62 @@ test('Engine version: results carry it and every report footer prints it', async
   assert.match(win.SEO.siteReportHTML(rs), new RegExp('Audit engine v' + v));
   assert.match(win.SEO.reportHTML(rs.pages.find(p => !p.error)), new RegExp('Audit engine v' + v));
   assert.match(win.SEO.siteReportHTML(Object.assign({}, rs, { engineVersion: 'old-12345678' })), /Audit engine vold-12345678/, 'a saved report shows the engine that produced it');
+});
+
+// ---------------- Live-report fixes on the real crawls ----------------
+test('GBP lookup on Roadside searches its business name + phone (not "Towing Columbus OH")', async () => {
+  const calls = [];
+  const res = await crawl('columbusroadsidetowing.com', 'https://www.columbusroadsidetowing.com', () => ({ placesEnabled: true,
+    placesLookup: async (q, o) => { calls.push({ q, o }); return { found: true, name: 'Roadside Towing & Recovery Inc', phone: '(740) 812-9489', address: '1620 Harrisburg Pike, Columbus, OH 43223', matchedBy: 'phone' }; } }));
+  assert.strictEqual(calls.length, 1);
+  assert.strictEqual(calls[0].q, 'Roadside Towing & Recovery Inc');
+  assert.strictEqual(calls[0].o.phone, '(740) 812-9489');
+  assert.ok(!/towing columbus/i.test(calls[0].q));
+  assert.strictEqual(res.local.found, true); assert.strictEqual(res.local.matchedBy, 'phone');
+});
+
+test('Severity bands on real pages: sibling overlap and unique content', () => {
+  [bj, rs].forEach(res => res.pages.filter(p => !p.error).forEach(p => {
+    const sib = chk(p, 'Unique vs sibling pages');
+    if (sib && sib.points) { const pct = +(sib.detail.match(/^(\d+)%/) || [])[1];
+      const want = pct < 40 ? undefined : pct < 60 ? 'Medium' : pct < 80 ? 'High' : 'Critical';
+      assert.strictEqual(sib.severity, want, p.url + ' overlap ' + pct + '%'); }
+    const uc = chk(p, 'Unique content');
+    if (uc && uc.points && uc.status !== 'pass') { const w = +(uc.detail.match(/^(\d+) words/) || [])[1];
+      const want = w < 150 ? 'Critical' : w < 300 ? 'High' : w < 500 ? 'Medium' : 'Low';
+      assert.strictEqual(uc.severity, want, p.url + ' ' + w + ' words'); }
+  }));
+});
+
+test('Every warned/failed check has a problem-state title (not its check name)', () => {
+  const bad = [];
+  [bj, rs].forEach(res => {
+    res.pages.filter(p => !p.error).forEach(p => p.checks.filter(c => c.status === 'fail' || c.status === 'warn').forEach(c => {
+      if (!c.issue || c.issue === c.label || c.issue.startsWith(c.label + ':') || /undefined|null/.test(c.issue)) bad.push(c.label + ' → ' + c.issue); }));
+    const w = require('jsdom'); const win = new w.JSDOM('', { runScripts: 'outside-only' }).window; win.eval(require('../engine-version').engineSource());
+    res.siteFindings.filter(f => f.status === 'fail' || f.status === 'warn').forEach(f => { const t = win.SEO.problemTitle(f); if (!t || t === f.label || /undefined|null/.test(t)) bad.push('site: ' + f.label + ' → ' + t); });
+  });
+  assert.deepStrictEqual([...new Set(bad)], []);
+  const js = bj.pages.map(p => chk(p, 'Reasonable page weight')).find(c => c && c.status === 'warn');
+  assert.match(js.issue, /^JavaScript too heavy: [\d.]+ (KB|MB)$/);
+});
+
+test('Failed-to-load pages are listed with their status and error', async () => {
+  const dead = 'https://broadandjames.com/gallery/';
+  const res = await crawl('broadandjames.com', 'https://broadandjames.com', (deps, get) => ({ proxyFetch: async t => { if (t === dead) throw Object.assign(new Error('timeout'), { code: 504 }); return get('proxy:' + t); } }));
+  const f = res.pages.find(p => p.url === dead);
+  assert.ok(f && f.error, 'gallery should fail'); assert.strictEqual(f.status, 200, 'status from the URL check');
+  const w = require('jsdom'); const win = new w.JSDOM('', { runScripts: 'outside-only' }).window; win.eval(require('../engine-version').engineSource());
+  const html = win.SEO.failedPagesHTML(res); assert.match(html, /Pages that failed to load \(1\)/); assert.match(html, /gallery/);
+});
+
+test('One classifier: the sitemap columns and the crawl count the same service / location pages', () => {
+  const fx = JSON.parse(zlib.gunzipSync(fs.readFileSync(path.join(__dirname, 'fixtures', 'columbusroadsidetowing.com.json.gz'))).toString('utf8'));
+  const xml = fx.calls['proxy:https://www.columbusroadsidetowing.com/sitemap.xml'].body;
+  const urls = [...xml.matchAll(/<loc>\s*([^<\s]+)\s*<\/loc>/g)].map(m => m[1]);
+  const w = require('jsdom'); const win = new w.JSDOM('', { runScripts: 'outside-only' }).window; win.eval(require('../engine-version').engineSource());
+  const types = Object.values(win.SEO.pageTypesFor(urls));
+  const cov = rs.siteBreakdown.coverage;
+  assert.strictEqual(types.filter(t => t === 'service').length, cov.service);
+  assert.strictEqual(types.filter(t => t === 'location').length, cov.location);
 });

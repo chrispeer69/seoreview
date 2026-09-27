@@ -80,9 +80,9 @@ function makeFetch(deps) {
         return jsonResponse(200, { results });
       }
       if (p === '/api/places') {
-        const q = rel.searchParams.get('q') || rel.searchParams.get('name') || '';
-        if (!q) return jsonResponse(400, { error: 'q_required' });
-        try { return jsonResponse(200, await deps.placesLookup(q)); } catch (e) { return jsonResponse(502, { error: 'places_failed' }); }
+        const q = rel.searchParams.get('q') || rel.searchParams.get('name') || '', phone = rel.searchParams.get('phone') || '', address = rel.searchParams.get('address') || '';
+        if (!q && !phone && !address) return jsonResponse(400, { error: 'q_required' });
+        try { return jsonResponse(200, await deps.placesLookup(q, { phone, address })); } catch (e) { return jsonResponse(502, { error: 'places_failed' }); }
       }
       if (p === '/api/config') return jsonResponse(200, { teamEnabled: false, placesEnabled: false, geocodeEnabled: false, emailEnabled: false, stripeEnabled: false, crmEnabled: false, renderEnabled: false, user: null });
       return jsonResponse(404, { error: 'not_found' });
@@ -134,7 +134,7 @@ async function crawlSite(deps, root, opts) {
       max: opts.maxPages || 100,
       concurrency: opts.concurrency || 4,
       render: deps.renderEnabled ? (u => w.fetch('/api/render?url=' + encodeURIComponent(u)).then(r => (r.ok ? r.text() : null)).catch(() => null)) : null,
-      places: deps.placesEnabled ? (q => w.fetch('/api/places?q=' + encodeURIComponent(q)).then(r => (r.ok ? r.json() : null)).catch(() => null)) : null,
+      places: deps.placesEnabled ? ((q, o) => w.fetch('/api/places?q=' + encodeURIComponent(q || '') + '&phone=' + encodeURIComponent((o && o.phone) || '') + '&address=' + encodeURIComponent((o && o.address) || '')).then(r => (r.ok ? r.json() : null)).catch(() => null)) : null,
       onProgress: opts.onProgress || function () {},
       psiKey: opts.psiKey || '',          // PageSpeed on the homepage + 2 money pages (technical part of the site score)
       speed: opts.speed !== false,
