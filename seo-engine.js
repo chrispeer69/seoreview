@@ -2448,11 +2448,15 @@ function siteComparisonHTML(results){
       +'<td style="padding:8px;font-weight:700;white-space:nowrap">'+esc(String(r.root).replace(/^https?:\/\/(www\.)?/,''))+'<div style="font-size:11px;color:#94a3b8;font-weight:400">'+((r.coverage||{}).audited||0)+' pages audited</div></td>'
       +td(grade(r.siteScore)+' · '+r.siteScore,gcol(r.siteScore))+td(b.pageAverage)+td(b.coverage&&b.coverage.score)+td(b.freshness&&b.freshness.score)+td(b.linkHealth&&b.linkHealth.score)+td(b.duplication&&b.duplication.score)+td(mob)+td(b.aiSearch)
       +'<td style="padding:8px;font-size:12px;color:#475569">'+(top?esc(top.title):'—')+'</td></tr>'; }).join('');
+  const cta=(results||[]).find(r=>r&&r.rep)||{};
   return '<div style="'+F+'">'
+    +handleItHTML(cta,'top')
     +'<div style="border-bottom:3px solid #0f172a;padding-bottom:12px;margin-bottom:14px"><div style="font-size:20px;font-weight:800">Full-site comparison — '+rows.length+' site'+(rows.length===1?'':'s')+' ranked</div><div style="color:#64748b;font-size:13px">'+esc(BRAND.name)+' · every page of every site crawled and scored the same way</div></div>'
     +'<div style="overflow:auto"><table style="border-collapse:collapse;width:100%;font-size:13px"><tr>'+th('#')+th('Site')+th('Score')+th('Pages')+th('Coverage')+th('Freshness')+th('Links')+th('Duplication')+th('Mobile speed')+th('AI search')+th('Biggest issue')+'</tr>'+body+'</table></div>'
+    +handleItHTML(cta,'fixes')
     +coverageMatrixHTML(rows)
     +(failed.length?'<div style="font-size:12px;color:#b91c1c;margin-top:8px">Could not crawl: '+failed.map(r=>esc((r&&r.root)||'?')+(r&&r.error?' ('+esc(r.error)+')':'')).join(' · ')+'</div>':'')
+    +handleItHTML(cta,'footer')
     +engineFooterHTML(((results||[]).find(r=>r&&r.engineVersion)||{}).engineVersion)
     +'<div style="font-size:12px;color:#64748b;margin-top:8px">Score = 50% average page score + 50% site level (coverage, freshness, link health, duplication, technical). Mobile speed is the homepage\'s median of '+PSI_RUNS+' PageSpeed runs.</div>'
   +'</div>';
@@ -2481,9 +2485,53 @@ function ctaBlockHTML(){
     +'<div style="margin-top:8px;font-size:13px">'+sites+'</div>'
   +'</div>';
 }
+// "Handle this for me": call or text the assigned rep. The rep is the result's `rep` (a BRAND.contacts name), or
+// ?rep=<name> on the report link, else the first contact. Every tap is beaconed to seoreview with the report link
+// (location.href), so taps are counted per link wherever the report is hosted.
+const CTA_TRACK_URL='https://seoreview-production.up.railway.app/api/cta-tap';
+const PACKAGES=[
+  { name:'Fix-It Sprint', scope:'We fix the top issues in this report: titles, schema, broken links, page speed.', price:'from $___' },
+  { name:'Local Growth', scope:'Service + town pages, Google Business Profile and a review engine, tracked on the map grid monthly.', price:'from $___/mo' },
+  { name:'Done-For-You Website', scope:'A fast, AI-search-ready site with tap-to-call on every screen and call tracking.', price:'from $___' },
+];
+function repFor(x){
+  const list=BRAND.contacts||[]; let want=x&&x.rep;
+  try{ const m=/[?&]rep=([a-z]+)/i.exec((root.location&&root.location.search)||''); if(m) want=m[1]; }catch(e){}
+  return list.find(c=>c.name.toLowerCase()===String(want||'').toLowerCase())||list[0]||null;
+}
+// where: 'top' | 'fixes' | 'footer'. The 'fixes' block is the full one, with "What we'll do".
+function handleItHTML(x, where, domain){
+  const rep=repFor(x); if(!rep) return '';
+  const telNum=rep.tel||rep.phone, body='Hi '+rep.name+', please handle the fixes in my SEO report'+(domain?' for '+domain:'')+'.';
+  const nm='<span data-cta-name>'+esc(rep.name)+'</span>';
+  const tap=kind=>"try{navigator.sendBeacon('"+CTA_TRACK_URL+"',JSON.stringify({link:location.href,kind:'"+kind+"',where:'"+where+"',rep:this.getAttribute('data-cta-rep')}))}catch(e){}";
+  const btn=(kind,label,href,bg)=>'<a href="'+esc(href)+'" data-cta="'+kind+'" data-cta-rep="'+esc(rep.name)+'" onclick="'+esc(tap(kind))+'" style="display:inline-block;background:'+bg+';color:#fff;text-decoration:none;font-weight:800;font-size:15px;padding:12px 18px;border-radius:10px;margin:4px 8px 4px 0;min-width:130px;text-align:center">'+label+'</a>';
+  const buttons=btn('call','📞 Call '+nm,'tel:'+telNum,'#16a34a')+btn('text','💬 Text '+nm,'sms:'+telNum+'?&body='+encodeURIComponent(body),'#2563eb');
+  if(where!=='fixes') return '<div data-handle-it="'+where+'" style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;padding:12px 14px;margin:0 0 16px;display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px">'
+    +'<div style="font-weight:800;font-size:15px;color:#0f172a">Handle this for me<div style="font-weight:400;font-size:13px;color:#475569">'+nm+' will fix it for you · <span data-cta-phone>'+esc(rep.phone)+'</span></div></div><div>'+buttons+'</div></div>'
+    +(where==='footer'?repSwitchScript():'');
+  return '<div data-handle-it="fixes" style="background:#0f172a;color:#fff;border-radius:12px;padding:18px 18px 14px;margin:18px 0">'
+    +'<div style="font-size:18px;font-weight:800">Handle this for me</div>'
+    +'<div style="font-size:14px;color:#cbd5e1;margin:4px 0 10px">Don’t want to do it yourself? '+nm+' will take it from here.</div>'+buttons
+    +'<div style="font-size:12px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#94a3b8;margin:14px 0 6px">What we’ll do</div>'
+    +PACKAGES.map(p=>'<div style="border-top:1px solid #1e293b;padding:8px 0;display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap"><div style="flex:1 1 220px"><b>'+esc(p.name)+'</b><div style="font-size:13px;color:#cbd5e1">'+esc(p.scope)+'</div></div><div style="font-weight:800;color:#93c5fd;white-space:nowrap">'+esc(p.price)+'</div></div>').join('')
+    +'</div>';
+}
+// A stored report (e.g. /report/:id) was rendered with its default rep; this swaps in ?rep=<name> when the page loads.
+// (Reports inserted with innerHTML never run it; there the engine read ?rep= itself while rendering.)
+function repSwitchScript(){
+  const reps={}; (BRAND.contacts||[]).forEach(c=>{ reps[c.name.toLowerCase()]={ name:c.name, phone:c.phone, tel:c.tel||c.phone }; });
+  return '<script>(function(){try{var m=/[?&]rep=([a-z]+)/i.exec(location.search);var R='+JSON.stringify(reps).replace(/</g,'')+';var r=m&&R[m[1].toLowerCase()];if(!r)return;'
+    +'document.querySelectorAll("[data-cta-name]").forEach(function(s){s.textContent=r.name;});'
+    +'document.querySelectorAll("[data-cta-phone]").forEach(function(s){s.textContent=r.phone;});'
+    +'document.querySelectorAll("a[data-cta]").forEach(function(a){var old=a.getAttribute("data-cta-rep");a.setAttribute("data-cta-rep",r.name);'
+    +'a.href=a.getAttribute("data-cta")==="call"?"tel:"+r.tel:"sms:"+r.tel+"?&body="+encodeURIComponent(decodeURIComponent(a.getAttribute("href").split("body=")[1]||"").split(old).join(r.name));});'
+    +'}catch(e){}})();</scr'+'ipt>';
+}
 function siteReportHTML(res){
   if(!res||res.error) return '<p style="color:#dc2626;font-family:Inter,Arial,sans-serif">Crawl failed: '+esc(res&&res.error||'unknown')+'</p>';
   const F="font-family:'Inter',system-ui,Arial,sans-serif;color:#0f172a";
+  const siteDomain=String(res.root||'').replace(/^https?:\/\/(www\.)?/,'').replace(/\/$/,'');
   const cov=res.coverage||{}; const cp=res.crossPage||{};
   const scol=s=> s==null?'#94a3b8':s>=90?'#16a34a':s>=80?'#65a30d':s>=70?'#f59e0b':s>=55?'#f97316':'#dc2626';
   const ok=(res.pages||[]).filter(p=>!p.error);
@@ -2520,10 +2568,12 @@ function siteReportHTML(res){
       : '<div style="border:1px solid #fee2e2;background:#fff7f7;border-radius:8px;padding:12px 14px;font-size:13px;color:#b91c1c">No Google Business Profile match found for "'+esc(gbpQueryText(loc.query))+'". If they should have one, it may be unclaimed/misnamed — a major gap for local &amp; AI search. Claiming and optimizing GBP is high priority.</div>'));
   return '<div style="'+F+'">'
     +'<div style="border-bottom:3px solid #0f172a;padding-bottom:12px;margin-bottom:14px"><div style="font-size:20px;font-weight:800">'+esc(BRAND.name)+' — Full-Site SEO &amp; AI Search Audit</div><div style="color:#64748b;font-size:13px">'+esc(res.root)+'</div></div>'
+    +handleItHTML(res,'top',siteDomain)
     +'<div style="font-size:13px;color:#334155;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:10px 12px;margin-bottom:14px"><b>Coverage:</b> '+coverageLine(cov)+' · discovery via <b>'+esc(cov.via||'?')+'</b>'+(cov.renderAvailable?(' · '+cov.rendered+' JS pages rendered'):' · JS-rendering off (raw HTML only)')+'.</div>'
     +'<div style="font-size:15px;margin-bottom:6px"><b>Site score:</b> <span style="font-size:26px;font-weight:800;color:'+scol(res.siteScore)+'">'+(res.siteScore==null?'—':res.siteScore)+'</span> / 100'+(res.siteBreakdown?'':' (average across audited pages)')+'</div>'
     +siteBreakdownHTML(res.siteBreakdown, scol)
     +topFixesHTML(allFindings(res))
+    +handleItHTML(res,'fixes',siteDomain)
     +speedRunsHTML(res.speed, res.root)
     +speedHTML
     +'<h3 style="margin:18px 0 8px;font-size:15px">Readiness by search engine</h3><div style="display:flex;gap:10px;flex-wrap:wrap">'
@@ -2564,6 +2614,7 @@ function siteReportHTML(res){
     +'<div style="overflow:auto"><table style="border-collapse:collapse;width:100%;font-size:13px"><tr><th style="text-align:left;padding:5px 8px;border-bottom:2px solid #e2e8f0;font-size:12px;color:#64748b">Grade</th><th style="text-align:left;padding:5px 8px;border-bottom:2px solid #e2e8f0;font-size:12px;color:#64748b">Page</th><th style="text-align:left;padding:5px 8px;border-bottom:2px solid #e2e8f0;font-size:12px;color:#64748b">Notes</th></tr>'+pageRows+'</table>'+(ok.length>60?'<div style="font-size:12px;color:#64748b;margin-top:6px">Showing first 60 of '+ok.length+'.</div>':'')+'</div>'
     +localHTML
     +aiExplainerHTML()
+    +handleItHTML(res,'footer',siteDomain)
     +ctaBlockHTML()
     +engineFooterHTML(res.engineVersion)
   +'</div>';
@@ -2590,6 +2641,7 @@ function reportHTML(r){
       +'<div><div style="font-size:20px;font-weight:800;color:#0f172a">'+esc(BRAND.name)+'</div><div style="color:#64748b;font-size:13px">'+esc(BRAND.tagline)+'</div></div>'
       +'<div style="text-align:right;font-size:12px;color:#64748b">SEO &amp; AI Search Audit<br>'+esc(r.domain)+' · '+esc(r.timestamp||'')+'</div>'
     +'</div>'
+    +handleItHTML(r,'top',r.domain)
     +sitemapLineHTML(r.sitemap)
     +'<div style="border:2px solid '+col+';border-radius:10px;padding:18px 20px;margin-bottom:16px">'
       +'<div style="font-size:12px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#64748b">Executive summary — '+esc(r.domain)+'</div>'
@@ -2601,8 +2653,10 @@ function reportHTML(r){
     +cats.map(cat=>{const p=catPercent(cat,sc.byCat[cat]);const c=p>=80?'#16a34a':p>=60?'#f59e0b':'#dc2626';return '<div style="display:flex;align-items:center;gap:10px;margin:6px 0;font-size:13px"><span style="flex:0 0 180px;color:#475569">'+esc(cat)+'</span><span style="flex:1;height:8px;background:#e2e8f0;border-radius:999px;overflow:hidden"><span style="display:block;height:100%;width:'+p+'%;background:'+c+'"></span></span><span style="flex:0 0 40px;text-align:right;font-weight:700;color:'+c+'">'+p+'%</span></div>';}).join('')
     +(quick.length?'<h3 style="margin:22px 0 8px;font-size:15px">Quick wins</h3>'+quick.map(card).join(''):'')
     +(proj.length?'<h3 style="margin:22px 0 8px;font-size:15px">Bigger projects</h3>'+proj.map(card).join(''):'')
+    +handleItHTML(r,'fixes',r.domain)
     +'<h3 style="margin:22px 0 8px;font-size:15px">What\'s working ('+passes.length+')</h3><div style="font-size:13px;color:#334155;line-height:1.7">'+passes.map(c=>'✓ '+esc(c.label)).join('<br>')+'</div>'
     +aiExplainerHTML()
+    +handleItHTML(r,'footer',r.domain)
     +ctaBlockHTML()
     +engineFooterHTML(r.engineVersion)
   +'</div>';
@@ -2733,11 +2787,15 @@ function comparisonHTML(items){
       +'<td style="padding:8px 10px;font-weight:800;color:'+gcol(r.sc.score)+'">'+r.sc.score+'</td>'
       +mob+cells+(hasSm?(r.sm&&r.sm.found?smTd(r.sm.total)+smTd(r.sm.service)+smTd(r.sm.location)+smTd(r.sm.newest):'<td colspan="4" style="padding:8px 10px;color:#94a3b8">'+(r.sm?'no sitemap':'—')+'</td>'):'')+'</tr>';
   }).join('');
+  const ctaFor=(items||[]).map(x=>x&&(x.rep?x:x.report)).find(x=>x&&x.rep)||{};
   return '<div style="'+F+'">'
     +'<div style="border-bottom:3px solid #0f172a;padding-bottom:12px;margin-bottom:16px"><div style="font-size:20px;font-weight:800">SEO &amp; AI Search — Side-by-Side</div><div style="color:#64748b;font-size:13px">'+esc(BRAND.name)+' · '+rows.length+' businesses ranked</div></div>'
     +(rows.some(r=>r.engine==='Homepage snapshot')?SNAPSHOT_BANNER_HTML:'')
+    +handleItHTML(ctaFor,'top')
     +'<div style="overflow:auto"><table style="border-collapse:collapse;width:100%;font-size:13px">'+head+body+'</table></div>'
+    +handleItHTML(ctaFor,'fixes')
     +'<div style="font-size:12px;color:#64748b;margin-top:10px">Ranked best to worst by overall score. Green ≥80% · amber 60–79% · red under 60%. The lowest-ranked businesses are your strongest sales prospects.</div>'
+    +handleItHTML(ctaFor,'footer')
   +'</div>';
 }
 const API={ BRAND, PROXIES, TAGS, AI_BOTS, AISEARCH, PROJECT_FIXES, sleep, esc, isQuick, setAbort,
@@ -2745,6 +2803,7 @@ const API={ BRAND, PROXIES, TAGS, AI_BOTS, AISEARCH, PROJECT_FIXES, sleep, esc, 
   ENGINE_VERSION, engineFooterHTML, intentionalNoindex, gbpQueryText, failedPagesHTML, nonHtmlHTML, isNonHtml, coverageLine, archiveDuplicationFinding, retestSlowPages, pageTypesFor, gbpQuery, titleBrand, problemTitle, checkSeverity, shortfallSeverity, catPercent, measureAssets, loadIndustry, allFindings, discoverPages, sitemapSummary, crossPageIssues, crawlSite, siteReportHTML, siteTopIssues, siteComparisonHTML, speedRunsHTML, aiExplainerHTML, ctaBlockHTML, PSI_RUNS,
   reportHTML, findingsHTML, emailHTML, emailText, comparisonHTML,
   // building blocks, exposed for tests
+  handleItHTML, repFor, PACKAGES, CTA_TRACK_URL,
   classifyPage, mainContent, localEntities, countClaims, h1Glued, smsLabelTelLinks, businessSchema, ldNodes, AI_SEARCH_BOTS, AI_TRAINING_BOTS,
   // individual checks, for unit tests
   _x:{ setBackoff:ms=>{ CHALLENGE_BACKOFF_MS=ms; }, soft404Check, viewportZoomCheck, headingHierarchyCheck, imageCheck, weightCheck, pageAssets, robotsRulesFor, robotsAllowed, chainOf, technicalFindings, applyDeductions, titleQualityCheck, uniqueContentCheck, titlePixels, genericH1Check, descEqualsTitleCheck, genericAnchorCheck, onPageLinkFindings, yearClaims, staleClaimsCheck, placeholderCheck, defaultPrivacyCheck, contentFreshnessFindings, contradictionFindings, serviceCoverage, locationCoverage, callAboveFoldCheck, areaCodeCheck, localFindings, jsonLdSyntaxCheck, businessEntityCheck, schemaNapCheck, napIssues, openingHoursCheck, serviceSchemaCheck, breadcrumbCheck, faqMatchCheck, schemaTypesCheck, licenseCheck, pricingCheck, insuranceCheck, trustFindings, resolveAsyncFindings, questionAnswerCheck, citableFactsCheck, aiSiteFindings, stackFingerprint, loadIndustry, setMarket:(m)=>{ _market=m; } } };

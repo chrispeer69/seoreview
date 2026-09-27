@@ -131,6 +131,15 @@ async function migrate() {
       stripe_session TEXT,
       created_at TIMESTAMPTZ DEFAULT now()
     );`);
+  // "Handle this for me" taps, one row per tap, keyed by the report link it happened on.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS cta_taps (
+      id BIGSERIAL PRIMARY KEY,
+      link TEXT NOT NULL,
+      kind TEXT, placement TEXT, rep TEXT,
+      created_at TIMESTAMPTZ DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS idx_cta_taps_link ON cta_taps(link);`);
   await apiV1.migrate(pool);
 }
 
@@ -245,6 +254,8 @@ function requireAuth(req, res, next) {
   if (loggedIn(req)) return next();
   return res.status(401).json({ error: 'auth_required' });
 }
+
+const { ctaTap, ctaLinkKey } = require('./cta');
 
 // ---------- Public API: config ----------
 app.get('/api/config', (req, res) => {
@@ -885,6 +896,25 @@ app.get('/buy/:token', async (req, res) => {
     const url = await stripeCreateCheckout(req.params.token, rows[0].name);
     return url ? res.redirect(url) : res.redirect('/r/' + req.params.token + '?payerr=1');
   } catch (e) { res.status(500).send('error'); }
+});
+// Public: a "Handle this for me" tap (navigator.sendBeacon from any hosted report, text/plain JSON). Always 204 so a
+// report never waits on it. The link is the report page URL; the engine's CTA sends it.
+app.post('/api/cta-tap', rateLimit({ windowMs: 60000, max: 30 }), express.text({ type: '*/*', limit: '4kb' }), async (req, res) => {
+  res.set('Access-Control-Allow-Origin', '*');
+  const t = ctaTap(req.body);
+  if (t && pool) { try { await pool.query('INSERT INTO cta_taps (link,kind,placement,rep) VALUES ($1,$2,$3,$4)', [t.link, t.kind, t.where, t.rep]); } catch (e) { console.error('cta-tap', e.message); } }
+  res.status(204).end();
+});
+// Team: taps per report link (?link= narrows to one link, matched on its path).
+app.get('/api/cta-taps', requireAuth, async (req, res) => {
+  if (!pool) return res.json({ links: [] });
+  const link = String(req.query.link || '');
+  try {
+    const { rows } = await pool.query(`SELECT link, COUNT(*)::int AS taps, COUNT(*) FILTER (WHERE kind='call')::int AS calls,
+      COUNT(*) FILTER (WHERE kind='text')::int AS texts, MIN(created_at) AS first_tap, MAX(created_at) AS last_tap, MAX(rep) AS rep
+      FROM cta_taps ${link ? 'WHERE link LIKE $1' : ''} GROUP BY link ORDER BY MAX(created_at) DESC LIMIT 500`, link ? ['%' + ctaLinkKey(link) + '%'] : []);
+    res.json({ links: rows });
+  } catch (e) { res.status(500).json({ error: 'load_failed' }); }
 });
 // Public: the hosted report page (app HTML handles render/teaser by token)
 app.get('/r/:token', (req, res) => sendToolPage(req, res));
