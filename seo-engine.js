@@ -286,7 +286,11 @@ function classifyPage(u, nodes, ctx){
   if(segs.some(s=>/^(category|categories|tag|tags|author|archives?)$/.test(s)) || segs.includes('page') || segs.every(s=>/^\d+$/.test(s))) return 'archive';
   if(segs.length===1 && RE_BLOG_DIR.test(segs[0])) return 'archive';          // the blog index is a listing
   if((segs.length>=2 && RE_BLOG_DIR.test(segs[0])) || /^\d{4}$/.test(segs[0])) return 'blog';
-  if((nodes||[]).some(n=>typesOf(n).some(t=>t==='BlogPosting'||t==='NewsArticle'))) return 'blog';
+  // A blog post: BlogPosting / NewsArticle schema, or "Article" schema on a WordPress post (body class single-post) -
+  // SEO plugins also put "Article" on ordinary pages (broadandjames.com /services/), so Article alone is not enough.
+  // A "<service>-in-<city>" slug stays a money page even as a post (capitaltowing.com publishes those as posts).
+  const types=(nodes||[]).flatMap(typesOf);
+  if(!slugParts(u) && (types.some(t=>t==='BlogPosting'||t==='NewsArticle') || (ctx&&ctx.wpPost&&types.includes('Article')))) return 'blog';
   if(segs.some((s,i)=>RE_LOC_DIR.test(s) && i<segs.length-1)) return 'location';
   if(segs.length===1 && RE_LOC_DIR.test(segs[0])) return 'hub';               // "all our service areas" page
   const sp=slugParts(u);
@@ -512,7 +516,9 @@ async function auditOne(raw, prefetchedHtml){
   const _spaRoot=/id=["'](root|app|__next|__nuxt|__gatsby|q-app|svelte)["']|data-reactroot|__NEXT_DATA__|window\.__NUXT__|ng-version|data-server-rendered/i.test(html);
   const jsShell = bodyText.length<200 && html.length>=500 && (_hasBundle||_spaRoot||_scriptCount>=2);
   if((html.length<500||bodyText.length<30) && !jsShell) throw {blocked:true,reason:'Empty or near-empty response — the real page could not be retrieved (proxy or site issue). Try again.'};
-  const tLow=(doc.querySelector('title')?.textContent||'').trim().toLowerCase();
+  // A page title is a <title> outside <svg> (an inline icon's <title> is its tooltip, not the page's title).
+  const pageTitles=[...doc.querySelectorAll('title')].filter(t=>!t.closest('svg'));
+  const tLow=((pageTitles[0]||{}).textContent||'').trim().toLowerCase();
   const cTitles=['just a moment','one moment','attention required','checking your browser','please wait','verifying you are human','ddos-guard'];
   // Cloudflare injects "/cdn-cgi/challenge-platform/" into NORMAL 200 pages, so that substring is NOT a block signal.
   // Gate strong markers behind an interstitial-sized body so real pages embedding a Turnstile widget aren't flagged.
@@ -524,9 +530,9 @@ async function auditOne(raw, prefetchedHtml){
   const add=(cat,label,points,status,detail,why,fix)=>checks.push({cat,label,points,status,detail,why,fix});
 
   // ---- gather ----
-  const titleEl=doc.querySelector('title');
+  const titleEl=pageTitles[0]||null;
   const title=(titleEl?.textContent||'').trim();
-  const titleCount=doc.querySelectorAll('title').length;
+  const titleCount=pageTitles.length;
   const desc=(doc.querySelector('meta[name="description"]')?.getAttribute('content')||'').trim();
   const h1=doc.querySelectorAll('h1'); const h2=doc.querySelectorAll('h2');
   const robotsMeta=[...doc.querySelectorAll('meta[name="robots" i],meta[name="googlebot" i]')].map(m=>m.getAttribute('content')||'').join(',').toLowerCase();
@@ -559,7 +565,7 @@ async function auditOne(raw, prefetchedHtml){
   const biz=businessSchema(ld);
   const selfReview=selfServingReview(ld);
   const primaryCity=schemaCity(ld);
-  const pageType=classifyPage(url, ld, { primaryCity, h1:(h1[0]&&h1[0].textContent||'').trim() });
+  const pageType=classifyPage(url, ld, { primaryCity, h1:(h1[0]&&h1[0].textContent||'').trim(), wpPost:/(^|\s)single-post(\s|$)/.test((doc.body&&doc.body.getAttribute('class'))||'') });
   const blocks=mainContent(doc);
   const mainText=blocks.join('\n');
   const mainWords=countWords(mainText);
@@ -668,7 +674,8 @@ async function auditOne(raw, prefetchedHtml){
   checks.push(Object.assign({cat:CONTENT}, headingHierarchyCheck(doc)));
   checks.push(Object.assign({cat:INDEX}, soft404Check(pageType, title, (h1[0]&&h1[0].textContent||'').trim(), mainWords)));
   checks.push(Object.assign({cat:CONTENT}, titleQualityCheck(title, url, pageType)));
-  checks.push(Object.assign({cat:CONTENT}, genericH1Check(h1[0]&&h1[0].textContent)));
+  const brandNames=[].concat((nap.schema||{}).names||[], [(doc.querySelector('meta[property="og:site_name"]')||{getAttribute:()=>null}).getAttribute('content'), titleBrand(title)]).filter(Boolean);
+  checks.push(Object.assign({cat:CONTENT}, genericH1Check(h1[0]&&h1[0].textContent, brandNames)));
   checks.push(Object.assign({cat:CONTENT}, descEqualsTitleCheck(title, desc)));
   checks.push(Object.assign({cat:CONTENT}, genericAnchorCheck(anchors)));
   const SD='Structured Data';
@@ -1164,9 +1171,11 @@ function crossPageContent(pages, sitemapUrls){
     if(excluded(p)) setCheck(p,'Unique vs sibling pages','On-Page Content',{label:'Unique vs sibling pages',points:0,status:'na',detail:'N/A — '+(p.noindex?'noindex page':p.pageType+' page'),why:'',fix:''});
     else { const sim=p._maxSim||0, frac=1-sim, rel=p._simWith?(p._simWith.replace(/^https?:\/\/[^/]+/,'')||'/'):'';
       // Overlap bands: under 40% is normal site furniture (not a problem); 40–60% medium, 60–80% high, over 80% critical.
-      const sev=sim<0.4?null:sim<0.6?'Medium':sim<0.8?'High':'Critical';
-      setCheck(p,'Unique vs sibling pages','On-Page Content',{label:'Unique vs sibling pages',points:15,frac,sev,status:sim<0.4?'pass':sim<0.6?'warn':'fail',
-        detail:Math.round(sim*100)+'% overlap with its closest sibling'+(rel?' ('+rel+')':''),
+      // Banded on the whole percent the report prints, so "40% overlap" is never labelled as under 40%.
+      const pct=Math.round(sim*100);
+      const sev=pct<40?null:pct<60?'Medium':pct<80?'High':'Critical';
+      setCheck(p,'Unique vs sibling pages','On-Page Content',{label:'Unique vs sibling pages',points:15,frac,sev,status:pct<40?'pass':pct<60?'warn':'fail',
+        detail:pct+'% overlap with its closest sibling'+(rel?' ('+rel+')':''),
         why:'Pages that repeat another page\'s text (the same template with the city or service swapped) compete with each other and look like doorway pages; Google picks one and ignores the rest.',
         fix:'Rewrite this page so most of its text is specific to it — its own service details, local specifics and FAQs — instead of the shared template.'}); }
     if(p.pageType==='location'){ const own=(p.entities||[]).filter(e=>entCount[e]===1);
@@ -1182,6 +1191,9 @@ function crossPageContent(pages, sitemapUrls){
 // duplication 15% + technical 15%. Caps: no service AND no location pages -> max 70; no new content in 24 months ->
 // max 75. Every part is returned (siteBreakdown) so the report can show its working.
 const SITE_WEIGHTS={ coverage:0.30, freshness:0.20, linkHealth:0.20, duplication:0.15, technical:0.15 };
+// Page average weights by page type, and the money-page floor under which the site score is capped at 70.
+const PAGE_WEIGHTS={ home:3, service:2, location:2, utility:0.5, archive:0.5 };
+const MIN_MONEY_PAGES=5;
 const clamp100=v=>Math.max(0,Math.min(100,v));
 function coverageScore(pages){
   const service=pages.filter(p=>p.pageType==='service').length, location=pages.filter(p=>p.pageType==='location').length;
@@ -1195,7 +1207,8 @@ function freshnessScore(pages, lastmod, nowMs){
   if(t===-Infinity){
     const lm=content.map(p=>lastmod[p.url]).filter(Boolean);
     const generated=lm.length>=5 && new Set(lm.map(d=>String(d).slice(0,10))).size===1; // every URL stamped the same day = build time
-    if(lm.length && !generated){ t=newest(lm); source='sitemap lastmod'; }
+    // A sitemap <lastmod> is whatever the CMS writes there, not a date on the page: used, but labelled unverified.
+    if(lm.length && !generated){ t=newest(lm); source='sitemap lastmod (unverified: not a date shown on the page)'; }
   }
   if(t===-Infinity) return { score:50, newest:null, ageDays:null, source:'no content dates found (scored neutral)' };
   const ageDays=Math.max(0,Math.round((nowMs-t)/864e5));
@@ -1293,10 +1306,12 @@ function headingHierarchyCheck(doc){
   return { label:'Heading hierarchy', points:1, status:hs.length<2?'na':'pass', detail:hs.length<2?'N/A — fewer than 2 headings':hs.length+' headings in order', evidence:[], why:'', fix:'' };
 }
 const RE_NOT_FOUND=/\b(page\s+not\s+found|not\s+found|404|page\s+(can(no|’|')t|could\s*n[o’']t)\s+be\s+found|no\s+longer\s+available)\b/i;
+const SOFT404_WORDS=25;
 function soft404Check(type, title, h1, words){
   if(type==='home'||type==='utility'||type==='archive') return { label:'Soft 404', points:0, status:'na', detail:'Not checked on '+type+' pages', evidence:[], why:'', fix:'' };
   const msg=[title,h1].find(t=>RE_NOT_FOUND.test(t||''));
-  const bad=!!msg || words<50;
+  // Under SOFT404_WORDS words of its own = an empty shell; a short real page (contact, quote form) stays above it.
+  const bad=!!msg || words<SOFT404_WORDS;
   return { label:'Soft 404', points:4, status:bad?'fail':'pass',
     detail:bad?(msg?'Returns 200 but says "'+snip(msg,80)+'"':'Returns 200 with only '+words+' words of its own'):'Real page ('+words+' words of its own)',
     evidence:bad?[{ snippet:msg?('title/H1: "'+snip(msg,100)+'"'):(words+' unique words') }]:[],
@@ -1492,11 +1507,14 @@ function placeOfSlug(u){
   return words.join(' ')||null;
 }
 const GENERIC_H1=/^(gallery|contact( us)?|inquire|services|pay now|home|about( us)?|blog|welcome|untitled|page)$/i;
-function genericH1Check(h1){
+// The business name alone ("Capital Towing & Recovery", "Welcome to Capital Towing") says who, not what or where.
+const normBrand=s=>String(s||'').toLowerCase().replace(/&amp;/g,'&').replace(/^welcome to\s+/,'').replace(/\b(llc|inc|co|corp|ltd|the)\b\.?/g,' ').replace(/[^a-z0-9&]+/g,' ').replace(/\s+/g,' ').trim();
+function genericH1Check(h1, brands){
   const t=String(h1||'').replace(/\s+/g,' ').trim();
   if(!t) return { label:'Specific H1', points:0, status:'na', detail:'No H1 (see Exactly one H1 heading)', evidence:[], why:'', fix:'' };
-  const bad=GENERIC_H1.test(t);
-  return { label:'Specific H1', points:3, status:bad?'fail':'pass', detail:bad?('H1 is just "'+t+'"'):('H1: "'+snip(t,70)+'"'), evidence:bad?[{ snippet:'<h1>'+t+'</h1>' }]:[],
+  const brandOnly=!!normBrand(t)&&(brands||[]).some(b=>normBrand(b)===normBrand(t));
+  const bad=GENERIC_H1.test(t)||brandOnly;
+  return { label:'Specific H1', points:3, status:bad?'fail':'pass', problem:brandOnly?'H1 is only the business name':null, detail:bad?('H1 is just "'+t+'"'+(brandOnly?' (the business name)':'')):('H1: "'+snip(t,70)+'"'), evidence:bad?[{ snippet:'<h1>'+t+'</h1>' }]:[],
     why:'A one-word H1 like "Gallery" or "Contact" tells Google and AI nothing about the business, service or town.',
     fix:'Rewrite the H1 to say what the page offers and where, e.g. "Towing & Auto Repair Photos — Columbus, OH".' };
 }
@@ -1734,7 +1752,7 @@ function localFindings(ok, ctx){
 // ---------- Phase 6 — structured data ----------
 // schema.org types in common use (plus every LocalBusiness subtype above). A type outside this list is almost always
 // an invented one (e.g. "TowingService"), which search engines ignore.
-const SCHEMA_TYPES=new Set(('Thing Action CreativeWork Article BlogPosting NewsArticle LiveBlogPosting SocialMediaPosting DiscussionForumPosting Report TechArticle ScholarlyArticle '
+const SCHEMA_TYPES=new Set(('Thing Action PropertyValueSpecification CommunicateAction Schedule DayOfWeek LocationFeatureSpecification CreativeWork Article BlogPosting NewsArticle LiveBlogPosting SocialMediaPosting DiscussionForumPosting Report TechArticle ScholarlyArticle '
   +'WebPage AboutPage ContactPage CollectionPage FAQPage QAPage ItemPage ProfilePage SearchResultsPage CheckoutPage MedicalWebPage RealEstateListing WebSite WebPageElement '
   +'SiteNavigationElement WPHeader WPFooter WPSideBar WPAdBlock Table ImageObject VideoObject AudioObject MediaObject Photograph ImageGallery VideoGallery MediaGallery Book Movie '
   +'MusicRecording Recipe Review AggregateRating Rating EmployerAggregateRating ClaimReview Question Answer Comment HowTo HowToStep HowToSection HowToTool HowToSupply '
@@ -1845,9 +1863,23 @@ function licenseCheck(pageText, type){
 const RE_PRICE=/\$\s?\d{1,4}(?:[.,]\d{2})?(?:\s*(?:\/|per)\s*(?:mi|mile|hr|hour))?/i;
 const RE_PRICE_CLAIM=/\b(competitive (pricing|prices|rates)|affordable (rates|prices|pricing)|upfront (pricing|prices|quotes?)|transparent pricing|flat[- ]rate|no hidden fees|low(est)? (rates|prices)|best prices?|fair (pricing|prices|rates))\b/i;
 // pricingPages (crawl): URLs of pages that publish prices — a link to one of those counts as "pricing linked".
+// A dollar amount is a price only in a pricing context (rate, fee, per mile, hook-up, starting at ...), never a
+// discount, coupon, insurance limit, bond, reward or wage ("$50 off", "$1,000,000 liability coverage").
+const RE_PRICE_CONTEXT=/\b(price[sd]?|pricing|rates?|fees?|costs?|starting|starts|from|per mile|mile|hook-?up|base|flat|tows?|towing|service call|quote|charge[sd]?|only|just)\b|\/\s*mi\b/i;
+const RE_NOT_PRICE=/\b(off|save|saving|savings|discount|coupon|rebate|insur\w*|coverage|liabilit\w*|bond\w*|million|reward|gift|donat\w*|raised|salary|wage|hiring|bonus|sign-?on|financing|deductible)\b/i;
+function findPrice(text){
+  const re=new RegExp(RE_PRICE.source,'gi'); let m;
+  while((m=re.exec(text))){ const around=text.slice(Math.max(0,m.index-60), m.index+m[0].length+40);
+    if(RE_PRICE_CONTEXT.test(around)&&!RE_NOT_PRICE.test(around)) return m; }
+  return null;
+}
+const countPrices=text=>{ let n=0; const re=new RegExp(RE_PRICE.source,'gi'); let m; while((m=re.exec(text))){ const around=text.slice(Math.max(0,m.index-60), m.index+m[0].length+40); if(RE_PRICE_CONTEXT.test(around)&&!RE_NOT_PRICE.test(around)) n++; } return n; };
+// A pricing link: a pricing page's path, or link text that says pricing - not "first-rate" or "cost-effective".
+const isPricingLink=a=>{ let path=''; try{ path=new URL(a.url).pathname; }catch(e){ path=String(a.url||''); }
+  return /\/(pricing|prices|rates|rate-card|fees|towing-rates|towing-prices|cost)(\/|$|[-.])/i.test(path)||/^\s*(our\s+)?(pricing|prices|rates|rate card|fees|towing (rates|prices|costs?))\s*$/i.test(a.text||''); };
 function pricingCheck(pageText, anchors, type, pricingPages){
   if(!isMoneyOrHome(type)) return null;
-  const price=pageText.match(RE_PRICE), link=(anchors||[]).find(a=>/(pric|rates?\b|cost|fees)/i.test(a.url+' '+a.text)||(pricingPages&&pricingPages.has(a.url))), claim=pageText.match(RE_PRICE_CLAIM);
+  const price=findPrice(pageText), link=(anchors||[]).find(a=>isPricingLink(a)||(pricingPages&&pricingPages.has(a.url))), claim=pageText.match(RE_PRICE_CLAIM);
   const st=price||link?'pass':claim?'fail':'warn';
   return { label:'Pricing transparency', points:2, status:st,
     detail:price?('Shows a price: "'+price[0]+'"'):link?('Links to pricing: '+link.url):claim?('Claims "'+claim[0]+'" but shows no price or pricing page'):'No prices or pricing page',
@@ -2081,12 +2113,18 @@ async function crawlSiteRun(root, opts){
   const queue=[], queued=new Set();
   const enqueue=u=>{ const k=keyOf(u); if(queued.has(k)||queue.length>=max*3) return; queued.add(k); queue.push(u); };
   disc.urls.forEach(enqueue);
-  const pages=[], redirected=[], broken=[], nonHtml=[]; let qi=0, active=0, done=0, rendered=0, audited=0, capped=false;
+  const pages=[], redirected=[], broken=[], nonHtml=[], sameKeyFollowed=new Set(); let qi=0, active=0, done=0, rendered=0, audited=0, capped=false;
   async function visit(u){
     const st=await checkUrl(u);
     if(st && !st.challenged && st.status>=300 && st.status<400){
       redirected.push({url:u, status:st.status, location:st.location});
-      if(st.location){ try{ const l=new URL(st.location,u); if(siteKey(l.hostname)===baseKey && !RE_ASSET.test(l.pathname)) enqueue(l.href); }catch(e){} }
+      if(st.location){ try{ const l=new URL(st.location,u);
+        if(siteKey(l.hostname)===baseKey && !RE_ASSET.test(l.pathname)){
+          // The same page on another host or scheme (capitaltowing.com/ -> https://www.capitaltowing.com/) shares the
+          // queue key, so enqueue() would drop it and the homepage would never be audited: queue it once as is.
+          if(keyOf(l.href)===keyOf(u)){ if(!sameKeyFollowed.has(l.href)&&l.href!==u){ sameKeyFollowed.add(l.href); queue.push(l.href); } }
+          else enqueue(l.href);
+        } }catch(e){} }
       return;
     }
     if(st && !st.challenged && st.status>=400){ broken.push({url:u, status:st.status}); return; }
@@ -2164,13 +2202,16 @@ async function crawlSiteRun(root, opts){
   const allFounded=ok.flatMap(p=>(p._yearClaims||{founded:[]}).founded).sort((a,b)=>a.year-b.year);
   ok.forEach(p=>{ if(p._yearClaims) setPageCheck(p,'Years-in-business claims current',staleClaimsCheck(p._yearClaims, allFounded[0]||null)); });
   // Pages that publish a rate card (2+ prices) — linking to one counts as pricing transparency.
-  const pricingPages=new Set(ok.filter(p=>((p._pageText||'').match(new RegExp(RE_PRICE.source,'gi'))||[]).length>=2).map(p=>p.url));
+  const pricingPages=new Set(ok.filter(p=>countPrices(p._pageText||'')>=2).map(p=>p.url));
   ok.forEach(p=>{ const pc=pricingCheck(p._pageText||'', p._anchors, p.pageType, pricingPages); if(pc) setPageCheck(p,'Pricing transparency',pc); });
   ok.forEach(p=>{ setPageCheck(p,'Title quality',titleQualityCheck(p.title,p.url,p.pageType)); setPageCheck(p,'Soft 404',soft404Check(p.pageType,p.title,p.h1text,p.uniqueWords!=null?p.uniqueWords:p.mainWords)); applyGates(p); p._score=score(p); });
   // Noindexed pages are not meant to rank, so they leave the page average — except the homepage and money pages,
   // where noindex is itself the defect (and carries its penalty).
   const scored=ok.filter(p=>p._score&&p._score.score!=null&&!(p.noindex&&!/^(home|service|location)$/.test(p.pageType)));
-  const pageAverage=scored.length?Math.round(scored.reduce((a,p)=>a+p._score.score,0)/scored.length):null;
+  // Weighted: the pages that win calls count more (homepage 3, service/location 2, others 1, utility/archive 0.5).
+  const wOf=p=>PAGE_WEIGHTS[p.pageType]!=null?PAGE_WEIGHTS[p.pageType]:1;
+  const wSum=scored.reduce((a,p)=>a+wOf(p),0);
+  const pageAverage=wSum?Math.round(scored.reduce((a,p)=>a+wOf(p)*p._score.score,0)/wSum):null;
   const aux={ origin:home.origin, checks:[] };
   try{ await addAux(aux); }catch(e){}
   let speedRuns=[];
@@ -2239,10 +2280,12 @@ async function crawlSiteRun(root, opts){
     (cpEarly.smsTelLinks||[]).length && {points:1, reason:'"Text"/"SMS" links that dial (tel:)'},
     selfReview && {points:2, reason:'Self-serving review markup on the business'},
   ].filter(Boolean);
-  if(siteScore!=null) siteScore=Math.max(0,siteScore-penalties.reduce((a,x)=>a+x.points,0));
   const caps=[];
-  if(siteScore!=null && coverage.service===0 && coverage.location===0){ caps.push({max:70, reason:'No service or location pages'}); siteScore=Math.min(siteScore,70); }
+  const moneyCount=(coverage.service||0)+(coverage.location||0);
+  if(siteScore!=null && moneyCount<MIN_MONEY_PAGES){ caps.push({max:70, reason:moneyCount?('Only '+moneyCount+' service/location page'+(moneyCount===1?'':'s')+' (under '+MIN_MONEY_PAGES+')'):'No service or location pages'}); siteScore=Math.min(siteScore,70); }
   if(siteScore!=null && freshness.ageDays!=null && freshness.ageDays>=730){ caps.push({max:75, reason:'No new content in 24 months (newest '+freshness.newest+')'}); siteScore=Math.min(siteScore,75); }
+  // Penalties come off after the caps: a cap is the most the site can earn, and its site-wide defects still cost points.
+  if(siteScore!=null) siteScore=Math.max(0,siteScore-penalties.reduce((a,x)=>a+x.points,0));
   const aiCat={e:0,t:0}; ok.forEach(p=>{ const b=p._score&&p._score.byCat&&p._score.byCat[AISEARCH]; if(b){ aiCat.e+=b.e; aiCat.t+=b.t; } });
   const aiSearch=aiCat.t?Math.min(95,Math.round(100*aiCat.e/aiCat.t)):null; // never 100: live AI answers are not observed
   const siteBreakdown={ final:siteScore, pageAverage, siteLevel, weights:SITE_WEIGHTS, coverage, freshness, linkHealth, duplication, technical, penalties, caps, aiSearch };
@@ -2806,7 +2849,7 @@ const API={ BRAND, PROXIES, TAGS, AI_BOTS, AISEARCH, PROJECT_FIXES, sleep, esc, 
   handleItHTML, repFor, PACKAGES, CTA_TRACK_URL,
   classifyPage, mainContent, localEntities, countClaims, h1Glued, smsLabelTelLinks, businessSchema, ldNodes, AI_SEARCH_BOTS, AI_TRAINING_BOTS,
   // individual checks, for unit tests
-  _x:{ setBackoff:ms=>{ CHALLENGE_BACKOFF_MS=ms; }, soft404Check, viewportZoomCheck, headingHierarchyCheck, imageCheck, weightCheck, pageAssets, robotsRulesFor, robotsAllowed, chainOf, technicalFindings, applyDeductions, titleQualityCheck, uniqueContentCheck, titlePixels, genericH1Check, descEqualsTitleCheck, genericAnchorCheck, onPageLinkFindings, yearClaims, staleClaimsCheck, placeholderCheck, defaultPrivacyCheck, contentFreshnessFindings, contradictionFindings, serviceCoverage, locationCoverage, callAboveFoldCheck, areaCodeCheck, localFindings, jsonLdSyntaxCheck, businessEntityCheck, schemaNapCheck, napIssues, openingHoursCheck, serviceSchemaCheck, breadcrumbCheck, faqMatchCheck, schemaTypesCheck, licenseCheck, pricingCheck, insuranceCheck, trustFindings, resolveAsyncFindings, questionAnswerCheck, citableFactsCheck, aiSiteFindings, stackFingerprint, loadIndustry, setMarket:(m)=>{ _market=m; } } };
+  _x:{ setBackoff:ms=>{ CHALLENGE_BACKOFF_MS=ms; }, freshnessScore, findPrice, isPricingLink, soft404Check, viewportZoomCheck, headingHierarchyCheck, imageCheck, weightCheck, pageAssets, robotsRulesFor, robotsAllowed, chainOf, technicalFindings, applyDeductions, titleQualityCheck, uniqueContentCheck, titlePixels, genericH1Check, descEqualsTitleCheck, genericAnchorCheck, onPageLinkFindings, yearClaims, staleClaimsCheck, placeholderCheck, defaultPrivacyCheck, contentFreshnessFindings, contradictionFindings, serviceCoverage, locationCoverage, callAboveFoldCheck, areaCodeCheck, localFindings, jsonLdSyntaxCheck, businessEntityCheck, schemaNapCheck, napIssues, openingHoursCheck, serviceSchemaCheck, breadcrumbCheck, faqMatchCheck, schemaTypesCheck, licenseCheck, pricingCheck, insuranceCheck, trustFindings, resolveAsyncFindings, questionAnswerCheck, citableFactsCheck, aiSiteFindings, stackFingerprint, loadIndustry, setMarket:(m)=>{ _market=m; } } };
 root.SEO=API;
 if(typeof module!=="undefined"&&module.exports) module.exports=API;
 })(typeof window!=="undefined"?window:globalThis);

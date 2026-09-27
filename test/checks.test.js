@@ -5,7 +5,7 @@ const assert = require('node:assert');
 const { engine, page, ld, words, same, doc } = require('./helpers');
 
 // ---------------- Phase 2 — technical ----------------
-test('Soft 404: "page not found" or <50 words fails; a real service page passes; home is exempt', () => {
+test('Soft 404: "page not found" or <25 words fails; a real service page passes; home is exempt', () => {
   const { _x } = engine();
   assert.strictEqual(_x.soft404Check('service', 'Page Not Found | Co', '', 400).status, 'fail');
   assert.strictEqual(_x.soft404Check('other', 'Gallery', 'Gallery', 20).status, 'fail');

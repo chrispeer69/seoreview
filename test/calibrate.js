@@ -17,7 +17,13 @@ const SITES = [
   { domain: 'columbusroadsidetowing.com', root: 'https://www.columbusroadsidetowing.com', target: [85, 95], industry: 'towing',
     pages: { '/service-area/whitehall': [60, 80], '/service-area/lewis-center': [90, 100] } },
   { domain: 'broadandjames.com', root: 'https://broadandjames.com', target: [45, 65], industry: 'towing' },
+  // Capital starts at the bare domain, which redirects to www: the homepage must still be audited.
+  { domain: 'capitaltowing.com', root: 'https://capitaltowing.com', target: [65, 80], industry: 'towing' },
+  { domain: 'jaestowing.com', root: 'https://www.jaestowing.com', target: [45, 65], industry: 'towing' },
+  { domain: 'protow.guardianfleetservice.com', root: 'https://protow.guardianfleetservice.com', target: [50, 68], industry: 'towing' },
 ];
+// --only=<domain>[,<domain>]: run just these sites (e.g. to record one new fixture).
+const ONLY = ((process.argv.find(a => a.startsWith('--only=')) || '').slice(7)).split(',').filter(Boolean);
 const RECORD = process.argv.includes('--record');
 // --record-missing: replay the fixture, fetch live only what it lacks (new checks), and add that to the fixture.
 // --refresh-checks: re-fetch every URL status check (e.g. after linkcheck starts returning more fields).
@@ -81,6 +87,7 @@ function makeDeps(fx) {
 (async () => {
   let failed = 0;
   for (const site of SITES) {
+    if (ONLY.length && !ONLY.includes(site.domain)) continue;
     let fx = RECORD ? null : load(site.domain);
     if (!fx && !RECORD) { console.log(`${site.domain}: no fixture — run with --record first`); failed++; continue; }
     if (RECORD) fx = { domain: site.domain, recorded: new Date().toISOString(), calls: {} };
@@ -130,5 +137,5 @@ function makeDeps(fx) {
       if (misses.length) console.log('  misses:', misses.slice(0, 10));
     }
   }
-  process.exit(failed ? 1 : 0);
+  process.exitCode = failed ? 1 : 0; // not process.exit(): on Windows it cuts off output still being piped
 })().catch(e => { console.error(e); process.exit(2); });
