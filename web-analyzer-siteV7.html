@@ -367,7 +367,7 @@ async function snapshotOne(url, i, n, psi){
     setProgress(i,n,'checking crawlability & AI readiness');
     try{ await addAux(r); }catch(e){}
     setProgress(i,n,'reading the sitemap');
-    try{ r.sitemap=await SEO.sitemapSummary(r.origin||r.url); }catch(e){}
+    try{ r.sitemap=await SEO.sitemapSummary(r.origin||r.url, { primaryCity:r.primaryCity }); }catch(e){}
     setProgress(i,n,'measuring images & scripts');
     try{ await SEO.measureAssets([r], 120); }catch(e){}
     if(scanCtrl.signal.aborted) return null;

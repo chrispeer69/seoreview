@@ -24,15 +24,11 @@ const BRAND = {
 // Don't ship the placeholder booking link as a dead CTA — blank it so the email/text fall back to a working mailto.
 if(/REPLACE|\bREPLACE-WITH\b/i.test(BRAND.bookUrl||'')) BRAND.bookUrl='';
 if(/buy-report/i.test(BRAND.buyUrl||'')) BRAND.buyUrl='';  // TODO placeholder → let a real server share link (opts.buyUrl) or webUrl take over
-const PROXIES = [
-  // Our own server-side proxy first (reliable, no rate limits). Public proxies
-  // remain as fallback for local file:// use or if the server is unavailable.
-  { name:'self',           build:u=>`/api/proxy?url=${encodeURIComponent(u)}`, json:false },
-  { name:'allorigins-raw', build:u=>`https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`, json:false },
-  { name:'corsproxy',      build:u=>`https://corsproxy.io/?url=${encodeURIComponent(u)}`, json:false },
-  { name:'allorigins-get', build:u=>`https://api.allorigins.win/get?url=${encodeURIComponent(u)}`, json:true },
-  { name:'corsfix',        build:u=>`https://proxy.corsfix.com/?${u}`, json:false },
-];
+// Every fetch goes through OUR server (/api/proxy, /api/render) — never a third-party CORS proxy (allorigins,
+// corsproxy, corsfix…): they leak the audit to strangers, get rate-limited and can return other people's pages.
+const PROXIES = [ { name:'self', build:u=>`/api/proxy?url=${encodeURIComponent(u)}`, json:false } ];
+const RE_CHALLENGE_BODY=/just a moment|cf-chl|challenge-platform|cf-mitigated|enable javascript and cookies|attention required|ddos-guard/i;
+let CHALLENGE_BACKOFF_MS=3000; // tests shorten it (SEO._x.setBackoff)
 const TAGS = {
   'Google Analytics':['google-analytics.com','gtag(','/g/collect','_gaq'],
   'Google Tag Manager':['googletagmanager.com'],
@@ -77,31 +73,37 @@ const PROJECT_FIXES = new Set([
   'Mobile speed score','Desktop speed score','Largest Contentful Paint (mobile)','Layout stability (mobile CLS)'
 ]);
 function isQuick(label){ return !PROJECT_FIXES.has(label); }
+async function fetchOnce(url, ms){
+  const ctrl=new AbortController(); const t=setTimeout(()=>ctrl.abort(),ms||12000); linkAbort(ctrl);
+  try{ return await fetch(url,{signal:ctrl.signal}); } finally{ clearTimeout(t); }
+}
+// Page HTML via our proxy. On a Cloudflare / bot challenge: back off, retry once, then try the rendering service
+// (ScrapingBee, a real browser). Still blocked -> a "blocked" error, which the report lists.
 async function fetchHtml(targetUrl){
-  let lastErr;
-  for(const p of PROXIES){
-    if(scanCtrl&&scanCtrl.signal.aborted) throw new DOMException('aborted','AbortError');
-    const ctrl=new AbortController(); const t=setTimeout(()=>ctrl.abort(),12000); linkAbort(ctrl);
+  if(scanCtrl&&scanCtrl.signal.aborted) throw new DOMException('aborted','AbortError');
+  let lastErr=null, challenged=false;
+  for(let attempt=0; attempt<2; attempt++){
+    if(attempt) await sleep(CHALLENGE_BACKOFF_MS);
     try{
-      const res=await fetch(p.build(targetUrl),{signal:ctrl.signal});
-      if(p.name==='self') _fetchMeta.set(targetUrl,{status:res.status, finalUrl:res.headers.get('x-final-url')||null});
-      if(!res.ok){lastErr=new Error(p.name+' HTTP '+res.status);continue;}
-      const html=p.json?(await res.json()).contents:await res.text();
-      if(html&&html.length>50)return html;
-      lastErr=new Error(p.name+' empty');
-    }catch(e){lastErr=e;}finally{clearTimeout(t);}
+      const res=await fetchOnce(PROXIES[0].build(targetUrl));
+      _fetchMeta.set(targetUrl,{status:res.status, finalUrl:res.headers.get('x-final-url')||null, contentType:res.headers.get('content-type')||null});
+      const body=(res.ok||res.status===403||res.status===503||res.status===502)?await res.text():'';
+      const isChallenge=/bot-protection/i.test(res.headers.get('x-proxy-reason')||'')||((res.status===403||res.status===503)&&RE_CHALLENGE_BODY.test(body));
+      if(res.ok&&body&&body.length>50) return body;
+      if(!isChallenge){ lastErr=new Error('proxy HTTP '+res.status); break; }
+      challenged=true; lastErr=new Error('bot challenge');
+    }catch(e){ if(scanCtrl&&scanCtrl.signal.aborted) throw e; lastErr=e; break; }
   }
-  throw lastErr||new Error('All proxies failed');
+  if(challenged){
+    try{ const r=await fetchOnce('/api/render?url='+encodeURIComponent(targetUrl), 50000);
+      if(r.ok){ const html=await r.text(); if(html&&html.length>50&&!RE_CHALLENGE_BODY.test(html.slice(0,5000))){ _fetchMeta.set(targetUrl,{status:200, finalUrl:null, viaRender:true}); return html; } } }catch(e){}
+    throw { blocked:true, challenged:true, reason:'Blocked by bot protection (Cloudflare-style challenge) — retried after a pause and through ScrapingBee, still blocked.' };
+  }
+  throw lastErr||new Error('fetch failed');
 }
 async function fetchAux(u){
-  for(const p of PROXIES.slice(0,4)){
-    if(scanCtrl&&scanCtrl.signal.aborted) return '';
-    const ctrl=new AbortController(); const t=setTimeout(()=>ctrl.abort(),8000); linkAbort(ctrl);
-    try{
-      const res=await fetch(p.build(u),{signal:ctrl.signal});
-      if(res.ok){const txt=p.json?(await res.json()).contents:await res.text();clearTimeout(t);return txt||'';}
-    }catch(e){}finally{clearTimeout(t);}
-  }
+  if(scanCtrl&&scanCtrl.signal.aborted) return '';
+  try{ const res=await fetchOnce(PROXIES[0].build(u), 8000); if(res.ok) return (await res.text())||''; }catch(e){}
   return null;
 }
 
@@ -260,7 +262,23 @@ const RE_BLOG_DIR=/^(blog|news|articles?|posts?|insights|resources|tips|learn|gu
 const RE_SVC_WORD=/(tow|repair|roadside|recovery|lockout|jump-?start|battery|fuel|tire|winch|impound|repo|brake|transmission|oil-change|lube|inspection|exhaust|muffler|suspension|alignment|diagnos|engine|electrical|hvac|heating|cooling|air-condition|plumb|drain|roof|gutter|siding|clean|detail|collision|body-?shop|paint|glass|windshield|install|replace|maintenance|tune-?up|mechanic|auction|fleet|flatbed|wheel-lift|haul|moving|junk|removal|landscap|lawn|pest|electric|remodel|construction|pressure-wash|locksmith|garage-door|fence|concrete|paving|service)/;
 const RE_STATE_SLUG=new RegExp('-('+US_STATES+')$');
 function pathSegs(u){ try{ return new URL(u).pathname.toLowerCase().split('/').filter(Boolean).map(s=>{ try{ return decodeURIComponent(s); }catch(e){ return s; } }); }catch(e){ return []; } }
-function classifyPage(u, nodes){
+// "<service>-in-<city>[-st]" slugs ("towing-in-grove-city-ohio"): the service words and the city.
+const RE_SLUG_STOP=/^(and|the|for|with|near|in|of|a|to|service|services|our|page|best|local|24|hour|7)$/;
+function slugParts(u){
+  const segs=pathSegs(u), last=(segs[segs.length-1]||'').replace(/\.(html?|php|aspx?)$/,'').replace(RE_STATE_SLUG,'');
+  const m=last.match(/^(.+?)-in-(.+)$/);
+  return m?{ service:m[1].split('-').filter(w=>w.length>=3&&!RE_SLUG_STOP.test(w)), city:m[2].replace(/-/g,' ') }:null;
+}
+const normPlace=s=>String(s||'').toLowerCase().replace(/&amp;/g,'&').replace(/[^a-z0-9]+/g,' ').trim();
+// The business's own city from its schema address (LocalBusiness / Organization addressLocality).
+function schemaCity(nodes){
+  for(const n of (nodes||[])){ if(!typesOf(n).some(t=>isLocalType(t)||ORG_TYPES.test(t))) continue;
+    const a=[].concat(n.address||[]).find(x=>x&&typeof x==='object'&&x.addressLocality); if(a) return String(a.addressLocality); }
+  return null;
+}
+// ctx (optional): { primaryCity, h1 }. A "<service>-in-<city>" page is a SERVICE page when <city> is the business's
+// own city; it is a LOCATION page only when the city differs AND the page is city-led (H1 starts with the city).
+function classifyPage(u, nodes, ctx){
   const segs=pathSegs(u);
   if(!segs.length) return 'home';
   const last=segs[segs.length-1].replace(/\.(html?|php|aspx?)$/,'');
@@ -271,6 +289,10 @@ function classifyPage(u, nodes){
   if((nodes||[]).some(n=>typesOf(n).some(t=>t==='BlogPosting'||t==='NewsArticle'))) return 'blog';
   if(segs.some((s,i)=>RE_LOC_DIR.test(s) && i<segs.length-1)) return 'location';
   if(segs.length===1 && RE_LOC_DIR.test(segs[0])) return 'hub';               // "all our service areas" page
+  const sp=slugParts(u);
+  if(sp){ const city=normPlace(sp.city), primary=normPlace(ctx&&ctx.primaryCity), h1=normPlace(ctx&&ctx.h1);
+    if(primary && city===primary) return 'service';
+    return (h1 && (h1===city || h1.indexOf(city+' ')===0)) ? 'location' : 'service'; }
   if(RE_STATE_SLUG.test(last) && last.split('-').length>=2) return 'location';   // /towing-dublin-oh
   if(segs.some((s,i)=>RE_SVC_DIR.test(s) && i<segs.length-1)) return 'service';
   if(RE_SVC_DIR.test(last) || RE_SVC_WORD.test(last)) return 'service';
@@ -458,6 +480,9 @@ function smsLabelTelLinks(doc){
     .filter(t=>/\b(sms|txt|text(ing)?)\b/i.test(t)).slice(0,5);
 }
 
+// Pages where noindex is a deliberate choice, not a mistake.
+const RE_INTENTIONAL_NOINDEX=/(^|\/)(privacy|privacy-policy|terms|terms-of-service|terms-and-conditions|legal|disclaimer|cookies?|careers?|jobs?|employment|apply|application|job-application|employment-application|feedback|survey|review-us|thank-?you|thanks|confirmation|login|account|cart|checkout|search)(\/|-|$)|\/page\/\d+\/?$/i;
+function intentionalNoindex(u, type){ if(type==='archive') return true; let p=''; try{ p=new URL(u).pathname.toLowerCase(); }catch(e){ p=String(u); } return RE_INTENTIONAL_NOINDEX.test(p); }
 // Flat penalties (taken off the page's final score) for the misses that make everything else moot.
 const GATES={ 'Served over HTTPS':20, 'Title tag present':10 };
 function applyGates(r){
@@ -533,7 +558,8 @@ async function auditOne(raw, prefetchedHtml){
   const ld=ldNodes(doc);
   const biz=businessSchema(ld);
   const selfReview=selfServingReview(ld);
-  const pageType=classifyPage(url, ld);
+  const primaryCity=schemaCity(ld);
+  const pageType=classifyPage(url, ld, { primaryCity, h1:(h1[0]&&h1[0].textContent||'').trim() });
   const blocks=mainContent(doc);
   const mainText=blocks.join('\n');
   const mainWords=countWords(mainText);
@@ -562,13 +588,14 @@ async function auditOne(raw, prefetchedHtml){
 
   // Presence checks are gates: few points for having them; applyGates() adds a flat penalty for the misses that
   // sink a page outright.
-  // A noindexed archive (date / author / category / tag listing) is noindexed on purpose — not a problem to fix.
-  const archiveNoindex=noindex&&pageType==='archive';
+  // Pages that are noindexed on purpose — archives, pagination, privacy/terms, careers/application forms, feedback —
+  // get no "remove noindex" finding and no canonical check (and leave the page average).
+  const archiveNoindex=noindex&&intentionalNoindex(url, pageType);
   add(INDEX,'Page is indexable',4, archiveNoindex?'na':noindex?'fail':'pass',
-    archiveNoindex?'N/A — archive page, noindex is intentional':noindex?'A "noindex" directive is present':'No noindex directive',
+    archiveNoindex?'N/A — '+pageType+' page, noindex is intentional':noindex?'A "noindex" directive is present':'No noindex directive',
     'A "noindex" tag is a stop sign telling Google to hide this page completely. If it is there by mistake, nothing else you do matters — you are invisible in search.',
     'Remove the "noindex" value from the robots meta tag so search engines can list the page.');
-  const canon=archiveNoindex?{status:'na',detail:'N/A — noindexed archive page'}:canonical?await canonicalCheck(canonical.getAttribute('href')||'', url, noindex):{status:'fail',detail:'No canonical link'};
+  const canon=archiveNoindex?{status:'na',detail:'N/A — intentionally noindexed page'}:canonical?await canonicalCheck(canonical.getAttribute('href')||'', url, noindex):{status:'fail',detail:'No canonical link'};
   add(INDEX,'Canonical URL set',6, canon.status, canon.detail,
     'This tells Google which version of your web address is the real one, so your ranking power is not split between www / non-www or trailing-slash duplicates. A canonical that points at a redirect, an error page or a noindex page tells Google to index nothing.',
     canonical?'Point the canonical at the final, indexable URL of this page (the address that returns 200 with no redirect and no noindex).'
@@ -680,7 +707,7 @@ async function auditOne(raw, prefetchedHtml){
   const result={ url, domain:o.hostname, origin, timestamp:new Date().toLocaleString(), ssl, checks, tracking, schemaTypes,
     title, h1text:(h1[0]&&h1[0].textContent||'').trim(), desc, words, jsShell, loadMs,
     bodySig:bodyText.slice(0,600).replace(/\s+/g,' ').toLowerCase().trim(),
-    engineVersion:ENGINE_VERSION, noindex, pageType, mainWords, entities, links, datePublished:dates.published, dateModified:dates.modified,
+    engineVersion:ENGINE_VERSION, noindex, primaryCity, pageType, mainWords, entities, links, datePublished:dates.published, dateModified:dates.modified,
     nap, claims, h1Glue, smsTel, bytes, siteName:((doc.querySelector('meta[property="og:site_name"]')||{getAttribute:()=>null}).getAttribute('content')||'').trim()||null,
     stats:{images:imgs.length, scripts:doc.querySelectorAll('script').length, stylesheets:doc.querySelectorAll('link[rel="stylesheet"]').length, sizeKb, words},
     aux:{robots:null,sitemap:null}, _origin:origin };
@@ -1018,8 +1045,17 @@ function napIssues(pages){
   const phones=merge(tally(p=>n(p).tel,1), tally(p=>n(p).schema.phones,1), tally(p=>n(p).visible,2));
   const streets=merge(tally(p=>n(p).schema.streets,1), tally(p=>n(p).streets,2));
   const names=merge(tally(p=>n(p).schema.names,1));
-  const inconsistent=[]; if(phones.length>1) inconsistent.push('phone'); if(streets.length>1) inconsistent.push('address'); if(names.length>1) inconsistent.push('name');
-  return { phones, streets, names, inconsistent };
+  // Addresses: a street that appears consistently (in schema, or on half the pages or more) is a real location.
+  // 2+ of those = a multi-location business (info, not a problem). Only a street on a few pages, next to a dominant
+  // one, is flagged as an inconsistency.
+  const schemaStreets=new Set(Object.keys(tally(p=>n(p).schema.streets,1))), N=pages.length;
+  const consistent=streets.filter(v=>schemaStreets.has(v.value)||v.pages>=Math.max(2,Math.ceil(N*0.5)));
+  const few=Math.max(1,Math.floor(N*0.2));
+  const strays=consistent.length?streets.filter(v=>!consistent.includes(v)&&v.pages<=few&&v.pages<consistent[0].pages):[];
+  const multiLocation=consistent.length>1?consistent:[];
+  const addressIssue=strays.length?consistent.concat(strays):[];
+  const inconsistent=[]; if(phones.length>1) inconsistent.push('phone'); if(addressIssue.length) inconsistent.push('address'); if(names.length>1) inconsistent.push('name');
+  return { phones, streets, names, inconsistent, multiLocation, addressIssue };
 }
 // Hard-coded counts vs what the site actually has ("see all 34 service areas" with 35 area pages).
 function claimIssues(pages){
@@ -1055,11 +1091,11 @@ function pageTypesFor(urls, typeOf){
     types[u]=t; });
   return types;
 }
-async function sitemapSummary(root){
+async function sitemapSummary(root, opts){
   let disc; try{ disc=await discoverPages(root, 5000, null); }catch(e){ return { found:false }; }
   const urls=(disc&&disc.sitemapUrls)||[];
   if(!urls.length) return { found:false };
-  const types=Object.values(pageTypesFor(urls));
+  const types=Object.values(pageTypesFor(urls, u=>classifyPage(u,[],{ primaryCity:opts&&opts.primaryCity })));
   const service=types.filter(t=>t==='service').length, location=types.filter(t=>t==='location').length;
   const times=Object.values(disc.lastmod||{}).map(d=>Date.parse(d)).filter(t=>!isNaN(t)&&t<Date.now()+2*864e5);
   return { found:true, total:urls.length, service, location, newest:times.length?new Date(Math.max(...times)).toISOString().slice(0,10):null };
@@ -1075,8 +1111,10 @@ function crossPageContent(pages, sitemapUrls){
   const N=pages.length;
   const pathOf=u=>{ try{ return new URL(u).pathname.replace(/\/+$/,'').toLowerCase(); }catch(e){ return ''; } };
   // Same classifier as the sitemap columns, over the crawled pages plus the sitemap's URLs.
+  const cityCount={}; pages.forEach(p=>{ if(p.primaryCity) cityCount[p.primaryCity]=(cityCount[p.primaryCity]||0)+1; });
+  const siteCity=Object.keys(cityCount).sort((a,b)=>cityCount[b]-cityCount[a])[0]||null;
   const byUrl={}; pages.forEach(p=>{ byUrl[p.url]=p; });
-  const types=pageTypesFor([...new Set(pages.map(p=>p.url).concat(sitemapUrls||[]))], u=>byUrl[u]?byUrl[u].pageType:classifyPage(u,[]));
+  const types=pageTypesFor([...new Set(pages.map(p=>p.url).concat(sitemapUrls||[]))], u=>byUrl[u]?byUrl[u].pageType:classifyPage(u,[],{ primaryCity:siteCity }));
   pages.forEach(p=>{ p.pageType=types[p.url]; });
   const groupOf=p=>{ const s=pathSegs(p.url); return s.length>=2?s[0]:'/'; };
   // A location page's own place name (from its URL slug) is masked before blocks are compared, so a template sentence
@@ -1207,13 +1245,24 @@ const RE_LEGACY_IMG=/\.(jpe?g|png|gif|bmp|tiff?)(\?|$)/i, RE_MODERN_IMG=/\.(webp
 // Page weight: HTML + JS + CSS + images. Asset sizes are measured (crawl, key pages) or unknown (HTML-only estimate).
 function weightCheck(bytes, a, m){
   const js=a.inlineJs+(m?m.js:0), total=bytes+(m?m.js+m.css+m.img:0), heavy=total>2e6||js>5e5;
-  const problem=js>5e5?'JavaScript too heavy: '+kb(js):total>2e6?'Page too heavy: '+kb(total):null;
+  // Name the failing resource type and its largest file: JavaScript over 500 KB, else (page over 2 MB) the type
+  // that weighs the most.
+  const TYPE={ js:'JavaScript', css:'CSS', img:'Images' };
+  const failType=!heavy?null:js>5e5?'js':(m?['js','css','img'].sort((x,y)=>(m[y]||0)-(m[x]||0))[0]:'js');
+  const typeBytes=failType==='js'?js:m?m[failType]:0;
+  const largest=m&&m.topByType&&failType?m.topByType[failType]:null;
+  // "style.css"; a URL whose last segment is not a file name ("…/gtag/js?id=G-1") shows host + path instead.
+  const fileName=u=>{ try{ const x=new URL(u), last=decodeURIComponent(x.pathname.split('/').pop()); return /\.[a-z0-9]{1,5}$/i.test(last)?last:x.hostname.replace(/^www\./,'')+x.pathname; }catch(e){ return u; } };
+  const problem=!heavy?null:(TYPE[failType]+' too heavy: '+kb(typeBytes)+(largest?' (largest file: '+fileName(largest.url)+', '+kb(largest.bytes)+')':'')+(failType!=='js'?' — page total '+kb(total):''));
+  const ev=m&&m.topByTypeList&&failType?m.topByTypeList[failType]:(m&&m.top)||[];
   return { label:'Reasonable page weight', points:3, status:heavy?'warn':'pass', problem,
     detail:m?('Total '+kb(total)+' (HTML '+kb(bytes)+' · JS '+kb(js)+' · CSS '+kb(m.css)+' · images '+kb(m.img)+')')
             :('HTML '+kb(bytes)+' · inline JS '+kb(a.inlineJs)+' · '+a.scripts.length+' scripts, '+a.images.length+' images (asset sizes measured on key pages in a site crawl)'),
-    evidence:m&&m.top?m.top.map(x=>({ snippet:x.url+' — '+kb(x.bytes) })):[],
+    evidence:ev.map(x=>({ snippet:(failType?TYPE[failType]+': ':'')+x.url+' — '+kb(x.bytes) })),
     why:'Heavy pages load slowly on phones. Google measures real load speed, and visitors leave slow pages.',
-    fix:'Keep pages under ~2 MB and JavaScript under ~500 KB: compress images, drop unused plugins/scripts, defer the rest.' };
+    fix:failType==='img'?'Compress and resize the largest images (WebP/AVIF, sized to how they display) and lazy-load the rest.'
+       :failType==='css'?'Remove unused CSS (page builders ship a lot), split critical CSS, and minify the rest.'
+       :'Keep JavaScript under ~500 KB: drop unused plugins/scripts, defer the rest, and load third-party widgets on interaction.' };
 }
 // Image efficiency: >150 KB images and old formats warn; eager images below the first screen are noted (info).
 function imageCheck(a, sizes){
@@ -1386,6 +1435,10 @@ async function measureAssets(pages, cap){
     const sum=arr=>arr.reduce((t,u)=>t+(size[u]||0),0);
     const m={ js:sum(a.scripts), css:sum(a.css), img:sum(a.images.map(i=>i.url)),
       top:list.filter(u=>size[u]).sort((x,y)=>size[y]-size[x]).slice(0,5).map(u=>({url:u, bytes:size[u]})) };
+    // Largest files per type (for 'CSS too heavy: … (largest file: …)').
+    const byType={ js:a.scripts, css:a.css, img:a.images.map(i=>i.url) };
+    m.topByTypeList={}; m.topByType={};
+    Object.keys(byType).forEach(k=>{ const l=byType[k].filter(u=>size[u]).sort((x,y)=>size[y]-size[x]).slice(0,5).map(u=>({url:u, bytes:size[u]})); m.topByTypeList[k]=l; m.topByType[k]=l[0]||null; });
     setPageCheck(p,'Reasonable page weight',weightCheck(p.bytes||0,a,m));
     setPageCheck(p,'Image efficiency',imageCheck(a,size));
     p.assetBytes={ js:m.js, css:m.css, img:m.img };
@@ -1408,10 +1461,20 @@ function titleQualityCheck(title, url, type){
   const t=String(title||'').trim();
   if(!t) return { label:'Title quality', points:0, status:'na', detail:'No title (see Title tag present)', evidence:[], why:'', fix:'' };
   const seps=(t.match(RE_TITLE_SEP)||[]).length, trailing=/[-–—|•·:]\s*$/.test(t), px=titlePixels(t);
-  const money=type==='service'||type==='location', terms=money?slugTerms(url,type):[];
-  const missing=money&&terms.length&&!terms.some(w=>t.toLowerCase().includes(w.toLowerCase()));
+  const money=type==='service'||type==='location';
+  // This page's own service words and place, from its own slug ("towing-in-grove-city-ohio" -> towing / grove city).
+  const sp=slugParts(url);
+  const place=money?(sp?sp.city:(type==='location'?placeOfSlug(url):null)):null;
+  const svc=money?(sp?sp.service:(type==='service'?slugTerms(url,'service'):[])):[];
+  // Case-insensitive, punctuation-blind: "Grove City, OH", "grove city ohio" and "Grove City" all name the place.
+  const nt=' '+normPlace(t)+' ';
+  const missPlace=!!place && nt.indexOf(' '+normPlace(place)+' ')<0;
+  const missSvc=type==='service' && svc.length && !svc.some(w=>nt.indexOf(' '+normPlace(w))>=0);
+  const tc=s=>String(s).replace(/\b[a-z]/g,c=>c.toUpperCase());
+  const suggestion=(svc.length?tc(svc.join(' ')):'Towing')+(place?' in '+tc(place):'')+' | Your Business Name';
   const probs=[];
-  if(missing) probs.push({ s:'fail', t:'does not name the '+(type==='location'?'place ('+terms[0]+')':'service ('+terms.join(' ')+')') });
+  if(missPlace) probs.push({ s:'fail', t:'does not name the place ('+tc(place)+')' });
+  if(missSvc) probs.push({ s:'fail', t:'does not name the service ('+svc.join(' ')+')' });
   if(seps>=3) probs.push({ s:'fail', t:seps+' separators' });
   if(trailing) probs.push({ s:'fail', t:'ends with a separator' });
   if(px>580) probs.push({ s:'warn', t:'~'+px+'px wide (Google cuts at ~580px)' });
@@ -1419,7 +1482,14 @@ function titleQualityCheck(title, url, type){
   return { label:'Title quality', points:4, status:st, problem:st==='pass'?null:'Title '+probs.map(p=>p.t).join(', '), detail:st==='pass'?('"'+snip(t,70)+'" · ~'+px+'px'):('Title '+probs.map(p=>p.t).join(', ')),
     evidence:st==='pass'?[]:[{ snippet:'<title>'+snip(t,120)+'</title>' }],
     why:'The title is the headline in Google. On a money page it has to name the service or the town, once, and fit on screen.',
-    fix:money?'Lead with the '+(type==='location'?'service + town':'service')+', then the brand once: "'+(type==='location'?'Towing in '+(terms[0]||'Town'):(terms.join(' ')||'Service'))+' | Brand" — at most two separators.':'Keep one or two separators and under ~580px (≈55 characters).' };
+    fix:money?'Lead with this page\'s service'+(place?' and town':'')+', then the brand once, e.g. "'+suggestion+'" — at most two separators.':'Keep one or two separators and under ~580px (≈55 characters).' };
+}
+// The town a location page is about, from its slug: "/service-area/grove-city" -> grove city,
+// "/towing-dublin-oh" -> dublin (service words dropped).
+function placeOfSlug(u){
+  const last=(pathSegs(u).pop()||'').replace(/\.(html?|php)$/,'').replace(RE_STATE_SLUG,'');
+  const words=last.split('-').filter(w=>w&&!RE_SLUG_STOP.test(w)&&!RE_SVC_WORD.test(w));
+  return words.join(' ')||null;
 }
 const GENERIC_H1=/^(gallery|contact( us)?|inquire|services|pay now|home|about( us)?|blog|welcome|untitled|page)$/i;
 function genericH1Check(h1){
@@ -1598,14 +1668,19 @@ function locationCoverage(ok, market){
 function callAboveFoldCheck(doc, type){
   if(!/^(home|service|location)$/.test(type)) return { label:'Click-to-call at the top (mobile)', points:0, status:'na', detail:'Checked on the homepage and money pages', evidence:[], why:'', fix:'' };
   const tels=[...doc.querySelectorAll('a[href^="tel:"]')];
-  if(!tels.length) return { label:'Click-to-call at the top (mobile)', points:3, status:'fail', detail:'No tel: link on the page', evidence:[], why:'On a phone the first screen decides the call. A tap-to-call button there is the single biggest conversion win for a local service.', fix:'Put a tap-to-call button in the header (sticky on mobile).' };
-  const body=doc.body; const full=(body&&body.textContent||'');
-  const pos=el=>{ let n=0; const w=doc.createTreeWalker(body,4); let t; while((t=w.nextNode())){ if(el.contains(t)) return n; n+=(t.nodeValue||'').replace(/\s+/g,' ').length; } return n; };
-  const top=tels.find(a=>a.closest('header,nav,[role="banner"]')||/(sticky|fixed|call-?bar|mobile-?call|topbar|top-bar|header)/i.test((a.className||'')+' '+((a.parentElement&&a.parentElement.className)||''))||pos(a)<1200);
+  const why='On a phone the first screen decides the call. A tap-to-call button there is the single biggest conversion win for a local service.', fix='Put a tap-to-call button in the header (sticky on mobile).';
+  if(!tels.length) return { label:'Click-to-call at the top (mobile)', points:3, status:'fail', detail:'No tel: link on the page', evidence:[], why, fix };
+  // Pass when any tel: link is (a) inside the header / nav, (b) inside a sticky or fixed element (a call bar that
+  // follows the visitor), or (c) within the first ~20% of the body's HTML. Estimated from the markup — no layout render.
+  const bodyHtml=(doc.body&&doc.body.innerHTML)||'';
+  const frac=a=>{ const i=bodyHtml.indexOf(a.outerHTML); return i<0||!bodyHtml.length?1:i/bodyHtml.length; };
+  const stickyUp=a=>{ for(let el=a; el&&el!==doc.body; el=el.parentElement){ const tag=((el.getAttribute&&(el.getAttribute('class')||''))+' '+(el.id||'')+' '+((el.getAttribute&&el.getAttribute('style'))||''));
+      if(/(sticky|fixed|call-?bar|mobile-?call|floating|position\s*:\s*(fixed|sticky))/i.test(tag)) return true; } return false; };
+  const why2=a=>a.closest('header,nav,[role="banner"]')?'in the header/navigation':stickyUp(a)?'in a sticky/fixed call bar':frac(a)<=0.2?'in the first '+Math.max(1,Math.round(frac(a)*100))+'% of the page':null;
+  const top=tels.find(a=>why2(a));
   return { label:'Click-to-call at the top (mobile)', points:3, status:top?'pass':'fail',
-    detail:top?('Tap-to-call near the top: '+snip(top.textContent||top.getAttribute('href'),50)+' (estimated from page order)'):'The first tel: link is far down the page (estimated from page order, ~'+Math.round(pos(tels[0])/Math.max(1,full.length)*100)+'% down)',
-    evidence:[{ snippet:'<a href="'+(top||tels[0]).getAttribute('href')+'">'+snip((top||tels[0]).textContent,50)+'</a>' }],
-    why:'On a phone the first screen decides the call. A tap-to-call button there is the single biggest conversion win for a local service.', fix:'Put a tap-to-call button in the header (sticky on mobile).' };
+    detail:top?('Tap-to-call '+why2(top)+': '+snip(top.textContent||top.getAttribute('href'),50)):'The first tel: link is '+Math.round(frac(tels[0])*100)+'% of the way down the page, not in the header or a sticky bar',
+    evidence:[{ snippet:'<a href="'+(top||tels[0]).getAttribute('href')+'">'+snip((top||tels[0]).textContent,50)+'</a>' }], why, fix };
 }
 function areaCodeCheck(doc, market){
   const codes=market&&market.areaCodes;
@@ -2006,7 +2081,7 @@ async function crawlSiteRun(root, opts){
   const queue=[], queued=new Set();
   const enqueue=u=>{ const k=keyOf(u); if(queued.has(k)||queue.length>=max*3) return; queued.add(k); queue.push(u); };
   disc.urls.forEach(enqueue);
-  const pages=[], redirected=[], broken=[]; let qi=0, active=0, done=0, rendered=0, audited=0, capped=false;
+  const pages=[], redirected=[], broken=[], nonHtml=[]; let qi=0, active=0, done=0, rendered=0, audited=0, capped=false;
   async function visit(u){
     const st=await checkUrl(u);
     if(st && !st.challenged && st.status>=300 && st.status<400){
@@ -2015,6 +2090,8 @@ async function crawlSiteRun(root, opts){
       return;
     }
     if(st && !st.challenged && st.status>=400){ broken.push({url:u, status:st.status}); return; }
+    // Only HTML pages are audited; maps (.kml), XML, PDFs, images and feeds are listed, not scored.
+    if(isNonHtml(u, st&&st.contentType)){ nonHtml.push({ url:u, contentType:(st&&st.contentType)||null, status:(st&&st.status)||null }); return; }
     if(audited>=max){ capped=true; return; }
     audited++;
     try{ const r=await loadPage(u);
@@ -2023,7 +2100,7 @@ async function crawlSiteRun(root, opts){
       r.httpStatus=st&&st.status||meta.status||null; r.finalUrl=meta.finalUrl||u; r.headers=st&&st.headers||null; r.rendered=!!r._rendered;
       pages.push(r); (r.links||[]).forEach(enqueue); }
     catch(e){ const meta=_fetchMeta.get(u)||{};
-      pages.push({ url:u, error:(e&&e.reason)||(e&&e.message)||'failed', status:(st&&st.status)||meta.status||null, challenged:!!(st&&st.challenged) }); }
+      pages.push({ url:u, error:(e&&e.reason)||(e&&e.message)||'failed', status:(st&&st.status)||meta.status||null, challenged:!!((st&&st.challenged)||(e&&e.challenged)) }); }
   }
   async function worker(){
     while(true){
@@ -2039,6 +2116,7 @@ async function crawlSiteRun(root, opts){
     let r;
     try{ r=await auditOne(u); }
     catch(e1){ // one free retry — most failures are transient (slow origin throttling under concurrency)
+      if(e1&&e1.challenged) throw e1; // bot challenge: fetchHtml already backed off, retried and tried ScrapingBee
       try{ r=await auditOne(u); }
       catch(e2){ if(render){ const html=await render(u); if(html){ r=await auditOne(u, html); r._rendered=true; rendered++; keepHtml(r,null,html); return r; } } throw e2; }
     }
@@ -2180,8 +2258,8 @@ async function crawlSiteRun(root, opts){
   const crossPage=Object.assign(cpEarly, content, { redirectChains:graph.chains, brokenLinks, redirectLinks, orphans,
     sitemapRedirects:redirected.filter(x=>smKeys.has(keyOf(x.url))), sitemapBroken:broken.filter(x=>smKeys.has(keyOf(x.url))) });
   ok.forEach(p=>{ p.linkCount=(p.links||[]).length; delete p.links; delete p._blocks; delete p._bh; delete p._sh; delete p._ownText; delete p._simWith; delete p._place; }); // working data, not results (crawl results get saved)
-  return { engineVersion:ENGINE_VERSION, root:disc.base, siteScore, pageAverage, siteBreakdown, siteChecks:aux.checks, siteFindings:findingsOut, stack, speed:speedRuns, perf, local, crossPage, pages,
-    coverage:{ discovered:queued.size, inSitemap:(disc.sitemapUrls||[]).length, audited:ok.length, failed:pages.length-ok.length, redirected:redirected.length, broken:broken.length,
+  return { engineVersion:ENGINE_VERSION, nonHtml, root:disc.base, siteScore, pageAverage, siteBreakdown, siteChecks:aux.checks, siteFindings:findingsOut, stack, speed:speedRuns, perf, local, crossPage, pages,
+    coverage:{ discovered:queued.size, inSitemap:(disc.sitemapUrls||[]).length, audited:ok.length, failed:pages.length-ok.length, redirected:redirected.length, broken:broken.length, nonHtml:nonHtml.length,
       capped, cap:max, via:disc.via==='sitemap'?'sitemap + links':disc.via, rendered, renderAvailable:!!render } };
 }
 // ---------- Report: every finding in one list, ranked ----------
@@ -2190,18 +2268,30 @@ async function crawlSiteRun(root, opts){
 const COMPONENT_NAMES={ technical:'Technical (site)', linkHealth:'Link health', freshness:'Freshness', duplication:'Duplication', coverage:'Coverage' };
 function sevLabel(v){ return v>=6?'Critical':v>=3?'High':v>=1.5?'Medium':'Low'; }
 function allFindings(res){
-  // Page checks that warn/fail, grouped by check across pages. Title = the problem on the worst page; severity = the
-  // worst page's shortfall severity; rank = severity x pages affected.
-  const ok=(res.pages||[]).filter(p=>!p.error), byLabel={};
+  // Page checks that warn/fail, grouped by check across the INDEXABLE pages (noindex pages never headline). Within a
+  // check, pages with the same problem wording (numbers aside) form a variant; the headline is the most common
+  // variant with its count, and its fix, evidence and severity come from that same variant.
+  const ok=(res.pages||[]).filter(p=>!p.error&&!p.noindex), byLabel={};
+  const shape=s=>String(s).replace(/\d[\d.,]*/g,'#');
   ok.forEach(p=>(p.checks||[]).forEach(c=>{ if(c.status!=='fail'&&c.status!=='warn') return; if(!c.points&&!c.penalty) return;
-    const sevName=c.severity||checkSeverity(c), rank=SEV_RANK[sevName]||1, issue=c.issue||problemTitle(c);
-    const e=byLabel[c.label]||(byLabel[c.label]={ label:c.label, category:c.cat, fails:0, warns:0, pages:[], worst:null, fix:c.fix });
+    const sevName=c.severity||checkSeverity(c), issue=c.issue||problemTitle(c), key=shape(issue);
+    const e=byLabel[c.label]||(byLabel[c.label]={ label:c.label, category:c.cat, fails:0, warns:0, pages:[], variants:{} });
     if(c.status==='fail') e.fails++; else e.warns++; e.pages.push(p.url);
-    const ev=(c.evidence||[])[0];
-    if(!e.worst||rank>e.worst.rank) e.worst={ rank, sevName, issue, detail:c.detail, evidence:ev?{ url:ev.url||p.url, snippet:ev.snippet }:{ url:p.url, snippet:c.detail } }; }));
-  const page=Object.values(byLabel).map(e=>{ const w=e.worst, n=e.pages.length;
-    return { title:w.issue+(n>1?' (worst of '+n+' pages)':''), check:e.label, category:e.category, scope:'page', status:e.fails>=e.warns?'fail':'warn', severity:w.sevName, sev:w.rank,
-      pagesAffected:n, urls:e.pages.slice(0,5), evidence:w.evidence, detail:w.detail, fix:e.fix, rank:w.rank*n }; });
+    const v=e.variants[key]||(e.variants[key]={ key, issues:[], pages:[], rank:0, sevName:null, fix:c.fix, detail:c.detail, evidence:null });
+    v.issues.push(issue); v.pages.push(p.url);
+    const r=SEV_RANK[sevName]||1; if(r>v.rank){ v.rank=r; v.sevName=sevName; }
+    if(!v.evidence){ const ev=(c.evidence||[])[0]; v.evidence=ev?{ url:ev.url||p.url, snippet:ev.snippet }:{ url:p.url, snippet:c.detail }; } }));
+  // "Thin content: 181–437 unique words" — each number slot shows its range across the variant's pages.
+  const headline=v=>{ const nums=v.issues.map(t=>(String(t).match(/\d[\d.,]*/g)||[]));
+    let i=0; return v.key.replace(/#/g,()=>{ const col=nums.map(a=>a[i]).filter(x=>x!=null); i++;
+      const vals=[...new Set(col)]; if(vals.length<=1) return vals[0]||'';
+      const n=col.map(x=>parseFloat(String(x).replace(/,/g,''))); return Math.min(...n)+'–'+Math.max(...n); }); };
+  const page=Object.values(byLabel).map(e=>{
+    const vs=Object.values(e.variants).sort((a,b)=>b.pages.length-a.pages.length||b.rank-a.rank), top=vs[0], n=e.pages.length;
+    const others=vs.slice(1).map(v=>headline(v)+' ('+v.pages.length+')');
+    return { title:headline(top)+' — '+top.pages.length+' page'+(top.pages.length===1?'':'s'), check:e.label, category:e.category, scope:'page',
+      status:e.fails>=e.warns?'fail':'warn', severity:top.sevName, sev:top.rank, pagesAffected:n, urls:top.pages.slice(0,5), evidence:top.evidence,
+      detail:top.detail+(others.length?' · other variants: '+others.slice(0,3).join('; '):''), fix:top.fix, variants:vs.length, rank:top.rank*n }; });
   const capped=ok.filter(p=>p._score&&p._score.cap&&p._score.cap.applied!==false);
   if(capped.length) page.push({ title:capped.length+' thin location page'+(capped.length===1?'':'s')+' capped at '+(capped.some(p=>p._score.cap.max===70)?'70–80':'80'), check:'Thin location cap', category:'On-Page Content', scope:'page', status:'fail', severity:'High', sev:3,
     pagesAffected:capped.length, urls:capped.slice(0,5).map(p=>p.url), evidence:{ url:capped[0].url, snippet:capped[0]._score.cap.reason+' → capped at '+capped[0]._score.cap.max },
@@ -2234,12 +2324,26 @@ function findingsByCategoryHTML(list, root){
       +(f.evidence&&f.evidence.snippet?'<div style="font-size:12px;font-family:ui-monospace,Consolas,monospace;background:#f8fafc;border:1px solid #eef2f7;border-radius:4px;padding:4px 6px;margin:4px 0;word-break:break-word">'+(f.evidence.url?rel(f.evidence.url)+' — ':'')+esc(snip(f.evidence.snippet,220))+'</div>':'')
       +(f.fix?'<div style="font-size:12px"><b>Fix:</b> '+esc(f.fix)+'</div>':'')+'</div>').join('')+'</details>').join('');
 }
+// Files the crawl met that are not web pages (KML maps, XML, PDFs, images, feeds): listed, never audited.
+const RE_NONHTML_URL=/\.(kml|kmz|xml|pdf|jpe?g|png|gif|webp|avif|svg|ico|bmp|tiff?|mp4|mov|webm|mp3|wav|zip|rar|gz|docx?|xlsx?|pptx?|csv|txt|json|rss|atom|ics|vcf)$/i;
+function isNonHtml(u, contentType){
+  let path=''; try{ path=new URL(u).pathname; }catch(e){ path=String(u); }
+  if(RE_NONHTML_URL.test(path) || /(^|\/)(feed|rss|atom)\/?$/i.test(path)) return true;
+  return !!contentType && !/html/i.test(contentType);
+}
+function nonHtmlHTML(res){
+  const f=res.nonHtml||[]; if(!f.length) return '';
+  return '<h3 style="margin:22px 0 8px;font-size:15px">Non-HTML files found ('+f.length+') <span style="font-size:12px;color:#64748b;font-weight:400">— listed for reference, not audited</span></h3><div style="font-size:12px;color:#475569;line-height:1.7">'
+    +f.slice(0,30).map(x=>esc(x.url)+(x.contentType?' <span style="color:#94a3b8">('+esc(x.contentType.split(';')[0])+')</span>':'')).join('<br>')+(f.length>30?'<br>…and '+(f.length-30)+' more':'')+'</div>';
+}
+// How a GBP search is described in the report (the query is {name, phone, address}; older results stored a string).
+function gbpQueryText(q){ if(!q) return '(nothing to search with)'; if(typeof q==='string') return q; return [q.name,q.phone,q.address].filter(Boolean).join(' · ')||'(nothing to search with)'; }
 // "45 URLs found · 23 pages audited · 21 redirects · 1 broken" — every URL found is accounted for.
 function coverageLine(cov){
   const n=(k,one,many)=>cov[k]?' · <b>'+cov[k]+'</b> '+(cov[k]===1?one:many):'';
-  const notAudited=Math.max(0,(cov.discovered||0)-(cov.audited||0)-(cov.redirected||0)-(cov.broken||0)-(cov.failed||0));
+  const notAudited=Math.max(0,(cov.discovered||0)-(cov.audited||0)-(cov.redirected||0)-(cov.broken||0)-(cov.failed||0)-(cov.nonHtml||0));
   return '<b>'+(cov.discovered||0)+'</b> URLs found · <b>'+(cov.audited||0)+'</b> pages audited'+n('redirected','redirect','redirects')+n('broken','broken','broken')
-    +n('failed','failed to load','failed to load')+(cov.capped&&notAudited?' · <b>'+notAudited+'</b> not audited (capped at '+cov.cap+')':'');
+    +n('failed','failed to load','failed to load')+n('nonHtml','non-HTML file','non-HTML files')+(cov.capped&&notAudited?' · <b>'+notAudited+'</b> not audited (capped at '+cov.cap+')':'');
 }
 // Pages the crawl found but could not load, with the HTTP status and the error.
 function failedPagesHTML(res){
@@ -2413,7 +2517,7 @@ function siteReportHTML(res){
         +(loc.phone?'<div><b>Phone:</b> '+esc(loc.phone)+'</div>':'')
         +(loc.mapsUrl?'<div><a href="'+esc(loc.mapsUrl)+'" style="color:#2563eb;text-decoration:none">View on Google Maps →</a></div>':'')
       +'</div>'
-      : '<div style="border:1px solid #fee2e2;background:#fff7f7;border-radius:8px;padding:12px 14px;font-size:13px;color:#b91c1c">No Google Business Profile match found for "'+esc(loc.query||'')+'". If they should have one, it may be unclaimed/misnamed — a major gap for local &amp; AI search. Claiming and optimizing GBP is high priority.</div>'));
+      : '<div style="border:1px solid #fee2e2;background:#fff7f7;border-radius:8px;padding:12px 14px;font-size:13px;color:#b91c1c">No Google Business Profile match found for "'+esc(gbpQueryText(loc.query))+'". If they should have one, it may be unclaimed/misnamed — a major gap for local &amp; AI search. Claiming and optimizing GBP is high priority.</div>'));
   return '<div style="'+F+'">'
     +'<div style="border-bottom:3px solid #0f172a;padding-bottom:12px;margin-bottom:14px"><div style="font-size:20px;font-weight:800">'+esc(BRAND.name)+' — Full-Site SEO &amp; AI Search Audit</div><div style="color:#64748b;font-size:13px">'+esc(res.root)+'</div></div>'
     +'<div style="font-size:13px;color:#334155;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:10px 12px;margin-bottom:14px"><b>Coverage:</b> '+coverageLine(cov)+' · discovery via <b>'+esc(cov.via||'?')+'</b>'+(cov.renderAvailable?(' · '+cov.rendered+' JS pages rendered'):' · JS-rendering off (raw HTML only)')+'.</div>'
@@ -2436,8 +2540,9 @@ function siteReportHTML(res){
       out+=issue('Orphan pages (in the sitemap, linked from nowhere)', cp.orphans, rel);
       out+=issue('Sitemap URLs that redirect or fail', [].concat(cp.sitemapRedirects||[], cp.sitemapBroken||[]), o=>rel(o.url)+' — HTTP '+o.status+(o.location?' → '+rel(o.location):''));
       out+=issue('Near-duplicate pages (80%+ shared text)', cp.nearDuplicates, o=>rel(o.a)+' ≈ '+rel(o.b)+' ('+Math.round(o.similarity*100)+'%)');
-      if((nap.inconsistent||[]).length) out+=issue('Inconsistent business name / address / phone (NAP)', nap.inconsistent.map(f=>f), f=>{ const list=f==='phone'?nap.phones:f==='address'?nap.streets:nap.names;
+      if((nap.inconsistent||[]).length) out+=issue('Inconsistent business name / address / phone (NAP)', nap.inconsistent.map(f=>f), f=>{ const list=f==='phone'?nap.phones:f==='address'?(nap.addressIssue||nap.streets):nap.names;
         return '<b>'+esc(f)+'</b>: '+list.slice(0,5).map(v=>esc(v.value)+' ('+v.pages+' page'+(v.pages===1?'':'s')+')').join(' · '); });
+      if((nap.multiLocation||[]).length>1) out+='<div style="border:1px solid #e2e8f0;background:#f8fafc;border-radius:8px;padding:10px 12px;margin:0 0 8px"><div style="font-weight:800;color:#334155">Multiple locations detected ('+nap.multiLocation.length+') — info</div><div style="font-size:12px;color:#475569;margin-top:4px;line-height:1.6">These addresses appear consistently (footer/schema), so they read as separate locations, not an inconsistency: '+nap.multiLocation.slice(0,6).map(v=>esc(v.value)+' ('+v.pages+' page'+(v.pages===1?'':'s')+')').join(' · ')+'</div></div>';
       out+=issue('Hard-coded counts that don’t match the site', cp.countClaims, o=>'"'+esc(o.claim)+'" — the site has '+o.actual+' '+o.kind+' page'+(o.actual===1?'':'s')+' · on '+o.urls.length+' page'+(o.urls.length===1?'':'s'));
       out+=issue('H1 words run together in the page code', cp.h1Spacing, o=>rel(o.url)+' — reads as "'+esc(o.sample)+'"');
       out+=issue('"Text"/"SMS" links that dial instead of texting (tel:)', cp.smsTelLinks, o=>rel(o.url)+' — "'+esc(o.labels[0])+'"');
@@ -2451,6 +2556,7 @@ function siteReportHTML(res){
       out+=issue('Missing H1', cp.missingH1, u=>esc(u.replace(res.root,'')||'/'));
       return out||'<div style="color:#16a34a;font-size:13px">No site-wide issues detected across audited pages.</div>'; })()
     +failedPagesHTML(res)
+    +nonHtmlHTML(res)
     +findingsByCategoryHTML(allFindings(res), res.root)
     +coverageMatrixHTML([res])
     +stackHTML(res.stack)
@@ -2578,7 +2684,7 @@ async function audit(url, opts){
   await loadIndustry(opts.industry, opts.market);
   const r=await auditOne(url);
   try{ await addAux(r); }catch(e){}
-  try{ r.sitemap=await sitemapSummary(r.origin||r.url); }catch(e){}
+  try{ r.sitemap=await sitemapSummary(r.origin||r.url, { primaryCity:r.primaryCity }); }catch(e){}
   try{ await measureAssets([r], 120); }catch(e){} // real image / script sizes for the weight + image checks
   if(opts.speed!==false){ try{ await addSpeed(r, opts.psiKey||''); }catch(e){} }
   r.engine='Homepage snapshot';
@@ -2636,12 +2742,12 @@ function comparisonHTML(items){
 }
 const API={ BRAND, PROXIES, TAGS, AI_BOTS, AISEARCH, PROJECT_FIXES, sleep, esc, isQuick, setAbort,
   fetchHtml, fetchAux, aiCrawlerStatus, auditOne, addAux, fetchPSI, addSpeed, score, audit,
-  ENGINE_VERSION, engineFooterHTML, failedPagesHTML, coverageLine, archiveDuplicationFinding, retestSlowPages, pageTypesFor, gbpQuery, titleBrand, problemTitle, checkSeverity, shortfallSeverity, catPercent, measureAssets, loadIndustry, allFindings, discoverPages, sitemapSummary, crossPageIssues, crawlSite, siteReportHTML, siteTopIssues, siteComparisonHTML, speedRunsHTML, aiExplainerHTML, ctaBlockHTML, PSI_RUNS,
+  ENGINE_VERSION, engineFooterHTML, intentionalNoindex, gbpQueryText, failedPagesHTML, nonHtmlHTML, isNonHtml, coverageLine, archiveDuplicationFinding, retestSlowPages, pageTypesFor, gbpQuery, titleBrand, problemTitle, checkSeverity, shortfallSeverity, catPercent, measureAssets, loadIndustry, allFindings, discoverPages, sitemapSummary, crossPageIssues, crawlSite, siteReportHTML, siteTopIssues, siteComparisonHTML, speedRunsHTML, aiExplainerHTML, ctaBlockHTML, PSI_RUNS,
   reportHTML, findingsHTML, emailHTML, emailText, comparisonHTML,
   // building blocks, exposed for tests
   classifyPage, mainContent, localEntities, countClaims, h1Glued, smsLabelTelLinks, businessSchema, ldNodes, AI_SEARCH_BOTS, AI_TRAINING_BOTS,
   // individual checks, for unit tests
-  _x:{ soft404Check, viewportZoomCheck, headingHierarchyCheck, imageCheck, weightCheck, pageAssets, robotsRulesFor, robotsAllowed, chainOf, technicalFindings, applyDeductions, titleQualityCheck, uniqueContentCheck, titlePixels, genericH1Check, descEqualsTitleCheck, genericAnchorCheck, onPageLinkFindings, yearClaims, staleClaimsCheck, placeholderCheck, defaultPrivacyCheck, contentFreshnessFindings, contradictionFindings, serviceCoverage, locationCoverage, callAboveFoldCheck, areaCodeCheck, localFindings, jsonLdSyntaxCheck, businessEntityCheck, schemaNapCheck, openingHoursCheck, serviceSchemaCheck, breadcrumbCheck, faqMatchCheck, schemaTypesCheck, licenseCheck, pricingCheck, insuranceCheck, trustFindings, resolveAsyncFindings, questionAnswerCheck, citableFactsCheck, aiSiteFindings, stackFingerprint, loadIndustry, setMarket:(m)=>{ _market=m; } } };
+  _x:{ setBackoff:ms=>{ CHALLENGE_BACKOFF_MS=ms; }, soft404Check, viewportZoomCheck, headingHierarchyCheck, imageCheck, weightCheck, pageAssets, robotsRulesFor, robotsAllowed, chainOf, technicalFindings, applyDeductions, titleQualityCheck, uniqueContentCheck, titlePixels, genericH1Check, descEqualsTitleCheck, genericAnchorCheck, onPageLinkFindings, yearClaims, staleClaimsCheck, placeholderCheck, defaultPrivacyCheck, contentFreshnessFindings, contradictionFindings, serviceCoverage, locationCoverage, callAboveFoldCheck, areaCodeCheck, localFindings, jsonLdSyntaxCheck, businessEntityCheck, schemaNapCheck, napIssues, openingHoursCheck, serviceSchemaCheck, breadcrumbCheck, faqMatchCheck, schemaTypesCheck, licenseCheck, pricingCheck, insuranceCheck, trustFindings, resolveAsyncFindings, questionAnswerCheck, citableFactsCheck, aiSiteFindings, stackFingerprint, loadIndustry, setMarket:(m)=>{ _market=m; } } };
 root.SEO=API;
 if(typeof module!=="undefined"&&module.exports) module.exports=API;
 })(typeof window!=="undefined"?window:globalThis);

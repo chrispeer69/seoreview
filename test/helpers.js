@@ -1,7 +1,8 @@
 'use strict';
 // Shared test helpers: load seo-engine.js into jsdom with a fetch() answering from an in-memory route table.
-//   routes[url] = { status, body, location, canonical, bytes, contentType }   (pages via /api/proxy, statuses via
-//   /api/linkcheck), routes.psi = url => json string, routes.config = { towing: {...} } for /config/industries.
+//   routes[url] = { status, body, headers, seq:[{status,body,headers}…], location, canonical, bytes, contentType }
+//   (pages via /api/proxy, statuses via /api/linkcheck), routes.render = url => html|null for /api/render (ScrapingBee),
+//   routes.psi = url => json string, routes.config = { towing: {...} } for /config/industries.
 const fs = require('fs');
 const path = require('path');
 const assert = require('assert');
@@ -18,7 +19,8 @@ function engine(routes) {
     if (u.startsWith('/api/proxy')) {
       const t = new URL(u, 'http://x').searchParams.get('url'); const r = routes[t];
       if (r && r.delays && r.delays.length) await new Promise(res => setTimeout(res, r.delays.shift())); // per-call latency
-      return r && (r.status || 200) === 200 ? resp(200, r.body || '', { 'x-final-url': t }) : resp((r && r.status) || 404, '');
+      if (r && r.seq) { const x = r.seq.length > 1 ? r.seq.shift() : r.seq[0]; return resp(x.status || 200, x.body || '', Object.assign({ 'x-final-url': t }, x.headers || {})); } // per-call answers
+      return r && (r.status || 200) === 200 ? resp(200, r.body || '', Object.assign({ 'x-final-url': t }, r.headers || {})) : resp((r && r.status) || 404, (r && r.body) || '', (r && r.headers) || {});
     }
     if (u === '/api/linkcheck') {
       const urls = JSON.parse(init.body).urls;
@@ -34,6 +36,8 @@ function engine(routes) {
       const cfg = (routes.config || {})[name] || (name === 'towing' ? JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config', 'industries', 'towing.json'), 'utf8')) : null);
       return cfg ? resp(200, JSON.stringify(cfg)) : resp(404, '{}');
     }
+    if (u.startsWith('/api/render')) { const t = new URL(u, 'http://x').searchParams.get('url'); (routes.renderCalls = routes.renderCalls || []).push(t);
+      const h = routes.render && routes.render(t); return h ? resp(200, h) : resp(502, ''); }
     if (/pagespeedonline/.test(u) && routes.psi) return resp(200, routes.psi(u));
     return resp(502, '');
   };

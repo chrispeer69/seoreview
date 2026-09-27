@@ -133,7 +133,8 @@ test('Every warned/failed check has a problem-state title (not its check name)',
   });
   assert.deepStrictEqual([...new Set(bad)], []);
   const js = bj.pages.map(p => chk(p, 'Reasonable page weight')).find(c => c && c.status === 'warn');
-  assert.match(js.issue, /^JavaScript too heavy: [\d.]+ (KB|MB)$/);
+  assert.match(js.issue, /^JavaScript too heavy: [\d.]+ (KB|MB) \(largest file: \S+, [\d.]+ (KB|MB)\)$/);
+  assert.ok(!/largest file: js,/.test(js.issue), 'a file name or host + path, not a bare segment: ' + js.issue);
 });
 
 test('Failed-to-load pages are listed with their status and error', async () => {

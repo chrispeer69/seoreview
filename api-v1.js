@@ -190,7 +190,7 @@ function summarize(res) {
   if (len(cp.duplicateDescriptions)) addSite('duplicate_meta_descriptions', 'minor', sumUrls(cp.duplicateDescriptions),
     `${sumUrls(cp.duplicateDescriptions)} pages share a meta description`);
   if (cp.nap && len(cp.nap.inconsistent)) addSite('nap_inconsistent', 'serious', N,
-    `Business ${cp.nap.inconsistent.join(' / ')} differs across pages (${cp.nap.inconsistent.map(f => (f === 'phone' ? cp.nap.phones : f === 'address' ? cp.nap.streets : cp.nap.names).slice(0, 3).map(v => v.value).join(' vs ')).join('; ')})`);
+    `Business ${cp.nap.inconsistent.join(' / ')} differs across pages (${cp.nap.inconsistent.map(f => (f === 'phone' ? cp.nap.phones : f === 'address' ? (cp.nap.addressIssue || cp.nap.streets) : cp.nap.names).slice(0, 3).map(v => v.value).join(' vs ')).join('; ')})`);
   (cp.countClaims || []).forEach(o => addSite('count_claim_mismatch', 'moderate', o.urls.length, `"${o.claim}" but the site has ${o.actual} ${o.kind} pages`));
   if (len(cp.h1Spacing)) addSite('h1_words_run_together', 'minor', len(cp.h1Spacing), `${len(cp.h1Spacing)} H1${len(cp.h1Spacing) === 1 ? '' : 's'} read as run-together words in the raw HTML (e.g. "${cp.h1Spacing[0].sample}")`);
   if (len(cp.smsTelLinks)) addSite('sms_label_on_tel_link', 'minor', len(cp.smsTelLinks), `"Text"/"SMS" links use tel: and start a call (e.g. "${cp.smsTelLinks[0].labels[0]}")`);
@@ -271,7 +271,7 @@ function summarize(res) {
     local,
     ai_visibility,
     server_speed,
-    coverage: { discovered: cov.discovered, audited: cov.audited, failed: cov.failed, capped: !!cov.capped, cap: cov.cap, discovered_via: cov.via, js_rendered: cov.rendered || 0, render_available: !!cov.renderAvailable },
+    coverage: { discovered: cov.discovered, audited: cov.audited, failed: cov.failed, capped: !!cov.capped, cap: cov.cap, discovered_via: cov.via, js_rendered: cov.rendered || 0, render_available: !!cov.renderAvailable, non_html: cov.nonHtml || [] },
     // How the score was built: 50% page average + 50% site level (coverage, freshness, link health, duplication, technical), caps.
     engine_version: res.engineVersion || null, // which engine produced this audit
     site_breakdown: res.siteBreakdown || null,
@@ -280,6 +280,8 @@ function summarize(res) {
     findings: (res.findings || []).map(f => ({ title: f.title, category: f.category, severity: f.severity.toLowerCase(), status: f.status, scope: f.scope, pages_affected: f.pagesAffected, urls: f.urls, evidence: f.evidence, detail: f.detail, fix: f.fix || null })),
     // Stack & agency fingerprint (info only).
     stack: res.stack || null,
+    // 2+ addresses shown consistently (footer/schema) = several locations; info, not a NAP inconsistency.
+    multi_location: ((res.crossPage || {}).nap || {}).multiLocation && res.crossPage.nap.multiLocation.length > 1 ? res.crossPage.nap.multiLocation.map(v => ({ address: v.value, pages: v.pages })) : null,
   };
 }
 
@@ -329,6 +331,7 @@ function contractBody(j, opts) {
     top_fixes: r.top_fixes || [],
     findings: opts.slim ? undefined : (r.findings || []),
     stack: r.stack || null,
+    multi_location: r.multi_location || null,
     report_url: j.status === 'done' ? `${deps.BASE_URL}/report/${j.id}?t=${j.view_token}` : null,
   };
   if (j.status === 'running' && j.progress) body.progress = j.progress;
