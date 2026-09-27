@@ -1,9 +1,17 @@
 'use strict';
-// Calibration run of the audit engine against cached real sites (test/fixtures/<domain>.json.gz).
+// Calibration of the audit engine against cached real sites (test/fixtures/<domain>.json.gz).
 //
-//   node test/calibrate.js              replay the fixtures offline and check each site's score is in its target band
-//   node test/calibrate.js --record     fetch the sites live (and PageSpeed), then rewrite the fixtures
-//   node test/calibrate.js --verbose    also print the per-page scores and site-wide findings
+//   node test/calibrate.js                    replay the cached fixtures (no network) and assert each site's score -
+//                                             and each reference page's - is within ±3 of its recorded score
+//                                             (test/fixtures/expected.json). This is the only mode `npm test` runs.
+//   node test/calibrate.js --record <site>    on purpose only: fetch <site> live (pages, checks, PageSpeed), rewrite its
+//                                             fixture and its recorded scores. One named site per run; never all.
+//   node test/calibrate.js --accept [<site>]  an intended engine change moved the scores: replay and store the new
+//                                             scores as recorded (the fixtures themselves are untouched)
+//   node test/calibrate.js --live [<site>]    crawl live and print the scores next to the recorded ones.
+//                                             Informational: writes nothing and never fails.
+//   --verbose                                 also print the per-page scores and site-wide findings
+//   --only=<domain>[,<domain>]                limit a replay / --accept / --live run to these sites
 //
 // Replay is deterministic: every network call the engine makes (pages, robots/sitemaps, link checks, PageSpeed) is
 // answered from the fixture; a request the fixture doesn't hold is answered as a network failure and counted.
@@ -13,22 +21,33 @@ const zlib = require('zlib');
 const headless = require('../headless-audit');
 
 const SITES = [
-  // Site bands, plus page bands for pages whose score is a known reference point.
-  { domain: 'columbusroadsidetowing.com', root: 'https://www.columbusroadsidetowing.com', target: [85, 95], industry: 'towing',
-    pages: { '/service-area/whitehall': [60, 80], '/service-area/lewis-center': [90, 100] } },
-  { domain: 'broadandjames.com', root: 'https://broadandjames.com', target: [45, 65], industry: 'towing' },
+  // `pages`: reference pages whose own scores are asserted too.
+  { domain: 'columbusroadsidetowing.com', root: 'https://www.columbusroadsidetowing.com', industry: 'towing',
+    pages: ['/service-area/whitehall', '/service-area/lewis-center'] },
+  { domain: 'broadandjames.com', root: 'https://broadandjames.com', industry: 'towing' },
   // Capital starts at the bare domain, which redirects to www: the homepage must still be audited.
-  { domain: 'capitaltowing.com', root: 'https://capitaltowing.com', target: [65, 80], industry: 'towing' },
-  { domain: 'jaestowing.com', root: 'https://www.jaestowing.com', target: [45, 65], industry: 'towing' },
-  { domain: 'protow.guardianfleetservice.com', root: 'https://protow.guardianfleetservice.com', target: [50, 68], industry: 'towing' },
+  { domain: 'capitaltowing.com', root: 'https://capitaltowing.com', industry: 'towing' },
+  { domain: 'jaestowing.com', root: 'https://www.jaestowing.com', industry: 'towing' },
+  { domain: 'protow.guardianfleetservice.com', root: 'https://protow.guardianfleetservice.com', industry: 'towing' },
 ];
-// --only=<domain>[,<domain>]: run just these sites (e.g. to record one new fixture).
-const ONLY = ((process.argv.find(a => a.startsWith('--only=')) || '').slice(7)).split(',').filter(Boolean);
+const TOLERANCE = 3;
+const argAfter = flag => { const i = process.argv.indexOf(flag); const v = i >= 0 ? process.argv[i + 1] : null; return v && !v.startsWith('--') ? v : null; };
+const RECORD_SITE = argAfter('--record');
 const RECORD = process.argv.includes('--record');
-// --record-missing: replay the fixture, fetch live only what it lacks (new checks), and add that to the fixture.
+const LIVE = process.argv.includes('--live');
+const ACCEPT = process.argv.includes('--accept');
+const ONLY = ((process.argv.find(a => a.startsWith('--only=')) || '').slice(7)).split(',').filter(Boolean)
+  .concat(RECORD_SITE ? [RECORD_SITE] : [], argAfter('--live') ? [argAfter('--live')] : [], argAfter('--accept') ? [argAfter('--accept')] : []);
+if (RECORD && !RECORD_SITE) { console.error('--record needs a site: node test/calibrate.js --record <domain>  (one site, on purpose)'); process.exit(2); }
+if (RECORD_SITE && !SITES.some(s => s.domain === RECORD_SITE)) { console.error(`--record ${RECORD_SITE}: not a calibration site (${SITES.map(s => s.domain).join(', ')})`); process.exit(2); }
+// Kept for deliberate fixture maintenance only (each rewrites the fixture it touches):
+// --record-missing: replay, fetch live only what the fixture lacks (a new check), and add that to the fixture.
 // --refresh-checks: re-fetch every URL status check (e.g. after linkcheck starts returning more fields).
 const RECORD_MISSING = process.argv.includes('--record-missing');
 const REFRESH_CHECKS = process.argv.includes('--refresh-checks');
+const EXPECTED_PATH = path.join(__dirname, 'fixtures', 'expected.json');
+const loadExpected = () => { try { return JSON.parse(fs.readFileSync(EXPECTED_PATH, 'utf8')); } catch (e) { return {}; } };
+const saveExpected = x => fs.writeFileSync(EXPECTED_PATH, JSON.stringify(x, null, 2) + '\n');
 const { makeLinkCheck } = require('../url-check');
 const liveLinkCheck = makeLinkCheck((u, o) => fetch(u, o), HEADERS_FOR_CHECKS());
 const VERBOSE = process.argv.includes('--verbose');
@@ -68,6 +87,7 @@ function makeDeps(fx) {
   const misses = [];
   fx.dirty = false;
   const get = async (key, live) => {
+    if (LIVE) return live();             // --live: straight to the network, nothing read from or written to the fixture
     const refresh = REFRESH_CHECKS && key.startsWith('check:') && !(fx.refreshed || (fx.refreshed = new Set())).has(key);
     if (RECORD || refresh || (RECORD_MISSING && !(key in fx.calls))) { const v = await live(); fx.calls[key] = v; fx.dirty = true; if (refresh) fx.refreshed.add(key); return v; }
     if (key in fx.calls) return fx.calls[key];
@@ -86,38 +106,53 @@ function makeDeps(fx) {
 
 (async () => {
   let failed = 0;
+  const expected = loadExpected();
+  const mode = RECORD ? 'record' : LIVE ? 'live' : ACCEPT ? 'accept' : 'replay';
   for (const site of SITES) {
     if (ONLY.length && !ONLY.includes(site.domain)) continue;
-    let fx = RECORD ? null : load(site.domain);
-    if (!fx && !RECORD) { console.log(`${site.domain}: no fixture — run with --record first`); failed++; continue; }
+    let fx;
     if (RECORD) fx = { domain: site.domain, recorded: new Date().toISOString(), calls: {} };
+    else if (LIVE) fx = { domain: site.domain, recorded: new Date().toISOString(), calls: {} };
+    else fx = load(site.domain);
+    if (!fx) { console.log(`${site.domain}: no fixture - record it on purpose: node test/calibrate.js --record ${site.domain}`); failed++; continue; }
     const { deps, misses } = makeDeps(fx);
     const t0 = Date.now();
     const out = await headless.crawlSite(deps, site.root, { maxPages: 150, concurrency: 4, psiKey: psiKey(), now: fx.recorded, industry: site.industry || 'general' });
-    if (fx.dirty) { delete fx.dirty; delete fx.refreshed; save(site.domain, fx); console.log(`  (fixture updated: ${Object.keys(fx.calls).length} calls)`); }
+    if (fx.dirty && !LIVE) { delete fx.dirty; delete fx.refreshed; save(site.domain, fx); console.log(`  (fixture updated: ${Object.keys(fx.calls).length} calls)`); }
     const res = out.result || {};
-    if (res.error) { console.log(`${site.domain}: crawl error — ${res.error}`); failed++; continue; }
+    if (res.error) { console.log(`${site.domain}: crawl error - ${res.error}`); if (!LIVE) failed++; continue; }
     const s = res.siteScore; const b = res.siteBreakdown || null;
-    const inBand = site.target ? (s >= site.target[0] && s <= site.target[1]) : null;
-    if (inBand === false) failed++;
-    console.log(`\n${site.domain}: site score ${s}${site.target ? ` (target ${site.target[0]}–${site.target[1]}: ${inBand ? 'OK' : 'OUT OF BAND'})` : ' (no target set)'}`
+    const pageScore = pth => { const pg = (res.pages || []).find(p => !p.error && p.url.replace(res.root, '') === pth); return pg && pg._score ? pg._score.score : null; };
+    const got = { score: s, pages: {} };
+    (site.pages || []).forEach(pth => { got.pages[pth] = pageScore(pth); });
+    const want = expected[site.domain];
+    // ±TOLERANCE against the recorded score: a replay outside it fails; --live only reports.
+    const cmp = (label, now, rec) => {
+      if (rec == null) return `${label} ${now} (nothing recorded yet)`;
+      const d = now == null ? null : now - rec, ok = d != null && Math.abs(d) <= TOLERANCE;
+      if (!ok && mode === 'replay') failed++;
+      return `${label} ${now == null ? 'not crawled' : now} (recorded ${rec} ±${TOLERANCE}${d ? `, ${d > 0 ? '+' : ''}${d}` : ''}: ${ok ? 'OK' : mode === 'live' ? 'DRIFT (info only)' : 'OUT OF RANGE'})`;
+    };
+    console.log(`\n${site.domain} [${mode}]: ${cmp('site score', s, want && want.score)}`
       + ` · ${(res.pages || []).filter(p => !p.error).length} pages · ${((Date.now() - t0) / 1000).toFixed(1)}s${misses.length ? ` · ${misses.length} fixture misses` : ''}`);
+    // A replay must be answered entirely from the fixture; a miss means the engine now asks for something the
+    // fixture never recorded, so the score is not the recorded site's score.
+    if (mode === 'replay' && misses.length) { console.log(`  fixture misses (first: ${misses[0]}) - add them on purpose: --record-missing --only=${site.domain}`); failed++; }
     if (b) {
       const t = b.technical || {}, f = b.freshness || {}, l = b.linkHealth || {}, c = b.coverage || {}, d = b.duplication || {};
       console.log(`  pages ${b.pageAverage} | site level ${b.siteLevel} = coverage ${c.score} (${c.service} svc/${c.location} loc) · freshness ${f.score} (${f.newest || 'n/a'}) · links ${l.score} (${l.broken} broken/${l.redirects} redirects/${l.orphans} orphans) · duplication ${d.score} · technical ${t.score} ${JSON.stringify(t.parts || {})}`);
       console.log(`  penalties: ${(b.penalties || []).map(x => '-' + x.points + ' ' + x.reason).join('; ') || 'none'} | caps: ${(b.caps || []).map(x => x.max + ' ' + x.reason).join('; ') || 'none'} | AI Search ${b.aiSearch}`);
     }
-    Object.keys(site.pages || {}).forEach(pth => {
-      const [lo, hi] = site.pages[pth];
-      const pg = (res.pages || []).find(p => !p.error && p.url.replace(res.root, '') === pth);
-      const sc = pg && pg._score ? pg._score.score : null;
-      const okp = sc != null && sc >= lo && sc <= hi; if (!okp) failed++;
-      console.log(`  page ${pth}: ${sc == null ? 'not crawled' : sc} (target ${lo}–${hi}: ${okp ? 'OK' : 'OUT OF BAND'})`);
-    });
+    (site.pages || []).forEach(pth => console.log('  ' + cmp('page ' + pth + ':', got.pages[pth], want && want.pages && want.pages[pth])));
+    if (mode === 'record' || mode === 'accept') {
+      expected[site.domain] = { score: s, pages: got.pages, fixture_recorded: fx.recorded, accepted: new Date().toISOString() };
+      saveExpected(expected);
+      console.log(`  recorded score saved: ${s}${Object.keys(got.pages).length ? ' · pages ' + JSON.stringify(got.pages) : ''}`);
+    }
     // The API summary and the branded report must build from this result.
     const api = require('../api-v1').summarize(res);
-    if (api.score !== s) { console.log(`  API score ${api.score} != engine ${s}`); failed++; }
-    if (!out.html || out.html.length < 5000 || !/Link health/.test(out.html)) { console.log('  report HTML missing or incomplete'); failed++; }
+    if (api.score !== s) { console.log(`  API score ${api.score} != engine ${s}`); if (!LIVE) failed++; }
+    if (!out.html || out.html.length < 5000 || !/Link health/.test(out.html)) { console.log('  report HTML missing or incomplete'); if (!LIVE) failed++; }
     if (process.argv.includes('--html')) fs.writeFileSync(path.join(require('os').tmpdir(), site.domain + '-report.html'), '<meta charset="utf-8">' + out.html);
     if (process.argv.includes('--evidence')) (res.siteFindings || []).filter(f => f.status === 'fail' || f.status === 'warn').forEach(f => console.log('    evidence: ' + f.label + ' => ' + JSON.stringify(f.evidence).slice(0, 600)));
     if (VERBOSE) (res.siteFindings || []).forEach(f => console.log(`    finding ${f.status.padEnd(4)} ${String(f.points).padStart(2)} [${f.component}] ${f.label} — ${String(f.detail || '').slice(0, 120)}${(f.evidence || [])[0] ? ' | ' + String(f.evidence[0].snippet || '').slice(0, 110) : ''}`));
@@ -137,5 +172,7 @@ function makeDeps(fx) {
       if (misses.length) console.log('  misses:', misses.slice(0, 10));
     }
   }
+  if (LIVE) { console.log(`
+--live is informational: exit 0 whatever moved${failed ? ` (${failed} issue(s) noted)` : ""}.`); failed = 0; }
   process.exitCode = failed ? 1 : 0; // not process.exit(): on Windows it cuts off output still being piped
-})().catch(e => { console.error(e); process.exit(2); });
+})().catch(e => { console.error(e); process.exitCode = LIVE ? 0 : 2; });  // --live never fails
