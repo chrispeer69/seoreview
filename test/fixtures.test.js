@@ -155,3 +155,42 @@ test('One classifier: the sitemap columns and the crawl count the same service /
   assert.strictEqual(types.filter(t => t === 'service').length, cov.service);
   assert.strictEqual(types.filter(t => t === 'location').length, cov.location);
 });
+
+// ---------------- B&J full-crawl fixes ----------------
+test('Noindexed archives (/2018/01/, /author/admin/): no "remove noindex", no canonical/unique-content scoring, out of the page average', () => {
+  ['/2018/01/', '/author/admin/'].forEach(u => {
+    const p = pageAt(bj, u); assert.ok(p && p.noindex, u + ' is a noindexed archive');
+    ['Page is indexable', 'Canonical URL set', 'Unique content', 'Unique vs sibling pages'].forEach(l => assert.strictEqual(chk(p, l).status, 'na', u + ' ' + l));
+  });
+  const counted = bj.pages.filter(p => !p.error && !(p.noindex && !/^(home|service|location)$/.test(p.pageType)));
+  assert.strictEqual(bj.pageAverage, Math.round(counted.reduce((a, p) => a + p._score.score, 0) / counted.length));
+});
+test('Archives: no sibling check, left out of near-duplicate pairs; archive duplication reported once, site-wide', () => {
+  const archives = bj.pages.filter(p => !p.error && p.pageType === 'archive');
+  assert.ok(archives.length >= 3);
+  archives.forEach(p => assert.strictEqual(chk(p, 'Unique vs sibling pages').status, 'na', p.url));
+  const archUrls = new Set(archives.map(p => p.url));
+  assert.ok(bj.crossPage.nearDuplicates.every(x => !archUrls.has(x.a) && !archUrls.has(x.b)));
+  const f = bj.siteFindings.filter(x => x.label === 'Archive pages duplicate posts');
+  assert.strictEqual(f.length, 1); assert.strictEqual(f[0].status, 'warn'); assert.match(f[0].evidence[0].snippet, /\/blog\/ ≈ .*category\/uncategorized/);
+});
+test('Page weight ignores source maps (the 653 KB unpkg .js.map)', () => {
+  bj.pages.filter(p => !p.error).forEach(p => { const c = chk(p, 'Reasonable page weight'); assert.ok(!(c.evidence || []).some(e => /\.map\b/.test(e.snippet)), p.url); });
+  const { engine, doc } = require('./helpers'); const SEO = engine();
+  const a = SEO._x.pageAssets(doc('<script src="https://unpkg.com/x.js.map"></script><script src="/app.js"></script><script type="text/template" src="/t.html"></script><script nomodule src="/legacy.js"></script><link rel="stylesheet" href="/a.css"><link rel="alternate stylesheet" href="/b.css">'), 'https://t/');
+  assert.strictEqual(JSON.stringify(a.scripts), JSON.stringify(['https://t/app.js'])); assert.strictEqual(JSON.stringify(a.css), JSON.stringify(['https://t/a.css']));
+});
+test('GBP lookup on B&J uses the schema name + phone, not the homepage title', async () => {
+  const calls = [];
+  await crawl('broadandjames.com', 'https://broadandjames.com', () => ({ placesEnabled: true, placesLookup: async (q, o) => { calls.push({ q, o }); return { found: false }; } }));
+  assert.strictEqual(calls[0].q, 'Broad & James Towing & Auto');
+  assert.strictEqual(calls[0].o.phone, '(614) 231-8697');
+  assert.ok(!/Reliable Tow Truck/i.test(calls[0].q));
+});
+test('Coverage line accounts for every URL found', () => {
+  const { JSDOM } = require('jsdom'); const win = new JSDOM('', { runScripts: 'outside-only' }).window; win.eval(require('../engine-version').engineSource());
+  const text = win.SEO.coverageLine(bj.coverage).replace(/<[^>]+>/g, '');
+  const c = bj.coverage;
+  assert.strictEqual(text, c.discovered + ' URLs found · ' + c.audited + ' pages audited · ' + c.redirected + ' redirects' + (c.broken ? ' · ' + c.broken + ' broken' : '') + (c.failed ? ' · ' + c.failed + ' failed to load' : ''));
+  assert.strictEqual(c.discovered, c.audited + c.redirected + c.broken + c.failed, 'no URL unaccounted for');
+});

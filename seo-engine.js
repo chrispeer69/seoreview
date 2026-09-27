@@ -562,11 +562,13 @@ async function auditOne(raw, prefetchedHtml){
 
   // Presence checks are gates: few points for having them; applyGates() adds a flat penalty for the misses that
   // sink a page outright.
-  add(INDEX,'Page is indexable',4, noindex?'fail':'pass',
-    noindex?'A "noindex" directive is present':'No noindex directive',
+  // A noindexed archive (date / author / category / tag listing) is noindexed on purpose — not a problem to fix.
+  const archiveNoindex=noindex&&pageType==='archive';
+  add(INDEX,'Page is indexable',4, archiveNoindex?'na':noindex?'fail':'pass',
+    archiveNoindex?'N/A — archive page, noindex is intentional':noindex?'A "noindex" directive is present':'No noindex directive',
     'A "noindex" tag is a stop sign telling Google to hide this page completely. If it is there by mistake, nothing else you do matters — you are invisible in search.',
     'Remove the "noindex" value from the robots meta tag so search engines can list the page.');
-  const canon=canonical?await canonicalCheck(canonical.getAttribute('href')||'', url, noindex):{status:'fail',detail:'No canonical link'};
+  const canon=archiveNoindex?{status:'na',detail:'N/A — noindexed archive page'}:canonical?await canonicalCheck(canonical.getAttribute('href')||'', url, noindex):{status:'fail',detail:'No canonical link'};
   add(INDEX,'Canonical URL set',6, canon.status, canon.detail,
     'This tells Google which version of your web address is the real one, so your ranking power is not split between www / non-www or trailing-slash duplicates. A canonical that points at a redirect, an error page or a noindex page tells Google to index nothing.',
     canonical?'Point the canonical at the final, indexable URL of this page (the address that returns 200 with no redirect and no noindex).'
@@ -678,7 +680,7 @@ async function auditOne(raw, prefetchedHtml){
   const result={ url, domain:o.hostname, origin, timestamp:new Date().toLocaleString(), ssl, checks, tracking, schemaTypes,
     title, h1text:(h1[0]&&h1[0].textContent||'').trim(), desc, words, jsShell, loadMs,
     bodySig:bodyText.slice(0,600).replace(/\s+/g,' ').toLowerCase().trim(),
-    engineVersion:ENGINE_VERSION, pageType, mainWords, entities, links, datePublished:dates.published, dateModified:dates.modified,
+    engineVersion:ENGINE_VERSION, noindex, pageType, mainWords, entities, links, datePublished:dates.published, dateModified:dates.modified,
     nap, claims, h1Glue, smsTel, bytes, siteName:((doc.querySelector('meta[property="og:site_name"]')||{getAttribute:()=>null}).getAttribute('content')||'').trim()||null,
     stats:{images:imgs.length, scripts:doc.querySelectorAll('script').length, stylesheets:doc.querySelectorAll('link[rel="stylesheet"]').length, sizeKb, words},
     aux:{robots:null,sitemap:null}, _origin:origin };
@@ -1101,9 +1103,16 @@ function crossPageContent(pages, sitemapUrls){
     // Main content as served (shared template text IS the duplication), place name masked the same way.
     p._sh=shingles((p._blocks||[]).map(b=>masked(p,b)).join('\n'));
   });
-  const pool=pages.filter(p=>p.pageType!=='utility');
-  const pairs=[];
+  // Sibling / near-duplicate comparison: real content pages only. Utility pages, archives (blog index, category,
+  // author, date listings — they repeat posts by design) and noindexed pages are left out; archive duplication is
+  // reported once, site-wide (archivePairs).
+  const excluded=p=>p.pageType==='utility'||p.pageType==='archive'||p.noindex;
+  const pool=pages.filter(p=>!excluded(p));
+  const pairs=[], archivePairs=[];
   pool.forEach((p,i)=>{ p._maxSim=0; p._simWith=null; });
+  const archives=pages.filter(p=>p.pageType==='archive');
+  archives.forEach(a=>pages.filter(b=>b!==a&&b.pageType!=='utility').forEach(b=>{ if(b.pageType==='archive'&&b.url<a.url) return; const sim=jaccard(a._sh,b._sh);
+    if(sim>=NEAR_DUP) archivePairs.push({ a:a.url, b:b.url, similarity:Math.round(sim*100)/100, indexable:!a.noindex&&!b.noindex }); }));
   for(let i=0;i<pool.length;i++) for(let j=i+1;j<pool.length;j++){
     const a=pool[i], b=pool[j], s=jaccard(a._sh,b._sh);
     if(s>a._maxSim){ a._maxSim=s; a._simWith=b.url; } if(s>b._maxSim){ b._maxSim=s; b._simWith=a.url; }
@@ -1113,8 +1122,8 @@ function crossPageContent(pages, sitemapUrls){
   const entCount={}; locs.forEach(p=>(p.entities||[]).forEach(e=>{ entCount[e]=(entCount[e]||0)+1; }));
   const setCheck=(p,label,cat,chk)=>{ const i=p.checks.findIndex(c=>c.label===label); const c=Object.assign({cat},chk); if(i>=0) p.checks[i]=c; else p.checks.push(c); };
   pages.forEach(p=>{
-    setCheck(p,'Unique content','On-Page Content',uniqueContentCheck(p.pageType,p.uniqueWords,true));
-    if(p.pageType==='utility') setCheck(p,'Unique vs sibling pages','On-Page Content',{label:'Unique vs sibling pages',points:0,status:'na',detail:'Exempt (utility page)',why:'',fix:''});
+    setCheck(p,'Unique content','On-Page Content',p.noindex?{label:'Unique content',points:0,status:'na',detail:'N/A — page is noindex (not meant to rank)',why:'',fix:''}:uniqueContentCheck(p.pageType,p.uniqueWords,true));
+    if(excluded(p)) setCheck(p,'Unique vs sibling pages','On-Page Content',{label:'Unique vs sibling pages',points:0,status:'na',detail:'N/A — '+(p.noindex?'noindex page':p.pageType+' page'),why:'',fix:''});
     else { const sim=p._maxSim||0, frac=1-sim, rel=p._simWith?(p._simWith.replace(/^https?:\/\/[^/]+/,'')||'/'):'';
       // Overlap bands: under 40% is normal site furniture (not a problem); 40–60% medium, 60–80% high, over 80% critical.
       const sev=sim<0.4?null:sim<0.6?'Medium':sim<0.8?'High':'Critical';
@@ -1128,7 +1137,7 @@ function crossPageContent(pages, sitemapUrls){
     applyGates(p);
     p.bodySig=String(p._ownText||'').slice(0,600).replace(/\s+/g,' ').toLowerCase().trim();
   });
-  return { nearDuplicates:pairs };
+  return { nearDuplicates:pairs, archivePairs };
 }
 // ---------- Site score ----------
 // Final = 50% average page score + 50% site level. Site level = coverage 30% + freshness 20% + link health 20% +
@@ -1180,8 +1189,11 @@ function finding(component, label, points, status, detail, evidence, fix, extra)
 function pageAssets(doc, url){
   const abs=h=>{ try{ return h&&!/^data:/i.test(h)?new URL(h,url).href:null; }catch(e){ return null; } };
   const uniq=a=>[...new Set(a.filter(Boolean))];
-  const scripts=uniq([...doc.querySelectorAll('script[src]')].map(s=>abs(s.getAttribute('src'))));
-  const css=uniq([...doc.querySelectorAll('link[rel~="stylesheet"][href]')].map(l=>abs(l.getAttribute('href'))));
+  // Only what a browser actually runs by default: no source maps (*.map), no nomodule fallbacks, no non-JS script
+  // types (templates, JSON), no alternate or disabled stylesheets.
+  const RE_MAP=/\.map(\?|#|$)/i, jsType=t=>!t||/^(module|text\/javascript|application\/javascript|application\/ecmascript|text\/ecmascript)$/i.test(t.trim());
+  const scripts=uniq([...doc.querySelectorAll('script[src]')].filter(s=>jsType(s.getAttribute('type'))&&!s.hasAttribute('nomodule')&&!RE_MAP.test(s.getAttribute('src')||'')).map(s=>abs(s.getAttribute('src'))));
+  const css=uniq([...doc.querySelectorAll('link[rel~="stylesheet"][href]')].filter(l=>!/\balternate\b/i.test(l.getAttribute('rel')||'')&&!l.hasAttribute('disabled')&&!RE_MAP.test(l.getAttribute('href')||'')).map(l=>abs(l.getAttribute('href'))));
   const inlineJs=[...doc.querySelectorAll('script:not([src])')].filter(s=>!/json|template|html|text\/x-/i.test(s.getAttribute('type')||'')).reduce((a,s)=>a+(s.textContent||'').length,0);
   const seen=new Set(), images=[];
   [...doc.querySelectorAll('img')].forEach((im,i)=>{
@@ -1955,6 +1967,15 @@ function gbpQuery(home, pages){
   const street=(sch.streets&&sch.streets[0])||(nap.streets&&nap.streets[0])||null;
   return { name, phone, address:street };
 }
+// Archive listings (blog index, category, author, date) repeat the posts they list. One site-wide finding: a warning
+// when such duplicates are indexable, informational when the archives are noindexed (handled correctly).
+function archiveDuplicationFinding(pairs){
+  const live=pairs.filter(p=>p.indexable);
+  return finding('duplication','Archive pages duplicate posts',4,live.length?'warn':pairs.length?'pass':'info',
+    live.length?(live.length+' indexable archive/post pair'+(live.length===1?'':'s')+' share 80%+ of their text'):pairs.length?(pairs.length+' archive duplicate'+(pairs.length===1?'':'s')+', all noindexed — fine'):'No archive duplication',
+    (live.length?live:pairs).slice(0,5).map(p=>({ url:p.a, snippet:p.a+' ≈ '+p.b+' ('+Math.round(p.similarity*100)+'%)'+(p.indexable?'':' — noindex') })),
+    'Noindex date/author/tag archives (most SEO plugins have a switch), or show excerpts instead of full posts on listing pages.');
+}
 // Re-time each page that took over 2s during the crawl: two sequential fetches, no other traffic.
 async function retestSlowPages(pages){
   for(const p of pages.filter(x=>x.loadMs!=null&&x.loadMs>2000)){
@@ -2068,7 +2089,9 @@ async function crawlSiteRun(root, opts){
   const pricingPages=new Set(ok.filter(p=>((p._pageText||'').match(new RegExp(RE_PRICE.source,'gi'))||[]).length>=2).map(p=>p.url));
   ok.forEach(p=>{ const pc=pricingCheck(p._pageText||'', p._anchors, p.pageType, pricingPages); if(pc) setPageCheck(p,'Pricing transparency',pc); });
   ok.forEach(p=>{ setPageCheck(p,'Title quality',titleQualityCheck(p.title,p.url,p.pageType)); setPageCheck(p,'Soft 404',soft404Check(p.pageType,p.title,p.h1text,p.uniqueWords!=null?p.uniqueWords:p.mainWords)); applyGates(p); p._score=score(p); });
-  const scored=ok.filter(p=>p._score&&p._score.score!=null);
+  // Noindexed pages are not meant to rank, so they leave the page average — except the homepage and money pages,
+  // where noindex is itself the defect (and carries its penalty).
+  const scored=ok.filter(p=>p._score&&p._score.score!=null&&!(p.noindex&&!/^(home|service|location)$/.test(p.pageType)));
   const pageAverage=scored.length?Math.round(scored.reduce((a,p)=>a+p._score.score,0)/scored.length):null;
   const aux={ origin:home.origin, checks:[] };
   try{ await addAux(aux); }catch(e){}
@@ -2108,6 +2131,7 @@ async function crawlSiteRun(root, opts){
   siteFindings.push(...onPageLinkFindings(ok));
   siteFindings.push(...contentFreshnessFindings(ok));
   const contra=contradictionFindings(ok); siteFindings.push(...contra);
+  siteFindings.push(archiveDuplicationFinding(content.archivePairs||[]));
   const claims24=(contra.find(f=>f.label==='Consistent hours claims')||{}).claims24_7||[];
   siteFindings.push(...localFindings(ok, { home, disc, local, claims24_7:claims24 }));
   let stack=null; try{ stack=await stackFingerprint(ok, { home, local }); }catch(e){}
@@ -2121,7 +2145,7 @@ async function crawlSiteRun(root, opts){
   const mx=siteFindings.filter(f=>f.matrix&&f.component==='coverage').map(f=>f.matrix.score);
   if(mx.length){ coverage.pageCounts=coverage.score; coverage.score=Math.round((coverage.score+mx.reduce((x,y)=>x+y,0))/(1+mx.length)); coverage.taxonomy=mx; }
   const freshness=freshnessScore(ok, disc.lastmod||{}, _nowMs());
-  const dupPool=ok.filter(p=>p.pageType!=='utility');
+  const dupPool=ok.filter(p=>p.pageType!=='utility'&&p.pageType!=='archive'&&!p.noindex);
   const inPairs=new Set(); (content.nearDuplicates||[]).forEach(x=>{ inPairs.add(x.a); inPairs.add(x.b); });
   const duplication={ score:Math.round(100*(1-(dupPool.length?inPairs.size/dupPool.length:0))), pagesInNearDuplicatePairs:inPairs.size, pagesCompared:dupPool.length };
   applyDeductions({ technical, coverage, freshness, linkHealth, duplication }, siteFindings);
@@ -2209,6 +2233,13 @@ function findingsByCategoryHTML(list, root){
       +(f.urls.length?'<div style="font-size:12px;color:#475569">'+f.urls.map(rel).join(' · ')+(f.pagesAffected>5?' · …':'')+'</div>':'')
       +(f.evidence&&f.evidence.snippet?'<div style="font-size:12px;font-family:ui-monospace,Consolas,monospace;background:#f8fafc;border:1px solid #eef2f7;border-radius:4px;padding:4px 6px;margin:4px 0;word-break:break-word">'+(f.evidence.url?rel(f.evidence.url)+' — ':'')+esc(snip(f.evidence.snippet,220))+'</div>':'')
       +(f.fix?'<div style="font-size:12px"><b>Fix:</b> '+esc(f.fix)+'</div>':'')+'</div>').join('')+'</details>').join('');
+}
+// "45 URLs found · 23 pages audited · 21 redirects · 1 broken" — every URL found is accounted for.
+function coverageLine(cov){
+  const n=(k,one,many)=>cov[k]?' · <b>'+cov[k]+'</b> '+(cov[k]===1?one:many):'';
+  const notAudited=Math.max(0,(cov.discovered||0)-(cov.audited||0)-(cov.redirected||0)-(cov.broken||0)-(cov.failed||0));
+  return '<b>'+(cov.discovered||0)+'</b> URLs found · <b>'+(cov.audited||0)+'</b> pages audited'+n('redirected','redirect','redirects')+n('broken','broken','broken')
+    +n('failed','failed to load','failed to load')+(cov.capped&&notAudited?' · <b>'+notAudited+'</b> not audited (capped at '+cov.cap+')':'');
 }
 // Pages the crawl found but could not load, with the HTTP status and the error.
 function failedPagesHTML(res){
@@ -2385,7 +2416,7 @@ function siteReportHTML(res){
       : '<div style="border:1px solid #fee2e2;background:#fff7f7;border-radius:8px;padding:12px 14px;font-size:13px;color:#b91c1c">No Google Business Profile match found for "'+esc(loc.query||'')+'". If they should have one, it may be unclaimed/misnamed — a major gap for local &amp; AI search. Claiming and optimizing GBP is high priority.</div>'));
   return '<div style="'+F+'">'
     +'<div style="border-bottom:3px solid #0f172a;padding-bottom:12px;margin-bottom:14px"><div style="font-size:20px;font-weight:800">'+esc(BRAND.name)+' — Full-Site SEO &amp; AI Search Audit</div><div style="color:#64748b;font-size:13px">'+esc(res.root)+'</div></div>'
-    +'<div style="font-size:13px;color:#334155;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:10px 12px;margin-bottom:14px"><b>Coverage:</b> audited <b>'+cov.audited+'</b> of <b>'+cov.discovered+'</b> pages found'+(cov.capped?(' (capped at '+cov.cap+' — more exist)'):'')+' · discovery via <b>'+esc(cov.via||'?')+'</b>'+(cov.failed?(' · '+cov.failed+' failed to load'):'')+(cov.renderAvailable?(' · '+cov.rendered+' JS pages rendered'):' · JS-rendering off (raw HTML only)')+'.</div>'
+    +'<div style="font-size:13px;color:#334155;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:10px 12px;margin-bottom:14px"><b>Coverage:</b> '+coverageLine(cov)+' · discovery via <b>'+esc(cov.via||'?')+'</b>'+(cov.renderAvailable?(' · '+cov.rendered+' JS pages rendered'):' · JS-rendering off (raw HTML only)')+'.</div>'
     +'<div style="font-size:15px;margin-bottom:6px"><b>Site score:</b> <span style="font-size:26px;font-weight:800;color:'+scol(res.siteScore)+'">'+(res.siteScore==null?'—':res.siteScore)+'</span> / 100'+(res.siteBreakdown?'':' (average across audited pages)')+'</div>'
     +siteBreakdownHTML(res.siteBreakdown, scol)
     +topFixesHTML(allFindings(res))
@@ -2605,7 +2636,7 @@ function comparisonHTML(items){
 }
 const API={ BRAND, PROXIES, TAGS, AI_BOTS, AISEARCH, PROJECT_FIXES, sleep, esc, isQuick, setAbort,
   fetchHtml, fetchAux, aiCrawlerStatus, auditOne, addAux, fetchPSI, addSpeed, score, audit,
-  ENGINE_VERSION, engineFooterHTML, failedPagesHTML, retestSlowPages, pageTypesFor, gbpQuery, titleBrand, problemTitle, checkSeverity, shortfallSeverity, catPercent, measureAssets, loadIndustry, allFindings, discoverPages, sitemapSummary, crossPageIssues, crawlSite, siteReportHTML, siteTopIssues, siteComparisonHTML, speedRunsHTML, aiExplainerHTML, ctaBlockHTML, PSI_RUNS,
+  ENGINE_VERSION, engineFooterHTML, failedPagesHTML, coverageLine, archiveDuplicationFinding, retestSlowPages, pageTypesFor, gbpQuery, titleBrand, problemTitle, checkSeverity, shortfallSeverity, catPercent, measureAssets, loadIndustry, allFindings, discoverPages, sitemapSummary, crossPageIssues, crawlSite, siteReportHTML, siteTopIssues, siteComparisonHTML, speedRunsHTML, aiExplainerHTML, ctaBlockHTML, PSI_RUNS,
   reportHTML, findingsHTML, emailHTML, emailText, comparisonHTML,
   // building blocks, exposed for tests
   classifyPage, mainContent, localEntities, countClaims, h1Glued, smsLabelTelLinks, businessSchema, ldNodes, AI_SEARCH_BOTS, AI_TRAINING_BOTS,
