@@ -1378,7 +1378,7 @@ function renderReport(){
       <strong>Prepared by ${esc(BRAND.name)}</strong><br>
       ${BRAND.contacts.map(c=>`${esc(c.name)} ${esc(c.phone)} · ${esc(c.email)}`).join(' &nbsp;|&nbsp; ')}<br>
       ${BRAND.sites.map(esc).join(' &nbsp;·&nbsp; ')}<br>
-      Generated ${new Date().toLocaleString()}. This audit analyzes the homepage's initial HTML. Some content and tags loaded by JavaScript (e.g. via Google Tag Manager) and other pages on the site are not included. Page-speed and Core Web Vitals data, when shown, is measured live by Google PageSpeed Insights.
+      Audit engine v${esc((reports.find(r=>r&&r.engineVersion)||{}).engineVersion||SEO.ENGINE_VERSION)} · Generated ${new Date().toLocaleString()}. This audit analyzes the homepage's initial HTML. Some content and tags loaded by JavaScript (e.g. via Google Tag Manager) and other pages on the site are not included. Page-speed and Core Web Vitals data, when shown, is measured live by Google PageSpeed Insights.
     </div>`;
 }
 function openReport(){renderReport();document.getElementById('scanView').style.display='none';document.getElementById('crmView').style.display='none';document.getElementById('reportView').style.display='block';window.scrollTo(0,0);}

@@ -1,3 +1,4 @@
+const fs = require('fs');
 // Blue Collar AI — SEO & AI Search Audit server
 // - Serves the public audit tool
 // - /api/proxy: server-side fetch (no flaky public CORS proxies)
@@ -899,7 +900,7 @@ app.get('/buy/:token', async (req, res) => {
   } catch (e) { res.status(500).send('error'); }
 });
 // Public: the hosted report page (app HTML handles render/teaser by token)
-app.get('/r/:token', (req, res) => res.sendFile(path.join(__dirname, 'web-analyzer-siteV7.html')));
+app.get('/r/:token', (req, res) => sendToolPage(req, res));
 
 app.get('/healthz', (req, res) => res.type('text/plain').send('ok'));
 // DB connectivity check (no secrets) — helps diagnose login/session failures
@@ -917,9 +918,28 @@ apiV1.mount(app, {
 
 // ---------- Static public tool ----------
 // Industry configs for the shared engine; CORS so CRMColumbus (which loads the engine from here) can read them.
+// ---------- The audit engine: versioned, never stale ----------
+// seo-engine.js is served with its version stamped in and Cache-Control: no-cache + ETag (browsers revalidate every
+// load; unchanged = 304). Pages reference it as seo-engine.js?v=<version>, so a deploy is a new URL.
+const { engineVersion, engineSource } = require('./engine-version');
+app.get('/seo-engine.js', (req, res) => {
+  const v = engineVersion(), etag = '"' + v + '"';
+  res.set({ 'Cache-Control': 'no-cache', ETag: etag, 'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/javascript; charset=utf-8' });
+  if (req.headers['if-none-match'] === etag) return res.status(304).end();
+  res.send(engineSource());
+});
+// The running engine's version (CRMColumbus reads it to version its own <script src>).
+app.get('/seo-engine.version', (req, res) => { res.set({ 'Cache-Control': 'no-cache', 'Access-Control-Allow-Origin': '*' }); res.json({ version: engineVersion() }); });
+// The public tool's page, with the engine URL versioned.
+function sendToolPage(req, res) {
+  const html = fs.readFileSync(path.join(__dirname, 'web-analyzer-siteV7.html'), 'utf8').replace('<script src="seo-engine.js"></script>', '<script src="seo-engine.js?v=' + engineVersion() + '"></script>');
+  res.set('Cache-Control', 'no-cache').type('html').send(html);
+}
+app.get(['/web-analyzer-siteV7.html', '/web-analyzer-siteV7'], sendToolPage);
 app.get('/config/industries/:name', (req, res) => {
   const name = String(req.params.name || '').replace(/[^a-z0-9_.-]/gi, '');
   res.set('Access-Control-Allow-Origin', '*');
+  res.set('Cache-Control', 'no-cache'); // sendFile adds an ETag
   res.sendFile(path.join(__dirname, 'config', 'industries', name), err => { if (err && !res.headersSent) res.status(404).json({ error: 'not_found' }); });
 });
 app.use(express.static(__dirname, { extensions: ['html'] }));

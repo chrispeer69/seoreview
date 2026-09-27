@@ -83,3 +83,16 @@ test('Single-page audit: all Phase 2–8 page checks, banner first, AI never abo
   assert.ok(text.startsWith('Homepage snapshot — full-site audit available'), 'banner is the first thing: ' + text.slice(0, 60));
   (text.match(/AI Search[^%]{0,40}%/g) || []).forEach(m => assert.ok(+(m.match(/(\d+)%$/) || [0, 0])[1] <= 95, m));
 });
+
+test('Engine version: results carry it and every report footer prints it', async () => {
+  const v = require('../engine-version').engineVersion();
+  assert.match(v, /^[\w]+-[0-9a-f]{8}$/);
+  assert.strictEqual(rs.engineVersion, v);
+  assert.ok(rs.pages.filter(p => !p.error).every(p => p.engineVersion === v));
+  const w = require('jsdom'); const { JSDOM } = w;
+  const win = new JSDOM('', { runScripts: 'outside-only' }).window; win.eval(require('../engine-version').engineSource());
+  assert.strictEqual(win.SEO.ENGINE_VERSION, v);
+  assert.match(win.SEO.siteReportHTML(rs), new RegExp('Audit engine v' + v));
+  assert.match(win.SEO.reportHTML(rs.pages.find(p => !p.error)), new RegExp('Audit engine v' + v));
+  assert.match(win.SEO.siteReportHTML(Object.assign({}, rs, { engineVersion: 'old-12345678' })), /Audit engine vold-12345678/, 'a saved report shows the engine that produced it');
+});

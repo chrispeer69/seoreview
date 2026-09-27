@@ -10,15 +10,17 @@ const path = require('path');
 const { JSDOM, VirtualConsole } = require('jsdom');
 
 const HTML_PATH = path.join(__dirname, 'web-analyzer-siteV7.html');
-const ENGINE_PATH = path.join(__dirname, 'seo-engine.js');
+const { engineVersion, engineSource } = require('./engine-version');
 let cached = null;
 function pageSource() {
-  if (!cached) {
-    // jsdom does not load <script src>; inline the engine where the page loads it.
-    const engine = fs.readFileSync(ENGINE_PATH, 'utf8').replace(/<\/script/gi, '<\\/script');
+  const v = engineVersion();
+  if (!cached || cached.v !== v) {
+    // jsdom does not load <script src>; inline the engine where the page loads it — the same version-stamped
+    // source the server serves (engine-version.js).
+    const engine = engineSource().replace(/<\/script/gi, '<\\/script');
     const html = fs.readFileSync(HTML_PATH, 'utf8').replace('<script src="seo-engine.js"></script>', () => '<script>' + engine + '</script>');
     const css = (html.match(/<style>([\s\S]*?)<\/style>/) || [])[1] || '';
-    cached = { html, css };
+    cached = { html, css, v };
   }
   return cached;
 }

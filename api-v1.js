@@ -269,6 +269,7 @@ function summarize(res) {
     server_speed,
     coverage: { discovered: cov.discovered, audited: cov.audited, failed: cov.failed, capped: !!cov.capped, cap: cov.cap, discovered_via: cov.via, js_rendered: cov.rendered || 0, render_available: !!cov.renderAvailable },
     // How the score was built: 50% page average + 50% site level (coverage, freshness, link health, duplication, technical), caps.
+    engine_version: res.engineVersion || null, // which engine produced this audit
     site_breakdown: res.siteBreakdown || null,
     // Ranked fixes (severity x pages affected) and every finding with evidence (URL + snippet) and a one-line fix.
     top_fixes: (res.findings || []).slice(0, 10).map(f => ({ title: f.title, category: f.category, severity: f.severity.toLowerCase(), status: f.status, scope: f.scope, pages_affected: f.pagesAffected, urls: f.urls, evidence: f.evidence, fix: f.fix || null })),
@@ -282,7 +283,7 @@ function summarize(res) {
 // shape as a crawl: one page, the page's own score as the grade, plus the PageSpeed numbers.
 function summarizePage(r) {
   const root = (() => { try { return new URL(r.url).origin; } catch (e) { return r.url; } })();
-  const out = summarize({ root, siteScore: r._score ? r._score.score : null, pages: [r], crossPage: {},
+  const out = summarize({ root, engineVersion: r.engineVersion, siteScore: r._score ? r._score.score : null, pages: [r], crossPage: {},
     perf: r.loadMs == null ? null : { avg: r.loadMs, median: r.loadMs, max: r.loadMs, count: 1, slow: r.loadMs > 2000 ? [{ url: r.url, ms: r.loadMs }] : [] },
     local: null, coverage: { discovered: 1, audited: 1, failed: 0, capped: false, cap: 1, via: 'homepage', rendered: r._rendered ? 1 : 0, renderAvailable: !!deps.renderEnabled } });
   const sp = r.speed || {};
@@ -319,6 +320,7 @@ function contractBody(j, opts) {
     server_speed: r.server_speed || null,
     coverage: r.coverage || null,
     page_speed: r.page_speed || null,
+    engine_version: r.engine_version || null,
     site_breakdown: r.site_breakdown || null,
     top_fixes: r.top_fixes || [],
     findings: opts.slim ? undefined : (r.findings || []),

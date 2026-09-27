@@ -4,6 +4,9 @@
    Browser/jsdom script: needs DOMParser + fetch. Exposes window.SEO. */
 (function(root){
 "use strict";
+// Stamped by the server when this file is served (engine-version.js): "<commit>-<content hash>". Results carry it and
+// every report prints it, so we can always tell which engine produced a report.
+const ENGINE_VERSION='__ENGINE_VERSION__';
 const BRAND = {
   name:'Blue Collar AI, Inc.',
   tagline:'AI-Powered Local SEO',
@@ -673,7 +676,7 @@ async function auditOne(raw, prefetchedHtml){
   const result={ url, domain:o.hostname, origin, timestamp:new Date().toLocaleString(), ssl, checks, tracking, schemaTypes,
     title, h1text:(h1[0]&&h1[0].textContent||'').trim(), desc, words, jsShell, loadMs,
     bodySig:bodyText.slice(0,600).replace(/\s+/g,' ').toLowerCase().trim(),
-    pageType, mainWords, entities, links, datePublished:dates.published, dateModified:dates.modified,
+    engineVersion:ENGINE_VERSION, pageType, mainWords, entities, links, datePublished:dates.published, dateModified:dates.modified,
     nap, claims, h1Glue, smsTel, bytes,
     stats:{images:imgs.length, scripts:doc.querySelectorAll('script').length, stylesheets:doc.querySelectorAll('link[rel="stylesheet"]').length, sizeKb, words},
     aux:{robots:null,sitemap:null}, _origin:origin };
@@ -1995,7 +1998,7 @@ async function crawlSiteRun(root, opts){
   const crossPage=Object.assign(cpEarly, content, { redirectChains:graph.chains, brokenLinks, redirectLinks, orphans,
     sitemapRedirects:redirected.filter(x=>smKeys.has(keyOf(x.url))), sitemapBroken:broken.filter(x=>smKeys.has(keyOf(x.url))) });
   ok.forEach(p=>{ p.linkCount=(p.links||[]).length; delete p.links; delete p._blocks; delete p._bh; delete p._sh; delete p._ownText; delete p._simWith; delete p._place; }); // working data, not results (crawl results get saved)
-  return { root:disc.base, siteScore, pageAverage, siteBreakdown, siteChecks:aux.checks, siteFindings:findingsOut, stack, speed:speedRuns, perf, local, crossPage, pages,
+  return { engineVersion:ENGINE_VERSION, root:disc.base, siteScore, pageAverage, siteBreakdown, siteChecks:aux.checks, siteFindings:findingsOut, stack, speed:speedRuns, perf, local, crossPage, pages,
     coverage:{ discovered:queued.size, inSitemap:(disc.sitemapUrls||[]).length, audited:ok.length, failed:pages.length-ok.length, redirected:redirected.length, broken:broken.length,
       capped, cap:max, via:disc.via==='sitemap'?'sitemap + links':disc.via, rendered, renderAvailable:!!render } };
 }
@@ -2144,9 +2147,12 @@ function siteComparisonHTML(results){
     +'<div style="overflow:auto"><table style="border-collapse:collapse;width:100%;font-size:13px"><tr>'+th('#')+th('Site')+th('Score')+th('Pages')+th('Coverage')+th('Freshness')+th('Links')+th('Duplication')+th('Mobile speed')+th('AI search')+th('Biggest issue')+'</tr>'+body+'</table></div>'
     +coverageMatrixHTML(rows)
     +(failed.length?'<div style="font-size:12px;color:#b91c1c;margin-top:8px">Could not crawl: '+failed.map(r=>esc((r&&r.root)||'?')+(r&&r.error?' ('+esc(r.error)+')':'')).join(' · ')+'</div>':'')
+    +engineFooterHTML(((results||[]).find(r=>r&&r.engineVersion)||{}).engineVersion)
     +'<div style="font-size:12px;color:#64748b;margin-top:8px">Score = 50% average page score + 50% site level (coverage, freshness, link health, duplication, technical). Mobile speed is the homepage\'s median of '+PSI_RUNS+' PageSpeed runs.</div>'
   +'</div>';
 }
+// Which engine produced a report (the version stored in the result; falls back to the running engine).
+function engineFooterHTML(v){ return '<div style="font-size:11px;color:#94a3b8;margin-top:14px">Audit engine v'+esc(v||ENGINE_VERSION)+'</div>'; }
 function aiExplainerHTML(){
   return '<h3 style="margin:24px 0 8px;font-size:15px">Why AI Search Matters</h3>'
     +'<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:14px;font-size:13px;line-height:1.6;color:#334155">'
@@ -2250,6 +2256,7 @@ function siteReportHTML(res){
     +localHTML
     +aiExplainerHTML()
     +ctaBlockHTML()
+    +engineFooterHTML(res.engineVersion)
   +'</div>';
 }
 
@@ -2288,6 +2295,7 @@ function reportHTML(r){
     +'<h3 style="margin:22px 0 8px;font-size:15px">What\'s working ('+passes.length+')</h3><div style="font-size:13px;color:#334155;line-height:1.7">'+passes.map(c=>'✓ '+esc(c.label)).join('<br>')+'</div>'
     +aiExplainerHTML()
     +ctaBlockHTML()
+    +engineFooterHTML(r.engineVersion)
   +'</div>';
 }
 function findingsHTML(r){
@@ -2349,7 +2357,7 @@ function emailHTML(clientName,r,opts){
       +'<p style="margin:0 0 14px;color:#e2e8f0;font-size:14px;line-height:1.6">Your weakest areas above are quietly sending customers to competitors. '+esc(BRAND.name)+' handles the Google SEO and the AI-search work most agencies are not doing yet — so you show up first and win the call. Every one of these is fixable, usually faster than you think.</p>'
       +'<div style="margin-bottom:6px">Reply or call for a <b>free 15-minute walkthrough</b> and we will show you the plan.</div>'+buyBtn
       +'<div style="margin-top:14px;font-size:14px;color:#cbd5e1;line-height:1.7">'+contacts+'</div></div>'
-    +'<p style="color:#94a3b8;font-size:12px">'+esc(BRAND.name)+' · '+esc(BRAND.web)+'</p></div>';
+    +'<p style="color:#94a3b8;font-size:12px">'+esc(BRAND.name)+' · '+esc(BRAND.web)+' · audit engine v'+esc(r.engineVersion||ENGINE_VERSION)+'</p></div>';
 }
 function emailText(clientName,r){
   const sc=score(r); let t=(clientName?('Hi '+clientName+',\n\n'):'Hi,\n\n');
@@ -2425,7 +2433,7 @@ function comparisonHTML(items){
 }
 const API={ BRAND, PROXIES, TAGS, AI_BOTS, AISEARCH, PROJECT_FIXES, sleep, esc, isQuick, setAbort,
   fetchHtml, fetchAux, aiCrawlerStatus, auditOne, addAux, fetchPSI, addSpeed, score, audit,
-  catPercent, measureAssets, loadIndustry, allFindings, discoverPages, sitemapSummary, crossPageIssues, crawlSite, siteReportHTML, siteTopIssues, siteComparisonHTML, speedRunsHTML, aiExplainerHTML, ctaBlockHTML, PSI_RUNS,
+  ENGINE_VERSION, engineFooterHTML, catPercent, measureAssets, loadIndustry, allFindings, discoverPages, sitemapSummary, crossPageIssues, crawlSite, siteReportHTML, siteTopIssues, siteComparisonHTML, speedRunsHTML, aiExplainerHTML, ctaBlockHTML, PSI_RUNS,
   reportHTML, findingsHTML, emailHTML, emailText, comparisonHTML,
   // building blocks, exposed for tests
   classifyPage, mainContent, localEntities, countClaims, h1Glued, smsLabelTelLinks, businessSchema, ldNodes, AI_SEARCH_BOTS, AI_TRAINING_BOTS,
