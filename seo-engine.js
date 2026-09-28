@@ -680,7 +680,7 @@ async function auditOne(raw, prefetchedHtml){
   checks.push(Object.assign({cat:CONTENT}, genericAnchorCheck(anchors)));
   const SD='Structured Data';
   [jsonLdSyntaxCheck(doc), businessEntityCheck(ld), schemaNapCheck(nap), openingHoursCheck(ld, pageText), serviceSchemaCheck(ld, pageType),
-    breadcrumbCheck(ld, pageType), faqMatchCheck(ld, pageText), schemaTypesCheck(ld)].filter(Boolean).forEach(c=>checks.push(Object.assign({cat:SD}, c)));
+    breadcrumbCheck(ld, pageType), faqMatchCheck(ld, pageText), schemaTypesCheck(ld), richResultsCheck(ld, url)].filter(Boolean).forEach(c=>checks.push(Object.assign({cat:SD}, c)));
   const TRUST='Trust & Conversion';
   [licenseCheck(pageText, pageType), pricingCheck(pageText, anchors, pageType), insuranceCheck(pageText, pageType)].filter(Boolean).forEach(c=>checks.push(Object.assign({cat:TRUST}, c)));
   [questionAnswerCheck(doc, pageType), citableFactsCheck(pageText, pageType, anchors)].filter(Boolean).forEach(c=>checks.push(Object.assign({cat:AISEARCH}, c)));
@@ -1839,6 +1839,77 @@ function faqMatchCheck(nodes, pageText){
   return { label:'FAQ schema matches the visible FAQ', points:2, status:miss.length?'fail':'pass', detail:miss.length?(miss.length+' of '+qs.length+' FAQ schema questions/answers are not on the page as written'):(qs.length+' FAQ schema questions match the page'),
     evidence:miss.slice(0,3).map(q=>({ snippet:'Q: '+snip(q.name,90) })), why:'FAQ markup must mirror the visible FAQ word for word; hidden or reworded Q&A is a structured-data violation.', fix:'Generate the FAQ JSON-LD from the same text shown on the page.' };
 }
+// ---------- Rich results eligibility ----------
+// Google's Rich Results Test has no public API, so this applies the same published requirements per rich-result type
+// (developers.google.com/search/docs/appearance/structured-data): a missing REQUIRED property makes the item invalid
+// (no rich result - an error in Google's tool); a missing RECOMMENDED one is a warning (still eligible). Features Google
+// has retired or restricted are reported, never penalised. Every result links to Google's own test for that URL.
+const RICH_TYPES=[
+  { name:'Local business', match:t=>isLocalType(t), required:['name','address'],
+    recommended:['telephone','url','geo','openingHoursSpecification','image','priceRange'],
+    nested:{ address:{ recommended:['streetAddress','addressLocality','addressRegion','postalCode','addressCountry'] } } },
+  { name:'Breadcrumb', match:t=>t==='BreadcrumbList', required:['itemListElement'], custom:(n,get)=>{
+      const items=[].concat(get(n.itemListElement)||[]).map(get).filter(Boolean), errs=[];
+      if(!items.length) errs.push('itemListElement has no ListItem');
+      items.forEach((it,i)=>{ if(!hasVal(it.position)) errs.push('ListItem '+(i+1)+' has no position'); if(!hasVal(it.name)&&!hasVal((get(it.item)||{}).name)) errs.push('ListItem '+(i+1)+' has no name');
+        if(i<items.length-1&&!hasVal(it.item)) errs.push('ListItem '+(i+1)+' has no item (URL)'); });
+      return { errors:errs, warnings:items.length===1?['only one ListItem (Google shows a trail from two)']:[] }; } },
+  { name:'FAQ', match:t=>t==='FAQPage', required:['mainEntity'], note:'Google shows FAQ rich results only for well-known government and health sites (since Aug 2023)',
+    custom:(n,get)=>{ const qs=[].concat(get(n.mainEntity)||[]).map(get).filter(Boolean), errs=[];
+      qs.forEach((q,i)=>{ if(!hasVal(q.name)) errs.push('Question '+(i+1)+' has no name'); const a=get([].concat(q.acceptedAnswer||[])[0]); if(!a||!hasVal(a.text)) errs.push('Question '+(i+1)+' has no acceptedAnswer.text'); });
+      return { errors:qs.length?errs:['mainEntity has no Question'], warnings:[] }; } },
+  { name:'Article', match:t=>t==='Article'||t==='BlogPosting'||t==='NewsArticle', required:[], recommended:['headline','image','datePublished','dateModified','author'],
+    custom:(n,get)=>{ const a=get([].concat(n.author||[])[0]); return { errors:[], warnings:a&&!hasVal(a.name)&&!hasVal(a.url)?['author has no name or url']:[] }; } },
+  { name:'Logo', match:t=>ORG_TYPES.test(t)||isLocalType(t), when:n=>hasVal(n.logo), required:['logo','url'], recommended:[] },
+  { name:'Review snippet', match:t=>t==='AggregateRating'||t==='Review', required:[], custom:(n,get,parent)=>{
+      const errs=[], isAgg=typesOf(n).includes('AggregateRating');
+      if(isAgg){ if(!hasVal(n.ratingValue)) errs.push('ratingValue missing'); if(!hasVal(n.ratingCount)&&!hasVal(n.reviewCount)) errs.push('ratingCount or reviewCount missing'); }
+      else { if(!hasVal(get(n.reviewRating)&&get(n.reviewRating).ratingValue)) errs.push('reviewRating.ratingValue missing'); if(!hasVal(n.author)) errs.push('author missing'); }
+      const host=parent||get(n.itemReviewed);
+      const self=host&&typesOf(host).some(t=>isLocalType(t)||ORG_TYPES.test(t));
+      return { errors:errs, warnings:[], ineligible:self?'rating is on the business itself - Google does not show stars for self-serving reviews of a LocalBusiness/Organization':null }; } },
+  { name:'Product', match:t=>t==='Product', required:['name'], custom:n=>({ errors:!hasVal(n.offers)&&!hasVal(n.review)&&!hasVal(n.aggregateRating)?['needs one of offers, review or aggregateRating']:[], warnings:[] }) },
+  { name:'Event', match:t=>/Event$/.test(t)&&SCHEMA_TYPES.has(t), required:['name','startDate','location'], recommended:['endDate','description','image','offers','organizer'] },
+  { name:'Video', match:t=>t==='VideoObject', required:['name','thumbnailUrl','uploadDate'], recommended:['description','duration','contentUrl','embedUrl'] },
+  { name:'Job posting', match:t=>t==='JobPosting', required:['title','description','datePosted','hiringOrganization'], recommended:['validThrough','baseSalary','employmentType'],
+    custom:n=>({ errors:!hasVal(n.jobLocation)&&!(String(n.jobLocationType||'').toUpperCase()==='TELECOMMUTE')?['jobLocation missing (or jobLocationType TELECOMMUTE)']:[], warnings:[] }) },
+  { name:'How-to', match:t=>t==='HowTo', retired:'Google stopped showing How-to rich results (Sept 2023)' },
+  { name:'Sitelinks search box', match:t=>t==='SearchAction', retired:'Google retired the sitelinks search box (Nov 2024)' },
+];
+function richResultsTestUrl(u){ return 'https://search.google.com/test/rich-results?url='+encodeURIComponent(u||''); }
+function richResultsCheck(nodes, url){
+  if(!nodes||!nodes.length) return null;
+  const byId={}; nodes.forEach(n=>{ if(n['@id']&&typesOf(n).length) byId[n['@id']]=n; });
+  const get=v=>v&&typeof v==='object'&&!Array.isArray(v)&&v['@id']&&!v['@type']&&byId[v['@id']]?byId[v['@id']]:v;
+  // Ratings nested in a business node belong to it (self-serving check).
+  const parentOf=new Map(); nodes.forEach(n=>['aggregateRating','review'].forEach(k=>[].concat(n[k]||[]).forEach(r=>{ const x=get(r); if(x&&typeof x==='object') parentOf.set(x,n); })));
+  const seen=new Set(), items=[];
+  nodes.forEach(n=>{ const ts=typesOf(n);
+    RICH_TYPES.forEach(rt=>{ if(!ts.some(rt.match)) return; if(rt.when&&!rt.when(n)) return;
+      const key=rt.name+'|'+(n['@id']||JSON.stringify(n).slice(0,200)); if(seen.has(key)) return; seen.add(key);
+      if(rt.retired){ items.push({ type:rt.name, retired:rt.retired }); return; }
+      const errors=(rt.required||[]).filter(p=>!hasVal(get(n[p]))).map(p=>p+' missing');
+      const warnings=(rt.recommended||[]).filter(p=>!hasVal(get(n[p]))).map(p=>p+' (recommended)');
+      Object.keys(rt.nested||{}).forEach(k=>{ const v=get([].concat(n[k]||[])[0]); if(v&&typeof v==='object') (rt.nested[k].recommended||[]).forEach(p=>{ if(!hasVal(v[p])) warnings.push(k+'.'+p+' (recommended)'); }); });
+      let ineligible=null;
+      if(rt.custom){ const c=rt.custom(n,get,parentOf.get(n)); errors.push(...c.errors); warnings.push(...c.warnings); ineligible=c.ineligible||null; }
+      items.push({ type:rt.name, schemaType:ts[0], errors, warnings, ineligible, note:rt.note||null });
+    }); });
+  const test=richResultsTestUrl(url);
+  if(!items.length) return { label:'Rich results eligible', points:0, status:'na', detail:'No structured data that can produce a Google rich result on this page', evidence:[], why:'', fix:'' };
+  const scored=items.filter(i=>!i.retired&&!i.ineligible);
+  const invalid=scored.filter(i=>i.errors.length), valid=scored.filter(i=>!i.errors.length);
+  const describe=i=>i.retired?(i.type+': '+i.retired):i.ineligible?(i.type+': not eligible - '+i.ineligible):(i.type+' ('+i.schemaType+'): '+(i.errors.length?'invalid - '+i.errors.join(', '):'valid')+(i.warnings.length?' · warnings: '+i.warnings.slice(0,4).join(', '):'')+(i.note?' · '+i.note:''));
+  const status=!scored.length?'info':invalid.length?'fail':'pass';
+  return { label:'Rich results eligible', points:status==='info'?0:3, status,
+    problem:invalid.length?('Invalid rich-result markup: '+invalid.map(i=>i.type).join(', ')):null,
+    detail:(valid.length?valid.map(i=>i.type).join(', ')+' eligible':'No eligible rich result')+(invalid.length?' · invalid: '+invalid.map(i=>i.type+' ('+i.errors.join(', ')+')').join('; '):'')
+      +(items.some(i=>i.retired||i.ineligible)?' · '+items.filter(i=>i.retired||i.ineligible).map(i=>i.type+(i.retired?' retired':' not eligible')).join(', '):''),
+    evidence:items.map(i=>({ url, snippet:describe(i) })).concat([{ url:test, snippet:'Verify in Google\'s Rich Results Test: '+test }]),
+    why:'Rich results (stars, business details, breadcrumbs, event dates) make a listing bigger and more clickable in Google. Markup missing a required property is ignored outright.',
+    fix:invalid.length?('Add the missing required properties ('+invalid.map(i=>i.type+': '+i.errors.join(', ')).join('; ')+'), then confirm in Google\'s Rich Results Test: '+test)
+      :('Confirm in Google\'s Rich Results Test: '+test) };
+}
 function schemaTypesCheck(nodes){
   const bad=[...new Set(nodes.flatMap(typesOf).filter(t=>t&&!isKnownType(t)))];
   if(!nodes.length) return null;
@@ -2849,7 +2920,7 @@ const API={ BRAND, PROXIES, TAGS, AI_BOTS, AISEARCH, PROJECT_FIXES, sleep, esc, 
   handleItHTML, repFor, PACKAGES, CTA_TRACK_URL,
   classifyPage, mainContent, localEntities, countClaims, h1Glued, smsLabelTelLinks, businessSchema, ldNodes, AI_SEARCH_BOTS, AI_TRAINING_BOTS,
   // individual checks, for unit tests
-  _x:{ setBackoff:ms=>{ CHALLENGE_BACKOFF_MS=ms; }, freshnessScore, findPrice, isPricingLink, soft404Check, viewportZoomCheck, headingHierarchyCheck, imageCheck, weightCheck, pageAssets, robotsRulesFor, robotsAllowed, chainOf, technicalFindings, applyDeductions, titleQualityCheck, uniqueContentCheck, titlePixels, genericH1Check, descEqualsTitleCheck, genericAnchorCheck, onPageLinkFindings, yearClaims, staleClaimsCheck, placeholderCheck, defaultPrivacyCheck, contentFreshnessFindings, contradictionFindings, serviceCoverage, locationCoverage, callAboveFoldCheck, areaCodeCheck, localFindings, jsonLdSyntaxCheck, businessEntityCheck, schemaNapCheck, napIssues, openingHoursCheck, serviceSchemaCheck, breadcrumbCheck, faqMatchCheck, schemaTypesCheck, licenseCheck, pricingCheck, insuranceCheck, trustFindings, resolveAsyncFindings, questionAnswerCheck, citableFactsCheck, aiSiteFindings, stackFingerprint, loadIndustry, setMarket:(m)=>{ _market=m; } } };
+  _x:{ setBackoff:ms=>{ CHALLENGE_BACKOFF_MS=ms; }, freshnessScore, findPrice, isPricingLink, soft404Check, viewportZoomCheck, headingHierarchyCheck, imageCheck, weightCheck, pageAssets, robotsRulesFor, robotsAllowed, chainOf, technicalFindings, applyDeductions, titleQualityCheck, uniqueContentCheck, titlePixels, genericH1Check, descEqualsTitleCheck, genericAnchorCheck, onPageLinkFindings, yearClaims, staleClaimsCheck, placeholderCheck, defaultPrivacyCheck, contentFreshnessFindings, contradictionFindings, serviceCoverage, locationCoverage, callAboveFoldCheck, areaCodeCheck, localFindings, jsonLdSyntaxCheck, businessEntityCheck, schemaNapCheck, napIssues, richResultsCheck, richResultsTestUrl, openingHoursCheck, serviceSchemaCheck, breadcrumbCheck, faqMatchCheck, schemaTypesCheck, licenseCheck, pricingCheck, insuranceCheck, trustFindings, resolveAsyncFindings, questionAnswerCheck, citableFactsCheck, aiSiteFindings, stackFingerprint, loadIndustry, setMarket:(m)=>{ _market=m; } } };
 root.SEO=API;
 if(typeof module!=="undefined"&&module.exports) module.exports=API;
 })(typeof window!=="undefined"?window:globalThis);

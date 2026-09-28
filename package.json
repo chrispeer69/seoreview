@@ -8,7 +8,7 @@
   },
   "scripts": {
     "start": "node server.js",
-    "test": "node --test test/engine.test.js test/checks.test.js test/capital.test.js test/cta.test.js test/batch3.test.js test/fixtures.test.js && node test/calibrate.js && node test/ui.smoke.js",
+    "test": "node --test test/engine.test.js test/checks.test.js test/capital.test.js test/cta.test.js test/batch3.test.js test/richresults.test.js test/fixtures.test.js && node test/calibrate.js && node test/ui.smoke.js",
     "calibrate:record": "node test/calibrate.js --record"
   },
   "dependencies": {
