@@ -5,7 +5,7 @@
 function makeLinkCheck(guardedFetch, BROWSER_HEADERS) {
   return async function linkCheck(target) {
     const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 12000);
+    const t = setTimeout(() => ctrl.abort(), 20000);   // the resilient fetch may queue per host and retry
     try {
       const r = await guardedFetch(target, { signal: ctrl.signal, headers: BROWSER_HEADERS, redirect: 'manual' });
       const status = r.status;

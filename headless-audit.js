@@ -55,9 +55,13 @@ function makeFetch(deps) {
         if (!target) return textResponse(400, 'missing url');
         try {
           const r = await deps.proxyFetch(target, signal);
-          if (r.challenged) return textResponse(502, r.body, { 'x-proxy-reason': 'bot-protection' });
-          return textResponse(r.status, r.body, { 'x-final-url': r.finalUrl || target });
-        } catch (e) { return textResponse((e && e.code) || 502, ''); }
+          if (r.challenged) return textResponse(502, r.body, { 'x-proxy-reason': 'bot-protection', 'x-fetch-failure': 'blocked' });
+          const h = { 'x-final-url': r.finalUrl || target }; if (r.failure) h['x-fetch-failure'] = r.failure;
+          return textResponse(r.status, r.body, h);
+        } catch (e) {
+          const code = e && typeof e.code === 'number' ? e.code : 502;
+          return textResponse(code, '', e && e.fetchFailure ? { 'x-fetch-failure': e.fetchFailure.kind } : {});
+        }
       }
       if (p === '/api/render') {
         const target = rel.searchParams.get('url');

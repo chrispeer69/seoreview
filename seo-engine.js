@@ -77,26 +77,49 @@ async function fetchOnce(url, ms){
   const ctrl=new AbortController(); const t=setTimeout(()=>ctrl.abort(),ms||12000); linkAbort(ctrl);
   try{ return await fetch(url,{signal:ctrl.signal}); } finally{ clearTimeout(t); }
 }
+// Plain-language names for the server's X-Fetch-Failure kinds (fetch-resilient.js), shown in the report and the API.
+const FETCH_FAILURE_LABELS={ dns:'Domain gone - the web address no longer resolves', tls:'Bad security certificate', not_found:'Page not found (404)',
+  server_error:"Site down - the website's server returned an error", blocked:'Blocked by bot protection', rate_limited:'Rate-limited by the site',
+  timeout:'Timed out', network:'Could not connect to the site', parked:'Domain expired or for sale' };
+// Fall back to the rendering service (a real browser) when the server's own fetch was refused or errored - never for
+// a 404, a dead domain, a bad certificate or a parked domain (a browser would not do better), at most once per URL
+// and at most RENDER_FALLBACK_CAP times per scan (renders are paid).
+const RENDER_FALLBACK_STATUSES=new Set([0,403,429,500,502,503,504,520,521,522,523,524]);
+const NO_RENDER_KINDS=new Set(['dns','tls','not_found','parked']);
+let RENDER_FALLBACK_CAP=25, _renderFallbacks=0; const _renderTried=new Set();
+async function renderFallback(targetUrl){
+  if(_renderTried.has(targetUrl)||_renderFallbacks>=RENDER_FALLBACK_CAP) return null;
+  _renderTried.add(targetUrl); _renderFallbacks++;
+  try{ const r=await fetchOnce('/api/render?url='+encodeURIComponent(targetUrl), 50000);
+    if(r.ok){ const html=await r.text(); if(html&&html.length>50&&!RE_CHALLENGE_BODY.test(html.slice(0,5000))){ _fetchMeta.set(targetUrl,{status:200, finalUrl:null, viaRender:true}); return html; } } }catch(e){}
+  return null;
+}
 // Page HTML via our proxy. On a Cloudflare / bot challenge: back off, retry once, then try the rendering service
-// (ScrapingBee, a real browser). Still blocked -> a "blocked" error, which the report lists.
+// (ScrapingBee, a real browser). Still blocked -> a "blocked" error, which the report lists. A refused or errored
+// fetch (403 / 5xx / 429 / connection error) also tries the rendering service once before failing.
 async function fetchHtml(targetUrl){
   if(scanCtrl&&scanCtrl.signal.aborted) throw new DOMException('aborted','AbortError');
-  let lastErr=null, challenged=false;
+  let lastErr=null, challenged=false, status=null, kind=null;
   for(let attempt=0; attempt<2; attempt++){
     if(attempt) await sleep(CHALLENGE_BACKOFF_MS);
     try{
-      const res=await fetchOnce(PROXIES[0].build(targetUrl));
+      const res=await fetchOnce(PROXIES[0].build(targetUrl), 35000); // the server queues per host and retries
       _fetchMeta.set(targetUrl,{status:res.status, finalUrl:res.headers.get('x-final-url')||null, contentType:res.headers.get('content-type')||null});
       const body=(res.ok||res.status===403||res.status===503||res.status===502)?await res.text():'';
       const isChallenge=/bot-protection/i.test(res.headers.get('x-proxy-reason')||'')||((res.status===403||res.status===503)&&RE_CHALLENGE_BODY.test(body));
       if(res.ok&&body&&body.length>50) return body;
-      if(!isChallenge){ lastErr=new Error('proxy HTTP '+res.status); break; }
+      status=res.status; kind=res.headers.get('x-fetch-failure')||null;
+      if(!isChallenge){ lastErr=new Error('proxy HTTP '+res.status+(kind&&FETCH_FAILURE_LABELS[kind]?' — '+FETCH_FAILURE_LABELS[kind]:'')); break; }
       challenged=true; lastErr=new Error('bot challenge');
-    }catch(e){ if(scanCtrl&&scanCtrl.signal.aborted) throw e; lastErr=e; break; }
+    }catch(e){ if(scanCtrl&&scanCtrl.signal.aborted) throw e; lastErr=e; status=0; break; }
   }
+  if(!challenged && status!=null && (RENDER_FALLBACK_STATUSES.has(status) || (status===200)) && !NO_RENDER_KINDS.has(kind)){
+    const html=await renderFallback(targetUrl);
+    if(html) return html;
+  }
+  if(lastErr && kind) lastErr.fetchFailure=kind;
   if(challenged){
-    try{ const r=await fetchOnce('/api/render?url='+encodeURIComponent(targetUrl), 50000);
-      if(r.ok){ const html=await r.text(); if(html&&html.length>50&&!RE_CHALLENGE_BODY.test(html.slice(0,5000))){ _fetchMeta.set(targetUrl,{status:200, finalUrl:null, viaRender:true}); return html; } } }catch(e){}
+    const html=await renderFallback(targetUrl); if(html) return html;
     throw { blocked:true, challenged:true, reason:'Blocked by bot protection (Cloudflare-style challenge) — retried after a pause and through ScrapingBee, still blocked.' };
   }
   throw lastErr||new Error('fetch failed');
@@ -209,7 +232,7 @@ async function loadIndustry(name, market){
   _market={ name:m.name||dm||null, areaCodes:codes, cities:Array.isArray(m.cities)?m.cities:null };
   return _industry;
 }
-function resetLinkCache(){ _linkCache.clear(); _fetchMeta.clear(); _lcAvailable=true; }
+function resetLinkCache(){ _linkCache.clear(); _fetchMeta.clear(); _lcAvailable=true; _renderTried.clear(); _renderFallbacks=0; }
 function checkUrl(u){
   if(_linkCache.has(u)) return _linkCache.get(u);
   const p=new Promise(res=>{ _lcQueue.push({u,res}); if(!_lcTimer) _lcTimer=setTimeout(flushLinkChecks,40); });
@@ -2156,7 +2179,7 @@ async function crawlSiteRun(root, opts){
     catch(e1){ // one free retry — most failures are transient (slow origin throttling under concurrency)
       if(e1&&e1.challenged) throw e1; // bot challenge: fetchHtml already backed off, retried and tried ScrapingBee
       try{ r=await auditOne(u); }
-      catch(e2){ if(render){ const html=await render(u); if(html){ r=await auditOne(u, html); r._rendered=true; rendered++; keepHtml(r,null,html); return r; } } throw e2; }
+      catch(e2){ if(render && !_renderTried.has(u)){ _renderTried.add(u); const html=await render(u); if(html){ r=await auditOne(u, html); r._rendered=true; rendered++; keepHtml(r,null,html); return r; } } throw e2; }
     }
     if(r.jsShell && render){ try{ const raw=r._html; const html=await render(u); if(html){ r=await auditOne(u, html); r._rendered=true; rendered++; keepHtml(r,raw,html); } }catch(e){} }
     return r;
@@ -2849,7 +2872,7 @@ const API={ BRAND, PROXIES, TAGS, AI_BOTS, AISEARCH, PROJECT_FIXES, sleep, esc, 
   handleItHTML, repFor, PACKAGES, CTA_TRACK_URL,
   classifyPage, mainContent, localEntities, countClaims, h1Glued, smsLabelTelLinks, businessSchema, ldNodes, AI_SEARCH_BOTS, AI_TRAINING_BOTS,
   // individual checks, for unit tests
-  _x:{ setBackoff:ms=>{ CHALLENGE_BACKOFF_MS=ms; }, freshnessScore, findPrice, isPricingLink, soft404Check, viewportZoomCheck, headingHierarchyCheck, imageCheck, weightCheck, pageAssets, robotsRulesFor, robotsAllowed, chainOf, technicalFindings, applyDeductions, titleQualityCheck, uniqueContentCheck, titlePixels, genericH1Check, descEqualsTitleCheck, genericAnchorCheck, onPageLinkFindings, yearClaims, staleClaimsCheck, placeholderCheck, defaultPrivacyCheck, contentFreshnessFindings, contradictionFindings, serviceCoverage, locationCoverage, callAboveFoldCheck, areaCodeCheck, localFindings, jsonLdSyntaxCheck, businessEntityCheck, schemaNapCheck, napIssues, openingHoursCheck, serviceSchemaCheck, breadcrumbCheck, faqMatchCheck, schemaTypesCheck, licenseCheck, pricingCheck, insuranceCheck, trustFindings, resolveAsyncFindings, questionAnswerCheck, citableFactsCheck, aiSiteFindings, stackFingerprint, loadIndustry, setMarket:(m)=>{ _market=m; } } };
+  _x:{ setBackoff:ms=>{ CHALLENGE_BACKOFF_MS=ms; }, setRenderCap:n=>{ RENDER_FALLBACK_CAP=n; }, resetScan:()=>resetLinkCache(), freshnessScore, findPrice, isPricingLink, soft404Check, viewportZoomCheck, headingHierarchyCheck, imageCheck, weightCheck, pageAssets, robotsRulesFor, robotsAllowed, chainOf, technicalFindings, applyDeductions, titleQualityCheck, uniqueContentCheck, titlePixels, genericH1Check, descEqualsTitleCheck, genericAnchorCheck, onPageLinkFindings, yearClaims, staleClaimsCheck, placeholderCheck, defaultPrivacyCheck, contentFreshnessFindings, contradictionFindings, serviceCoverage, locationCoverage, callAboveFoldCheck, areaCodeCheck, localFindings, jsonLdSyntaxCheck, businessEntityCheck, schemaNapCheck, napIssues, openingHoursCheck, serviceSchemaCheck, breadcrumbCheck, faqMatchCheck, schemaTypesCheck, licenseCheck, pricingCheck, insuranceCheck, trustFindings, resolveAsyncFindings, questionAnswerCheck, citableFactsCheck, aiSiteFindings, stackFingerprint, loadIndustry, setMarket:(m)=>{ _market=m; } } };
 root.SEO=API;
 if(typeof module!=="undefined"&&module.exports) module.exports=API;
 })(typeof window!=="undefined"?window:globalThis);

@@ -359,29 +359,43 @@ const BROWSER_HEADERS = {
   'Sec-Ch-Ua-Mobile': '?0',
   'Sec-Ch-Ua-Platform': '"Windows"',
 };
+// Every server-side page fetch goes through the resilient wrapper (fetch-resilient.js): at most 2 requests at a time
+// per host, retries on transient errors (5xx / 429 with Retry-After / resets / timeouts), one retry with plain
+// headers when a WAF refuses the Chrome UA from a non-browser client, and a plain-language failure kind.
+const { makeResilientFetch, classifyStatus, isParkedHost } = require('./fetch-resilient');
+const resilientFetch = makeResilientFetch(guardedFetch, BROWSER_HEADERS);
 // Core of /api/proxy — also used by the headless audit API (api-v1.js). Detects interstitial bot-challenge
 // pages (Cloudflare et al.) so callers can show an accurate message rather than a generic proxy error.
+// A thrown error carries e.fetchFailure = { kind, label } (dns, tls, timeout, network).
 async function proxyFetch(target, signal) {
-  const r = await guardedFetch(target, { signal, headers: BROWSER_HEADERS });
+  const r = await resilientFetch(target, { signal, headers: BROWSER_HEADERS });
   const body = await r.text();
   const challenged = (r.status === 403 || r.status === 503) &&
     /just a moment|cf-chl|challenge-platform|cf-mitigated|enable javascript and cookies/i.test(body);
-  return { status: r.status, body, challenged, finalUrl: r.url || target };
+  const finalUrl = r.url || target;
+  let failure = r.ok ? null : classifyStatus(r.status, body);
+  try { if (isParkedHost(new URL(finalUrl).hostname)) failure = 'parked'; } catch (e) { /* keep */ }
+  return { status: r.status, body, challenged, finalUrl, failure };
 }
 app.get('/api/proxy', rateLimit({ windowMs: 60000, max: 60 }), async (req, res) => {
   const target = req.query.url;
   if (!target) return res.status(400).send('missing url');
   const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), 15000);
+  const t = setTimeout(() => ctrl.abort(), 30000);   // room for the per-host queue and retries
   try {
     const r = await proxyFetch(target, ctrl.signal);
     res.set('Access-Control-Allow-Origin', '*');
+    res.set('Access-Control-Expose-Headers', 'X-Final-Url, X-Proxy-Reason, X-Fetch-Failure');
     res.set('X-Final-Url', r.finalUrl);  // lets the engine tell a clean 200 from a followed redirect
     if (r.challenged) res.set('X-Proxy-Reason', 'bot-protection');
+    if (r.failure) res.set('X-Fetch-Failure', r.failure);
     res.status(r.challenged ? 502 : r.status).type('text/plain; charset=utf-8').send(r.body);
   } catch (e) {
-    const code = e && e.code ? e.code : 502;
-    res.status(code).send(code === 403 ? 'blocked host' : code === 400 ? 'bad url' : 'fetch failed: ' + (e && e.name ? e.name : 'error'));
+    const code = e && typeof e.code === 'number' ? e.code : 502;
+    res.set('Access-Control-Allow-Origin', '*');
+    res.set('Access-Control-Expose-Headers', 'X-Fetch-Failure');
+    if (e && e.fetchFailure) res.set('X-Fetch-Failure', e.fetchFailure.kind);
+    res.status(code).send(code === 403 ? 'blocked host' : code === 400 ? 'bad url' : 'fetch failed: ' + ((e && e.fetchFailure && e.fetchFailure.label) || (e && e.name) || 'error'));
   } finally { clearTimeout(t); }
 });
 
@@ -389,7 +403,7 @@ app.get('/api/proxy', rateLimit({ windowMs: 60000, max: 60 }), async (req, res) 
 // Redirects are NOT followed — a redirecting URL is reported as the redirect it is. The body is read only to spot
 // a robots noindex; the X-Robots-Tag header is checked too.
 const { makeLinkCheck } = require('./url-check');
-const linkCheck = makeLinkCheck(guardedFetch, BROWSER_HEADERS);
+const linkCheck = makeLinkCheck(resilientFetch, BROWSER_HEADERS);
 async function linkCheckMany(urls, check) {
   const list = [...new Set((Array.isArray(urls) ? urls : []).map(String).filter(u => /^https?:\/\//i.test(u)))].slice(0, 60);
   const out = []; let i = 0;
