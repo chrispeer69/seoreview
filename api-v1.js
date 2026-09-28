@@ -16,6 +16,7 @@
 // in Postgres (seo_audits) when DATABASE_URL is set, otherwise in memory (lost on restart).
 const crypto = require('crypto');
 const headless = require('./headless-audit');
+const { describe, isParkedHost } = require('./fetch-resilient');
 
 const API_KEY = process.env.SEO_API_KEY || '';
 const WEBHOOK_SECRET = process.env.SEO_WEBHOOK_SECRET || API_KEY;
@@ -351,20 +352,39 @@ function pump() {
   }
 }
 
-// Follow the domain's redirects once so the crawl starts on the real origin (www vs bare, http vs https).
+// Follow the domain's redirects once so the crawl starts on the real origin (www vs bare, http vs https), and learn
+// early why a site cannot be audited. Returns { root, failure, status, detail, movedTo }:
+//   - the same site on www/bare or http/https -> that origin;
+//   - the site moved to another domain (finelineautobody.com -> finelinewow.com) -> the new origin (audit where it lives);
+//   - the domain now redirects to a domain-sale page -> failure 'parked';
+//   - no answer on https nor http -> the failure kind of the last error (dns, tls, timeout, network).
 async function resolveRoot(domain) {
+  let failure = null;
   for (const scheme of ['https://', 'http://']) {
     try {
-      const ctrl = new AbortController(); const t = setTimeout(() => ctrl.abort(), 12000);
+      const ctrl = new AbortController(); const t = setTimeout(() => ctrl.abort(), 30000);
       const r = await deps.proxyFetch(scheme + domain + '/', ctrl.signal).finally(() => clearTimeout(t));
-      if (r.challenged) continue;
+      if (r.challenged) { failure = failure || 'blocked'; continue; }
       const fu = new URL(r.finalUrl || scheme + domain + '/');
       const fh = fu.hostname.toLowerCase();
-      if (fh === domain || fh === 'www.' + domain || fh.endsWith('.' + domain)) return fu.origin;
-      return scheme + domain;
-    } catch (e) { /* try next scheme */ }
+      const ok = r.status >= 200 && r.status < 400;
+      if (r.failure === 'parked' || isParkedHost(fh)) return { root: scheme + domain, failure: 'parked', status: r.status, detail: fh };
+      if (fh === domain || fh === 'www.' + domain || fh.endsWith('.' + domain)) return { root: fu.origin, failure: ok ? null : (r.failure || null), status: r.status };
+      if (ok) return { root: fu.origin, failure: null, status: r.status, movedTo: fh };
+      return { root: scheme + domain, failure: r.failure || null, status: r.status };
+    } catch (e) { failure = (e && e.fetchFailure && e.fetchFailure.kind) || failure || 'network'; }
   }
-  return 'https://' + domain;
+  return { root: 'https://' + domain, failure };
+}
+// A dead site fails fast with a plain reason instead of a crawl that finds nothing.
+const TERMINAL = new Set(['dns', 'tls', 'parked']);
+function rootReason(domain, rr) {
+  const detail = rr.failure === 'parked' ? domain + ' -> ' + rr.detail : rr.status ? domain + ', homepage HTTP ' + rr.status : domain;
+  return describe(rr.failure, detail);
+}
+function explain(msg, domain, rr) {
+  if (rr && rr.failure && /^No page(s)? (could be audited|discovered)/.test(msg)) return rootReason(domain, rr) + '. ' + msg;
+  return msg;
 }
 
 async function runJob(id) {
@@ -373,8 +393,12 @@ async function runJob(id) {
   job = await store.update(id, { status: 'running', started_at: new Date(), progress: { done: 0, total: 0 } });
   let lastSave = 0;
   try {
-    const root = await resolveRoot(job.domain);
-    if ((job.mode || 'site') === 'page') return await runPageJob(id, root);
+    const rr = await resolveRoot(job.domain);
+    if (TERMINAL.has(rr.failure)) throw new Error(rootReason(job.domain, rr));
+    if (rr.movedTo) console.log(`[api v1] ${job.domain} moved to ${rr.movedTo} - auditing ${rr.root}`);
+    const root = rr.root;
+    job._rr = rr;
+    if ((job.mode || 'site') === 'page') return await runPageJob(id, root, rr);
     const work = headless.crawlSite(deps, root, {
       maxPages: MAX_PAGES, concurrency: 4, psiKey: PSI_KEY, industry: job.industry || 'general', market: job.market || null,
       onProgress: (done, total, current) => {
@@ -387,11 +411,12 @@ async function runJob(id) {
     if (!out || !out.result || out.result.error) throw new Error((out && out.result && out.result.error) || 'crawl failed');
     const result = summarize(out.result);
     if (result.pages_crawled === 0) throw new Error('No page could be audited — the site may block automated access or is unavailable.');
+    if (job._rr && job._rr.movedTo) result.moved_to = job._rr.root;
     job = await store.update(id, { status: 'done', finished_at: new Date(), result, report_html: out.html, progress: null, error: null });
     console.log(`[api v1] audit ${id} ${job.domain}: ${result.grade} ${result.score} (${result.pages_crawled} pages)`);
     syncCrm(job).catch(() => {});
   } catch (e) {
-    const msg = String((e && e.message) || e).slice(0, 500);
+    const msg = explain(String((e && e.message) || e), job && job.domain, job && job._rr).slice(0, 500);
     console.warn(`[api v1] audit ${id} failed: ${msg}`);
     job = await store.update(id, { status: 'failed', finished_at: new Date(), error: msg, progress: null });
   }
@@ -399,14 +424,14 @@ async function runJob(id) {
 }
 
 // The homepage audit. Never writes the CRM's columns - those are the whole-site grade.
-async function runPageJob(id, root) {
+async function runPageJob(id, root, rr) {
   let job = await store.get(id);
   try {
     const work = headless.auditPage(deps, root + '/', { speed: true, psiKey: PSI_KEY, industry: (job && job.industry) || 'general', market: (job && job.market) || null });
     const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error('audit timed out after ' + Math.round(JOB_TIMEOUT_MS / 1000) + 's')), JOB_TIMEOUT_MS));
     const out = await Promise.race([work, timeout]);
     const result = summarizePage(out.result);
-    if (result.score == null) throw new Error('The homepage could not be graded.');
+    if (result.score == null) throw new Error(rr && rr.failure ? rootReason(job.domain, rr) + '. The homepage could not be graded.' : 'The homepage could not be graded.');
     job = await store.update(id, { status: 'done', finished_at: new Date(), result, report_html: out.html, progress: null, error: null });
     console.log(`[api v1] page audit ${id} ${job.domain}: ${result.grade} ${result.score}`);
   } catch (e) {
@@ -585,4 +610,4 @@ async function start() {
   } catch (e) { console.error('[api v1] start:', e.message); }
 }
 
-module.exports = { mount, migrate, start, summarize, normalizeDomain };
+module.exports = { mount, migrate, start, summarize, normalizeDomain, resolveRoot, _setDeps: d => { deps = d; } };
