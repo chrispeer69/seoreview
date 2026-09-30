@@ -838,35 +838,8 @@ app.post('/api/crm/members/import', requireAuth, async (req, res) => {
 
 // ---------- Shared paid report (DIY $49 flow) ----------
 const crypto = require('crypto');
-async function stripeCreateCheckout(token, name) {
-  const key = process.env.STRIPE_SECRET_KEY;
-  if (!key) return null;
-  const p = new URLSearchParams();
-  p.set('mode', 'payment');
-  p.set('success_url', BASE_URL + '/r/' + token + '?session_id={CHECKOUT_SESSION_ID}');
-  p.set('cancel_url', BASE_URL + '/r/' + token);
-  p.set('client_reference_id', token);
-  p.set('line_items[0][quantity]', '1');
-  p.set('line_items[0][price_data][currency]', 'usd');
-  p.set('line_items[0][price_data][unit_amount]', String(REPORT_PRICE_CENTS));
-  p.set('line_items[0][price_data][product_data][name]', 'Full SEO & AI Search Report' + (name ? (' — ' + name) : ''));
-  try {
-    const r = await fetch('https://api.stripe.com/v1/checkout/sessions', {
-      method: 'POST', headers: { 'Authorization': 'Bearer ' + key, 'Content-Type': 'application/x-www-form-urlencoded' }, body: p.toString(),
-    });
-    if (!r.ok) { console.error('stripe checkout', r.status, await r.text().catch(() => '')); return null; }
-    return (await r.json()).url;
-  } catch (e) { console.error('stripe checkout err', e.message); return null; }
-}
-async function stripeSessionPaid(sessionId) {
-  const key = process.env.STRIPE_SECRET_KEY;
-  if (!key || !sessionId) return false;
-  try {
-    const r = await fetch('https://api.stripe.com/v1/checkout/sessions/' + encodeURIComponent(sessionId), { headers: { 'Authorization': 'Bearer ' + key } });
-    if (!r.ok) return false;
-    return (await r.json()).payment_status === 'paid';
-  } catch (e) { return false; }
-}
+// Checkout + payment check live in stripe-pay.js (tagged app=seoreview, bound to the report token).
+const stripePay = require('./stripe-pay').makeStripePay({ key: process.env.STRIPE_SECRET_KEY, baseUrl: BASE_URL, priceCents: REPORT_PRICE_CENTS });
 // Team creates a shareable report link
 app.post('/api/shared', requireAuth, async (req, res) => {
   const { report, name, summary } = req.body || {};
@@ -892,7 +865,7 @@ app.get('/api/shared/:token', async (req, res) => {
 app.post('/api/shared/:token/claim', async (req, res) => {
   if (!pool) return res.status(503).json({ error: 'not_configured' });
   try {
-    const paid = await stripeSessionPaid((req.body || {}).session_id);
+    const paid = await stripePay.sessionPaidFor((req.body || {}).session_id, req.params.token);
     if (!paid) return res.json({ paid: false });
     await pool.query('UPDATE shared_reports SET paid=true, stripe_session=$1 WHERE token=$2', [(req.body || {}).session_id || null, req.params.token]);
     const { rows } = await pool.query('SELECT name,report,summary FROM shared_reports WHERE token=$1', [req.params.token]);
@@ -907,7 +880,7 @@ app.get('/buy/:token', async (req, res) => {
     const { rows } = await pool.query('SELECT name FROM shared_reports WHERE token=$1', [req.params.token]);
     if (!rows.length) return res.status(404).send('Report not found');
     if (!cfg.stripe) return res.redirect('/r/' + req.params.token + '?nostripe=1');
-    const url = await stripeCreateCheckout(req.params.token, rows[0].name);
+    const url = await stripePay.createCheckout(req.params.token, rows[0].name);
     return url ? res.redirect(url) : res.redirect('/r/' + req.params.token + '?payerr=1');
   } catch (e) { res.status(500).send('error'); }
 });
