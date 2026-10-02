@@ -176,12 +176,19 @@ const typesOf = n => [].concat(n && n['@type'] || []).map(t => String(t).replace
 const isLocalType = t => LB_TYPES.has(t) || /Store$/.test(t);
 // Every typed node in the page's JSON-LD (top level, @graph, and nested values), so a business nested under a
 // WebPage or listed in a graph is found the same as a top-level one.
+// Places the page describes rather than the business itself: venues in a Service's areaServed / containsPlace,
+// places it mentions, an Event's location. A Hospital or StadiumOrArena there is a LocalBusiness subtype, but it is
+// not the site's business, so the business-entity and business-name checks skip it.
+const _describedPlaces=new WeakSet();
+const isDescribedPlace=n=>!!n&&typeof n==='object'&&_describedPlaces.has(n);
+const DESCRIBED_KEYS=new Set(['areaServed','containsPlace','containedInPlace','mentions']);
 function ldNodes(doc){
   const out=[];
-  const walk=(v,depth)=>{ if(!v||typeof v!=='object'||depth>8) return;
-    if(Array.isArray(v)){ v.forEach(x=>walk(x,depth+1)); return; }
-    if(v['@type']) out.push(v);
-    Object.keys(v).forEach(k=>{ if(k!=='@context') walk(v[k],depth+1); }); };
+  const walk=(v,depth,described)=>{ if(!v||typeof v!=='object'||depth>8) return;
+    if(Array.isArray(v)){ v.forEach(x=>walk(x,depth+1,described)); return; }
+    if(v['@type']){ out.push(v); if(described) _describedPlaces.add(v); }
+    const evt=typesOf(v).some(t=>/Event$/.test(t));
+    Object.keys(v).forEach(k=>{ if(k!=='@context') walk(v[k],depth+1,described||DESCRIBED_KEYS.has(k)||(evt&&k==='location')); }); };
   doc.querySelectorAll('script[type="application/ld+json"]').forEach(n=>{ try{ walk(JSON.parse(n.textContent),0); }catch(e){} });
   return out;
 }
@@ -468,7 +475,7 @@ function napSignals(doc, bodyText, nodes){
   doc.querySelectorAll('a[href^="tel:"]').forEach(a=>{ const d=(a.getAttribute('href')||'').replace(/\D/g,'').replace(/^1(?=\d{10}$)/,''); if(d.length===10) tel.push(normPhone(d.slice(0,3),d.slice(3,6),d.slice(6))); });
   let m; RE_PHONE.lastIndex=0; while((m=RE_PHONE.exec(bodyText))) visible.push(normPhone(m[1],m[2],m[3]));
   RE_STREET.lastIndex=0; while((m=RE_STREET.exec(bodyText))) streets.push(normStreet(m[1]));
-  const biz=nodes.filter(n=>typesOf(n).some(t=>isLocalType(t)||ORG_TYPES.test(t)));
+  const biz=nodes.filter(n=>!isDescribedPlace(n)&&typesOf(n).some(t=>isLocalType(t)||ORG_TYPES.test(t)));
   const schema={ names:[], phones:[], streets:[] };
   biz.forEach(n=>{
     if(typeof n.name==='string') schema.names.push(decodeEntities(n.name).trim());
@@ -479,8 +486,9 @@ function napSignals(doc, bodyText, nodes){
   return { tel:uniq(tel), visible:uniq(visible), streets:uniq(streets), schema:{ names:uniq(schema.names), phones:uniq(schema.phones), streets:uniq(schema.streets) } };
 }
 // Hard-coded counts ("all 34 service areas", "18 towing services") — checked against the pages the crawl finds.
-const RE_AREA_CLAIM=/\b([Aa]ll|[Oo]ver|[Mm]ore than|[Ss]erving|[Aa]cross|[Oo]ur)?\s*\b(\d{1,3})(\+)?\s+((?:(?:[A-Z][a-z]+|local|nearby|surrounding|different|major)\s+){0,3})([Cc]ities|[Tt]owns|[Ll]ocations|[Cc]ommunities|[Cc]ounties|[Ss]uburbs|[Nn]eighborhoods|[Ss]ervice [Aa]reas|[Aa]reas)\b/g;
-const RE_SERVICE_CLAIM=/\b([Aa]ll|[Oo]ver|[Mm]ore than|[Oo]ffer|[Pp]rovide|[Oo]ur)?\s*\b(\d{1,3})(\+)?\s+((?:(?:[A-Z][a-z]+|towing|repair|roadside|auto|different|specialized|professional|core)\s+){0,2})([Ss]ervices)\b/g;
+// A number glued to "/", "-" or another number is part of something else: "24/7 Towing Services" is not 7 services.
+const RE_AREA_CLAIM=/\b([Aa]ll|[Oo]ver|[Mm]ore than|[Ss]erving|[Aa]cross|[Oo]ur)?\s*\b(?<![\/\d.,-])(\d{1,3})(\+)?\s+((?:(?:[A-Z][a-z]+|local|nearby|surrounding|different|major)\s+){0,3})([Cc]ities|[Tt]owns|[Ll]ocations|[Cc]ommunities|[Cc]ounties|[Ss]uburbs|[Nn]eighborhoods|[Ss]ervice [Aa]reas|[Aa]reas)\b/g;
+const RE_SERVICE_CLAIM=/\b([Aa]ll|[Oo]ver|[Mm]ore than|[Oo]ffer|[Pp]rovide|[Oo]ur)?\s*\b(?<![\/\d.,-])(\d{1,3})(\+)?\s+((?:(?:[A-Z][a-z]+|towing|repair|roadside|auto|different|specialized|professional|core)\s+){0,2})([Ss]ervices)\b/g;
 function countClaims(text){
   const out=[];
   [[RE_AREA_CLAIM,'location'],[RE_SERVICE_CLAIM,'service']].forEach(([re,kind])=>{ re.lastIndex=0; let m;
@@ -1090,8 +1098,15 @@ function napIssues(pages){
 // Hard-coded counts vs what the site actually has ("see all 34 service areas" with 35 area pages).
 function claimIssues(pages){
   const actual={ location:pages.filter(p=>p.pageType==='location').length, service:pages.filter(p=>p.pageType==='service').length };
+  // Neighborhood pages nested under an area page (/service-area/columbus/short-north under /service-area/columbus) are
+  // sub-areas: "all 40 service areas" may count the top-level areas only, so either count matches.
+  const pathOf=u=>{ try{ return new URL(u).pathname.replace(/\/+$/,''); }catch(e){ return String(u); } };
+  const areaPaths=new Set(pages.filter(p=>!p.error&&(p.pageType==='location'||p.pageType==='hub')).map(p=>pathOf(p.url)));
+  const topAreas=pages.filter(p=>p.pageType==='location'&&!areaPaths.has(pathOf(p.url).replace(/\/[^/]+$/,''))).length;
   const m={};
-  pages.forEach(p=>(p.claims||[]).forEach(c=>{ const have=actual[c.kind]; const wrong=c.atLeast?have<c.n:have!==c.n; if(!wrong) return;
+  pages.forEach(p=>(p.claims||[]).forEach(c=>{ const have=actual[c.kind];
+    const matches=n=>c.atLeast?n>=c.n:n===c.n;
+    if(matches(have)||(c.kind==='location'&&topAreas!==have&&matches(topAreas))) return;
     const k=c.kind+'|'+c.text.toLowerCase(); (m[k]=m[k]||{claim:c.text, claimed:c.n, kind:c.kind, actual:have, urls:[]}).urls.push(p.url); }));
   return Object.values(m).sort((a,b)=>b.urls.length-a.urls.length);
 }
@@ -1145,7 +1160,9 @@ function crossPageContent(pages, sitemapUrls){
   const siteCity=Object.keys(cityCount).sort((a,b)=>cityCount[b]-cityCount[a])[0]||null;
   const byUrl={}; pages.forEach(p=>{ byUrl[p.url]=p; });
   const types=pageTypesFor([...new Set(pages.map(p=>p.url).concat(sitemapUrls||[]))], u=>byUrl[u]?byUrl[u].pageType:classifyPage(u,[],{ primaryCity:siteCity }));
-  pages.forEach(p=>{ p.pageType=types[p.url]; });
+  pages.forEach(p=>{ p.pageType=types[p.url];
+    // Location pages describe the town: keep only first-person founding claims there (see yearClaims).
+    if(p.pageType==='location'&&p._yearClaims) p._yearClaims.founded=p._yearClaims.founded.filter(f=>f.firstPerson); });
   const groupOf=p=>{ const s=pathSegs(p.url); return s.length>=2?s[0]:'/'; };
   // A location page's own place name (from its URL slug) is masked before blocks are compared, so a template sentence
   // with only the city swapped ("…reaches Dublin day or night…") is recognised as the same block on every city page.
@@ -1574,10 +1591,38 @@ function onPageLinkFindings(ok){
 const nowYear=()=>new Date(_nowMs()).getUTCFullYear();
 // Years-in-business statements: founding years ("since 1973", "established 1973", "est. 1973") and durations
 // ("51 years", "for 30 years", "over 20 years of experience"). Each with its snippet.
+// Each founding claim carries firstPerson: location pages describe the town ("the library has served the community since
+// 1924"), so there only first-person sentences, a bare tag line or the explicit business forms count (the crawl applies
+// it once page types are final).
 function yearClaims(text){
   const out={ founded:[], years:[] }; const t=String(text); let m;
+  // Words that make a founding year the business's own ("university-owned airport, established in 1943" is not ours).
+  // "us" is matched case-sensitively, so "US 33" is a highway, not a pronoun.
+  const FIRST_RE=/\b(we|we've|we're|our|ours)\b/i, US=/\b[Uu]s\b/;
+  const OURS_RE=/\b(family|(?<!-)owned|(?<!-)operated|business|company|calls|jobs|customers|proudly|locally|serving|served|providing|trusted)\b/i;
+  const FIRST={ test:s=>FIRST_RE.test(s)||US.test(s) }, OURS={ test:s=>FIRST.test(s)||OURS_RE.test(s) };
   const reF=/\b(since|established(?:\s+in)?|founded(?:\s+in)?|est\.?|serving\s+\w+\s+since|in\s+business\s+since)\s+((?:19|20)\d{2})\b/gi;
-  while((m=reF.exec(t))) out.founded.push({ year:+m[2], snippet:snip(t.slice(Math.max(0,m.index-40), m.index+m[0].length+40),120) });
+  while((m=reF.exec(t))){
+    // Only the business's own founding: "in business since", "serving Columbus since", a bare "Since 1973" / "Est. 1973" /
+    // "Trusted since 1973" tag line, or a sentence about us ("we have", "our family", "100,000 calls completed since 2020"). "The
+    // governor's residence since 1957" or "the stadium, established 1999" describes a place on the page, not the business.
+    let ctx, sure=/^(in\s+business|serving)/i.test(m[1]);
+    // A window of whole words only: a cut "Columbus" must not read as "us". Sentences end at ". " or, where blocks were
+    // joined without a space, at ".Next".
+    const win=(a,b)=>{ a=Math.max(0,a); b=Math.min(t.length,b); let w=t.slice(a,b);
+      if(a>0&&/\S/.test(t[a-1])) w=w.replace(/^\S*/,''); if(b<t.length&&/\S/.test(t[b])) w=w.replace(/\S*$/,''); return w; };
+    const SENT=/[.!?](?:\s|(?=[A-Z]))|\n/;
+    if(/^[A-Z]/.test(m[1])&&t[m.index+m[0].length]===','){
+      // A sentence that opens "Since 2012, ..." is about whatever follows: "Since 2012, we have ..." vs "Since 2012, parking on campus ...".
+      ctx=win(m.index+m[0].length, m.index+m[0].length+80).split(SENT)[0];
+    } else {
+      // A capitalised "Since" right after a word with no punctuation starts a new block (heading, list item).
+      ctx=/^[A-Z]/.test(m[1])&&/[a-z0-9]\s*$/.test(t.slice(Math.max(0,m.index-2), m.index))?''
+        :win(m.index-90, m.index).split(SENT).pop().trim();
+      if(ctx.split(/\s+/).filter(Boolean).length<=1) sure=true; // tag line
+    }
+    if(!sure&&!OURS.test(ctx)) continue;
+    out.founded.push({ year:+m[2], firstPerson:sure||FIRST.test(ctx), snippet:snip(t.slice(Math.max(0,m.index-40), m.index+m[0].length+40),120) }); }
   const reY=/\b(over|more than|nearly|almost|for)?\s*(\d{1,3})\+?\s+years?\b(?!\s+old)/gi;
   while((m=reY.exec(t))){ const n=+m[2]; const ctx=t.slice(Math.max(0,m.index-60), m.index+m[0].length+60);
     if(n<3||n>150) continue;
@@ -1643,7 +1688,10 @@ function contradictionFindings(ok){
     while((m=re.exec(t))){ const before=t.slice(Math.max(0,m.index-70), m.index);
       if(!/(reach|arriv|respon|get to (you|me)|on scene|on-scene|\beta\b|there (in|within)|dispatch(ed)? (in|within))/i.test(before)) continue;
       if(/(take|takes|resolve|opened|done|finish|complete|install|last)/i.test(before.slice(-30))) continue;
-      const scope=/(outer|outlying|rural|surrounding|farther|further|outside)/i.test(before.slice(-45))?'outer':'core';
+      // Scope from the clause the range sits in ("Delaware is one of our outer communities, where most calls are
+      // reached in 40 to 60" is the outer promise even though "outer" is 50 characters back), not a fixed window.
+      const clause=t.slice(Math.max(0,m.index-160), m.index).split(/[.!?;\n]\s|\n|\band\b|\bwhile\b|\bbut\b/i).pop();
+      const scope=/(outer|outlying|rural|surrounding|farther|further|outside)/i.test(clause)?'outer':'core';
       eta.push({ url:p.url, scope, range:m[1]+'–'+m[2], snippet:snip(t.slice(Math.max(0,m.index-60), m.index+m[0].length+30),120) }); } });
   const byScope={}; eta.forEach(e=>{ (byScope[e.scope]=byScope[e.scope]||new Set()).add(e.range); });
   const clash=Object.keys(byScope).filter(k=>byScope[k].size>1);
@@ -1660,6 +1708,10 @@ function contradictionFindings(ok){
     const re=new RegExp(RE_HOURS.source,'gi'); let b;
     while((b=re.exec(t))){ const before=t.slice(Math.max(0,b.index-60), b.index);
       if(/(office|shop|yard|lobby|repair|service department|parts|store|showroom|garage|counter|pick-?up|business hours for)/i.test(before)) continue;
+      // Someone else's hours, attributed on the page ("The City lists vehicle retrieval as Monday–Friday 10–4",
+      // "per the county's site", "their hours are"), are not the business's hours.
+      const sentence=t.slice(Math.max(0,b.index-220), b.index).replace(/\b([ap])\.m\./gi,'$1m').split(/[.!?]\s|\n/).pop();
+      if(/\b(the city|city's|county|county's|state's|according to|per the|per its|per their|lists|posts|their|its hours|retrieval)\b/i.test(sentence)) continue;
       hrs.push({ url:p.url, snippet:snip(t.slice(Math.max(0,b.index-40), b.index+b[0].length),110) }); break; } });
   const conflict=h24.length&&hrs.length;
   out.push(finding('duplication','Consistent hours claims',6,conflict?'fail':'pass',
@@ -1789,7 +1841,15 @@ const SCHEMA_TYPES=new Set(('Thing Action PropertyValueSpecification Communicate
   +'House Apartment Residence CivicStructure Airport Park ParkingFacility TouristAttraction LandmarksOrHistoricalBuildings BodyOfWater PlaceOfWorship Church School '
   +'CollegeOrUniversity EducationalOrganization MedicalOrganization WarrantyPromise Demand Episode TVSeries Clip Blog Collection Quotation Poster NewsMediaOrganization '
   +'SportsOrganization GovernmentOrganization ResearchOrganization Consortium LocalBusiness Project VirtualLocation MerchantReturnPolicy ShippingDeliveryTime OfferShippingDetails '
-  +'DefinedRegion Observation StatisticalVariable Grant FundingScheme Legislation Guide Thesis').split(' '));
+  +'DefinedRegion Observation StatisticalVariable Grant FundingScheme Legislation Guide Thesis '
+  // Place / CivicStructure / Landform / EducationalOrganization / Event subtypes (schema.org vocabulary).
+  +'TouristDestination Landform Mountain Volcano Continent LakeBodyOfWater RiverBodyOfWater Reservoir Pond Canal Waterfall SeaBodyOfWater '
+  +'Aquarium Beach BoatTerminal Bridge BusStation BusStop Cemetery Crematorium EventVenue GovernmentBuilding CityHall Courthouse '
+  +'DefenceEstablishment Embassy LegislativeBuilding MovieTheater Museum MusicVenue PerformingArtsTheater Playground PublicToilet RVPark '
+  +'StadiumOrArena SubwayStation TaxiStand TrainStation Zoo FireStation PoliceStation Hospital Library ShoppingCenter GolfCourse '
+  +'BuddhistTemple CatholicChurch HinduTemple Mosque Synagogue ElementarySchool MiddleSchool HighSchool Preschool '
+  +'SportsEvent MusicEvent Festival FoodEvent SocialEvent ExhibitionEvent ComedyEvent TheaterEvent ScreeningEvent SaleEvent '
+  +'EducationEvent ChildrensEvent DanceEvent LiteraryEvent VisualArtsEvent EventSeries CourseInstance').split(' '));
 const isKnownType=t=>SCHEMA_TYPES.has(t)||isLocalType(t)||ORG_TYPES.test(t)||/:/.test(t);
 function jsonLdSyntaxCheck(doc){
   const scripts=[...doc.querySelectorAll('script[type="application/ld+json"]')];
@@ -1799,7 +1859,7 @@ function jsonLdSyntaxCheck(doc){
     evidence:bad, why:'A JSON-LD block with a syntax error is thrown away whole — none of its structured data counts.', fix:'Fix the JSON (usually a trailing comma or an unescaped quote) and re-test in Google\'s Rich Results Test.' };
 }
 function businessEntityCheck(nodes){
-  const biz=nodes.filter(n=>typesOf(n).some(t=>isLocalType(t)||ORG_TYPES.test(t))&&(n.name||n['@id']));
+  const biz=nodes.filter(n=>!isDescribedPlace(n)&&typesOf(n).some(t=>isLocalType(t)||ORG_TYPES.test(t))&&(n.name||n['@id']));
   // A nested copy without @id but with the same name as an @id'd entity is the same entity.
   const idByName={}; biz.forEach(n=>{ if(n['@id']&&n.name) idByName[String(n.name).toLowerCase()]=n['@id']; });
   let keys=[...new Set(biz.map(n=>n['@id']||idByName[String(n.name).toLowerCase()]||('name:'+String(n.name).toLowerCase())))];
@@ -2943,7 +3003,7 @@ const API={ BRAND, PROXIES, TAGS, AI_BOTS, AISEARCH, PROJECT_FIXES, sleep, esc, 
   handleItHTML, repFor, PACKAGES, CTA_TRACK_URL,
   classifyPage, mainContent, localEntities, countClaims, h1Glued, smsLabelTelLinks, businessSchema, ldNodes, AI_SEARCH_BOTS, AI_TRAINING_BOTS,
   // individual checks, for unit tests
-  _x:{ setBackoff:ms=>{ CHALLENGE_BACKOFF_MS=ms; }, setRenderCap:n=>{ RENDER_FALLBACK_CAP=n; }, resetScan:()=>resetLinkCache(), freshnessScore, findPrice, isPricingLink, soft404Check, viewportZoomCheck, headingHierarchyCheck, imageCheck, weightCheck, pageAssets, robotsRulesFor, robotsAllowed, chainOf, technicalFindings, applyDeductions, titleQualityCheck, uniqueContentCheck, titlePixels, genericH1Check, descEqualsTitleCheck, genericAnchorCheck, onPageLinkFindings, yearClaims, staleClaimsCheck, placeholderCheck, defaultPrivacyCheck, contentFreshnessFindings, contradictionFindings, serviceCoverage, locationCoverage, callAboveFoldCheck, areaCodeCheck, localFindings, jsonLdSyntaxCheck, businessEntityCheck, schemaNapCheck, napIssues, richResultsCheck, richResultsTestUrl, openingHoursCheck, serviceSchemaCheck, breadcrumbCheck, faqMatchCheck, schemaTypesCheck, licenseCheck, pricingCheck, insuranceCheck, trustFindings, resolveAsyncFindings, questionAnswerCheck, citableFactsCheck, aiSiteFindings, stackFingerprint, loadIndustry, setMarket:(m)=>{ _market=m; } } };
+  _x:{ setBackoff:ms=>{ CHALLENGE_BACKOFF_MS=ms; }, setRenderCap:n=>{ RENDER_FALLBACK_CAP=n; }, resetScan:()=>resetLinkCache(), freshnessScore, findPrice, isPricingLink, soft404Check, viewportZoomCheck, headingHierarchyCheck, imageCheck, weightCheck, pageAssets, robotsRulesFor, robotsAllowed, chainOf, technicalFindings, applyDeductions, titleQualityCheck, uniqueContentCheck, titlePixels, genericH1Check, descEqualsTitleCheck, genericAnchorCheck, onPageLinkFindings, yearClaims, staleClaimsCheck, placeholderCheck, defaultPrivacyCheck, contentFreshnessFindings, contradictionFindings, serviceCoverage, locationCoverage, callAboveFoldCheck, areaCodeCheck, localFindings, jsonLdSyntaxCheck, businessEntityCheck, schemaNapCheck, napIssues, claimIssues, richResultsCheck, richResultsTestUrl, openingHoursCheck, serviceSchemaCheck, breadcrumbCheck, faqMatchCheck, schemaTypesCheck, licenseCheck, pricingCheck, insuranceCheck, trustFindings, resolveAsyncFindings, questionAnswerCheck, citableFactsCheck, aiSiteFindings, stackFingerprint, loadIndustry, setMarket:(m)=>{ _market=m; } } };
 root.SEO=API;
 if(typeof module!=="undefined"&&module.exports) module.exports=API;
 })(typeof window!=="undefined"?window:globalThis);

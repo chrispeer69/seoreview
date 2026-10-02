@@ -1,12 +1,12 @@
 {
   "columbusroadsidetowing.com": {
-    "score": 95,
+    "score": 97,
     "pages": {
       "/service-area/whitehall": 80,
       "/service-area/lewis-center": 96
     },
     "fixture_recorded": "2026-09-27T12:13:43.913Z",
-    "accepted": "2026-09-27T14:21:30.811Z"
+    "accepted": "2026-10-02T08:39:12.361Z"
   },
   "broadandjames.com": {
     "score": 59,
@@ -27,9 +27,9 @@
     "accepted": "2026-09-27T14:22:22.971Z"
   },
   "protow.guardianfleetservice.com": {
-    "score": 68,
+    "score": 70,
     "pages": {},
     "fixture_recorded": "2026-09-27T12:22:06.255Z",
-    "accepted": "2026-09-27T14:22:25.769Z"
+    "accepted": "2026-10-02T08:39:14.157Z"
   }
 }

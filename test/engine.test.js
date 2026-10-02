@@ -131,6 +131,8 @@ test('Local detail and count-claim extraction', () => {
   same([...SEO.localEntities('Yes. Polaris Fashion Place is off E. Main Street and E. Main St.')].sort(), ['e main st', 'polaris fashion pl']);
   const c = SEO.countClaims('See all 34 Central Ohio service areas. We offer 13 services in Dublin. Open 24 hours.');
   same(c.map(x => [x.kind, x.n]), [['location', 34], ['service', 13]]);
+  // "24/7 Towing Services" is an hours phrase, not a count of 7 services.
+  same(SEO.countClaims('24/7 Towing Services in Columbus. 24-7 Roadside Services.'), []);
 });
 
 test('H1 words run together and SMS labels on tel: links', () => {

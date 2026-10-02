@@ -177,6 +177,48 @@ test('Contradictions: 20–40 vs 30–60 min for the same area fails; metro vs o
   assert.strictEqual(hrs.find(f => f.label === 'Consistent hours claims').status, 'fail');
 });
 
+test('Contradictions: tiers stated a sentence apart, third-party hours and place founding years are not clashes', () => {
+  const { _x } = engine();
+  const pg = (u, t, type) => ({ url: u, pageType: type || 'service', _blocks: [t], _yearClaims: _x.yearClaims(t) });
+  // "outer" sits more than 45 characters before the range: the clause, not a fixed window, sets the scope.
+  const tiers = _x.contradictionFindings([pg('https://t/a', 'Most metro calls are reached in 20 to 40 minutes.'),
+    pg('https://t/b', 'Delaware is one of our outer communities, where most calls are reached in 40 to 60 minutes rather than the metro range.')]);
+  assert.strictEqual(tiers.find(f => f.label === 'Consistent arrival-time claims').status, 'pass');
+  // A real clash in the same scope is still caught.
+  const clash = _x.contradictionFindings([pg('https://t/a', 'Most metro calls are reached in 20 to 40 minutes.'), pg('https://t/b', 'In the metro we arrive in 10 to 15 minutes.')]);
+  assert.strictEqual(clash.find(f => f.label === 'Consistent arrival-time claims').status, 'fail');
+  const city = _x.contradictionFindings([pg('https://t/a', 'Open 24/7 for towing.'),
+    pg('https://t/b', 'The City lists vehicle retrieval as Monday through Friday, 10 a.m. to 4 p.m., with extra weekend windows.')]);
+  assert.strictEqual(city.find(f => f.label === 'Consistent hours claims').status, 'pass');
+  const years = _x.contradictionFindings([pg('https://t/a', '100,000+ calls completed since 2020.'),
+    pg('https://t/b', "The governor's official home since 1957 stands on Parkview Avenue. Bexley was founded in 1908.")]);
+  assert.strictEqual(years.find(f => f.label === 'Consistent years-in-business claims').status, 'pass');
+  const ours = _x.contradictionFindings([pg('https://t/a', 'Family owned since 1973.'), pg('https://t/b', 'We have been in business since 1980.')]);
+  assert.strictEqual(ours.find(f => f.label === 'Consistent years-in-business claims').status, 'fail');
+  same(_x.yearClaims('Since 1973. Trusted since 1990.').founded.map(f => f.year), [1973, 1990]);
+  // A "Since 2012, ..." sentence is about what follows; "university-owned" is not "owned" by the business.
+  same(_x.yearClaims('the car was towed Since 2012, parking on campus has been permit-based.').founded, []);
+  same(_x.yearClaims('A university-owned airport at 2160 West Case Road, established in 1943.').founded, []);
+  same(_x.yearClaims('Since 2012, we have towed for the campus.').founded.map(f => f.year), [2012]);
+  // Location pages describe the town: only first-person or explicit business claims count there.
+  same(_x.yearClaims('The Grandview Heights Public Library has served the community since 1924.').founded.map(f => f.firstPerson), [false]);
+  same(_x.yearClaims('Near US 33 and SR 739, Honda has built the Accord here since 1982.').founded, []);
+  // The look-back window never starts mid-word ("Columbus" cut to "us").
+  same(_x.yearClaims('Beechcroft Road.Columbus Fire Station 6 — The Sharon Woods fire station at 5750 Maple Canyon Avenue, in service since 1969.').founded, []);
+  same(_x.yearClaims('We have towed in Grandview since 2020. In business since 2020.').founded.map(f => f.firstPerson), [true, true]);
+});
+
+test('Count claims: "all 40 service areas" matches 40 top-level area pages even with neighborhood pages nested under one', () => {
+  const { _x } = engine();
+  const loc = u => ({ url: 'https://t' + u, pageType: 'location', claims: [] });
+  const about = { url: 'https://t/about', pageType: 'other', claims: [{ kind: 'location', n: 40, atLeast: false, text: 'all 40 service areas' }] };
+  const cities = Array.from({ length: 40 }, (_, i) => loc('/service-area/c' + i));
+  const hoods = Array.from({ length: 26 }, (_, i) => loc('/service-area/c0/n' + i));
+  same(_x.claimIssues([...cities, ...hoods, about]), []);
+  // A count that matches neither the total nor the top-level areas is still reported.
+  assert.strictEqual(_x.claimIssues([...cities.slice(0, 35), ...hoods, about]).length, 1);
+});
+
 // ---------------- Phase 5 — local SEO ----------------
 test('Service coverage vs towing taxonomy: dedicated page = covered, mention = partial, else missing', async () => {
   const SEO = engine(); await SEO._x.loadIndustry('towing');
@@ -245,6 +287,18 @@ test('Business entity: two unlinked entities warn; one @id (or linked via parent
   const linked = nodesOf(SEO, ld({ '@graph': [{ '@type': 'LocalBusiness', '@id': 'https://t/#b', name: 'Co', parentOrganization: { '@id': 'https://t/#o' } }, { '@type': 'Organization', '@id': 'https://t/#o', name: 'Co' }] }));
   assert.strictEqual(SEO._x.businessEntityCheck(linked).status, 'pass');
   assert.strictEqual(SEO._x.businessEntityCheck(nodesOf(SEO, ld({ '@type': 'AutoRepair', '@id': 'https://t/#b', name: 'Co' }))).status, 'pass');
+});
+
+test('Business entity / names: venues described in areaServed or containsPlace are not the business', () => {
+  const SEO = engine();
+  const page = nodesOf(SEO, ld({ '@graph': [{ '@type': 'AutomotiveBusiness', '@id': 'https://t/#b', name: 'Co', telephone: '+16145550100' },
+    { '@type': 'Service', name: 'Game-day towing', provider: { '@id': 'https://t/#b' }, areaServed: { '@type': 'StadiumOrArena', name: 'Ohio Stadium' } },
+    { '@type': 'Service', name: 'Towing in X', areaServed: { '@type': 'City', name: 'X', containsPlace: [{ '@type': 'Hospital', name: 'X Medical Center' }, { '@type': 'HighSchool', name: 'X High School' }] } }] }));
+  assert.strictEqual(SEO._x.businessEntityCheck(page).status, 'pass');
+  assert.strictEqual(SEO._x.schemaTypesCheck(page).status, 'pass');
+  // A second business at the top level still warns.
+  const two = nodesOf(SEO, ld({ '@graph': [{ '@type': 'AutomotiveBusiness', '@id': 'https://t/#b', name: 'Co' }, { '@type': 'Hospital', '@id': 'https://t/#h', name: 'Other' }] }));
+  assert.strictEqual(SEO._x.businessEntityCheck(two).status, 'warn');
 });
 
 test('Schema NAP: schema phone not on the page fails; matching phone passes', () => {

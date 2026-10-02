@@ -219,7 +219,8 @@
   "market_area_codes": {
     "columbus": [
       "614",
-      "380"
+      "380",
+      "740"
     ]
   },
   "default_market": "columbus",
