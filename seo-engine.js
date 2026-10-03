@@ -467,14 +467,21 @@ const RE_PHONE=/(?:\+?1[\s.-]?)?\(?\b([2-9]\d{2})\)?[\s.-]?([2-9]\d{2})[\s.-]?(\
 const RE_STREET=/\b(\d{2,6}\s+(?:[NSEW]\.?\s+)?(?:[A-Z][A-Za-z0-9'.-]*\s+){1,4}(?:Road|Rd|Street|St|Avenue|Ave|Boulevard|Blvd|Drive|Dr|Lane|Ln|Parkway|Pkwy|Highway|Hwy|Pike|Pk|Way|Court|Ct|Circle|Cir|Place|Pl))\b\.?/g;
 const STREET_ABBR={road:'rd',street:'st',avenue:'ave',boulevard:'blvd',drive:'dr',lane:'ln',parkway:'pkwy',highway:'hwy',pike:'pike',pk:'pike',court:'ct',circle:'cir',place:'pl',north:'n',south:'s',east:'e',west:'w'};
 const normStreet=a=>String(a).toLowerCase().replace(/[.,]/g,'').replace(/\s+/g,' ').trim().split(' ').map(w=>STREET_ABBR[w]||w).join(' ');
+// How close (characters of page text) a street must sit to a phone number to count as an address block.
+const NAP_NEAR=300;
 const normPhone=(a,b,c)=>'('+a+') '+b+'-'+c;
 // JSON-LD written by some CMSs carries HTML entities ("Broad &amp; James").
 const decodeEntities=s=>String(s).replace(/&(amp|quot|apos|lt|gt|#0?39|#x27);/gi,(m,e)=>({amp:'&',quot:'"',apos:"'",lt:'<',gt:'>','#039':"'",'#39':"'",'#x27':"'"})[e.toLowerCase()]||m);
 function napSignals(doc, bodyText, nodes){
   const tel=[], visible=[], streets=[];
   doc.querySelectorAll('a[href^="tel:"]').forEach(a=>{ const d=(a.getAttribute('href')||'').replace(/\D/g,'').replace(/^1(?=\d{10}$)/,''); if(d.length===10) tel.push(normPhone(d.slice(0,3),d.slice(3,6),d.slice(6))); });
-  let m; RE_PHONE.lastIndex=0; while((m=RE_PHONE.exec(bodyText))) visible.push(normPhone(m[1],m[2],m[3]));
-  RE_STREET.lastIndex=0; while((m=RE_STREET.exec(bodyText))) streets.push(normStreet(m[1]));
+  let m; const phoneAt=[]; RE_PHONE.lastIndex=0; while((m=RE_PHONE.exec(bodyText))){ const ph=normPhone(m[1],m[2],m[3]); visible.push(ph); phoneAt.push({ i:m.index, ph }); }
+  // napStreets: "street@phone" for each street written next to a phone number (an address block), as opposed to a
+  // venue's address in prose. napIssues keeps only the ones next to the business's own phone.
+  const napStreets=[]; RE_STREET.lastIndex=0;
+  while((m=RE_STREET.exec(bodyText))){ const s=normStreet(m[1]); streets.push(s); phoneAt.filter(p=>Math.abs(p.i-m.index)<=NAP_NEAR).forEach(p=>napStreets.push(s+'@'+p.ph)); }
+  // Addresses of places the page describes (a stadium, a campus) in schema — never the business's own.
+  const placeStreets=[]; nodes.filter(isDescribedPlace).forEach(n=>[].concat(n.address||[]).forEach(a=>{ if(a&&typeof a==='object'&&a.streetAddress) placeStreets.push(normStreet(a.streetAddress)); }));
   const biz=nodes.filter(n=>!isDescribedPlace(n)&&typesOf(n).some(t=>isLocalType(t)||ORG_TYPES.test(t)));
   const schema={ names:[], phones:[], streets:[] };
   biz.forEach(n=>{
@@ -483,7 +490,7 @@ function napSignals(doc, bodyText, nodes){
     const ad=n.address; [].concat(ad||[]).forEach(a=>{ if(a&&typeof a==='object'&&a.streetAddress) schema.streets.push(normStreet(a.streetAddress)); });
   });
   const uniq=a=>[...new Set(a)];
-  return { tel:uniq(tel), visible:uniq(visible), streets:uniq(streets), schema:{ names:uniq(schema.names), phones:uniq(schema.phones), streets:uniq(schema.streets) } };
+  return { tel:uniq(tel), visible:uniq(visible), streets:uniq(streets), napStreets:uniq(napStreets), placeStreets:uniq(placeStreets), schema:{ names:uniq(schema.names), phones:uniq(schema.phones), streets:uniq(schema.streets) } };
 }
 // Hard-coded counts ("all 34 service areas", "18 towing services") — checked against the pages the crawl finds.
 // A number glued to "/", "-" or another number is part of something else: "24/7 Towing Services" is not 7 services.
@@ -1089,20 +1096,32 @@ function napIssues(pages){
   const schemaStreets=new Set(Object.keys(tally(p=>n(p).schema.streets,1))), N=pages.length;
   const consistent=streets.filter(v=>schemaStreets.has(v.value)||v.pages>=Math.max(2,Math.ceil(N*0.5)));
   const few=Math.max(1,Math.floor(N*0.2));
-  const strays=consistent.length?streets.filter(v=>!consistent.includes(v)&&v.pages<=few&&v.pages<consistent[0].pages):[];
+  // A stray must look like the business's own address: written next to a phone number somewhere, and not the schema
+  // address of a place a page describes (venue and campus pages quote their venues' street addresses).
+  // Pages from before these fields existed (no napStreets) keep the old behaviour.
+  const legacy=pages.every(p=>!p.nap||!p.nap.napStreets);
+  // Next to the business's own (most-used) phone number — an impound lot's address beside the city's number is not ours.
+  const ownPhone=phones.length?phones[0].value:null;
+  const nearPhone=new Set(pages.flatMap(p=>(n(p).napStreets||[])).filter(x=>x.endsWith('@'+ownPhone)).map(x=>x.slice(0,x.lastIndexOf('@'))));
+  const venues=new Set(pages.flatMap(p=>(n(p).placeStreets||[])));
+  const ownLike=v=>legacy||(nearPhone.has(v.value)&&!venues.has(v.value));
+  const strays=consistent.length?streets.filter(v=>!consistent.includes(v)&&v.pages<=few&&v.pages<consistent[0].pages&&ownLike(v)):[];
   const multiLocation=consistent.length>1?consistent:[];
   const addressIssue=strays.length?consistent.concat(strays):[];
   const inconsistent=[]; if(phones.length>1) inconsistent.push('phone'); if(addressIssue.length) inconsistent.push('address'); if(names.length>1) inconsistent.push('name');
   return { phones, streets, names, inconsistent, multiLocation, addressIssue };
 }
 // Hard-coded counts vs what the site actually has ("see all 34 service areas" with 35 area pages).
-function claimIssues(pages){
-  const actual={ location:pages.filter(p=>p.pageType==='location').length, service:pages.filter(p=>p.pageType==='service').length };
+// siteTypes (optional): { url: pageType } for every URL the site lists (crawled + sitemap), so a crawl that stopped
+// short of every area page doesn't make a correct "all 40 service areas" look wrong.
+function claimIssues(pages, siteTypes){
+  const typed=siteTypes&&Object.keys(siteTypes).length?Object.keys(siteTypes).map(url=>({url, pageType:siteTypes[url]})):pages.filter(p=>!p.error);
+  const actual={ location:typed.filter(p=>p.pageType==='location').length, service:typed.filter(p=>p.pageType==='service').length };
   // Neighborhood pages nested under an area page (/service-area/columbus/short-north under /service-area/columbus) are
   // sub-areas: "all 40 service areas" may count the top-level areas only, so either count matches.
   const pathOf=u=>{ try{ return new URL(u).pathname.replace(/\/+$/,''); }catch(e){ return String(u); } };
-  const areaPaths=new Set(pages.filter(p=>!p.error&&(p.pageType==='location'||p.pageType==='hub')).map(p=>pathOf(p.url)));
-  const topAreas=pages.filter(p=>p.pageType==='location'&&!areaPaths.has(pathOf(p.url).replace(/\/[^/]+$/,''))).length;
+  const areaPaths=new Set(typed.filter(p=>p.pageType==='location'||p.pageType==='hub').map(p=>pathOf(p.url)));
+  const topAreas=typed.filter(p=>p.pageType==='location'&&!areaPaths.has(pathOf(p.url).replace(/\/[^/]+$/,''))).length;
   const m={};
   pages.forEach(p=>(p.claims||[]).forEach(c=>{ const have=actual[c.kind];
     const matches=n=>c.atLeast?n>=c.n:n===c.n;
@@ -1110,14 +1129,14 @@ function claimIssues(pages){
     const k=c.kind+'|'+c.text.toLowerCase(); (m[k]=m[k]||{claim:c.text, claimed:c.n, kind:c.kind, actual:have, urls:[]}).urls.push(p.url); }));
   return Object.values(m).sort((a,b)=>b.urls.length-a.urls.length);
 }
-function crossPageIssues(pages){
+function crossPageIssues(pages, siteTypes){
   const norm=s=>String(s||'').replace(/\s+/g,' ').trim().toLowerCase();
   const group=(key)=>{ const m={}; pages.forEach(p=>{ const k=norm(p[key]); if(k)(m[k]=m[k]||[]).push(p.url); }); return Object.keys(m).filter(k=>m[k].length>1).map(k=>({value:k.slice(0,80),urls:m[k]})); };
   const bodyGroups=(()=>{ const m={}; pages.forEach(p=>{ const k=p.bodySig; if(k)(m[k]=m[k]||[]).push(p.url); }); return Object.keys(m).filter(k=>m[k].length>1).map(k=>({sample:k.slice(0,80),urls:m[k]})); })();
   const stop=['home','page','service','services','ohio','near','the','and','for','with','your'];
   const mismatch=pages.filter(p=>{ if(!p.title||!p.bodySig)return false; const ws=norm(p.title).split(/[^a-z0-9]+/).filter(w=>w.length>=4&&stop.indexOf(w)<0); if(!ws.length)return false; return ws.filter(w=>p.bodySig.indexOf(w)>=0).length/ws.length < 0.34; }).map(p=>p.url);
   return { duplicateTitles:group('title'), duplicateDescriptions:group('desc'), duplicateH1:group('h1text'), duplicateBodies:bodyGroups, titleBodyMismatch:mismatch,
-    nap:napIssues(pages), countClaims:claimIssues(pages),
+    nap:napIssues(pages), countClaims:claimIssues(pages, siteTypes),
     h1Spacing:pages.filter(p=>p.h1Glue).map(p=>({url:p.url, sample:p.h1Glue})),
     smsTelLinks:pages.filter(p=>p.smsTel&&p.smsTel.length).map(p=>({url:p.url, labels:p.smsTel})),
     thin:pages.filter(p=>p.pageType!=='utility'&&p.pageType!=='archive'&&(p.uniqueWords!=null?p.uniqueWords:p.words)<250).map(p=>({url:p.url,words:p.uniqueWords!=null?p.uniqueWords:p.words})),
@@ -1224,7 +1243,7 @@ function crossPageContent(pages, sitemapUrls){
     applyGates(p);
     p.bodySig=String(p._ownText||'').slice(0,600).replace(/\s+/g,' ').toLowerCase().trim();
   });
-  return { nearDuplicates:pairs, archivePairs };
+  return { nearDuplicates:pairs, archivePairs, siteTypes:types };
 }
 // ---------- Site score ----------
 // Final = 50% average page score + 50% site level. Site level = coverage 30% + freshness 20% + link health 20% +
@@ -2426,7 +2445,7 @@ async function crawlSiteRun(root, opts){
   const siteLevel=Math.round(Object.keys(SITE_WEIGHTS).reduce((a,k)=>a+SITE_WEIGHTS[k]*parts[k],0));
   let siteScore=pageAverage==null?null:Math.round(0.5*pageAverage+0.5*siteLevel);
   // Site-wide penalties — once per site, however many pages repeat the problem.
-  const cpEarly=crossPageIssues(ok);
+  const cpEarly=crossPageIssues(ok, content.siteTypes);
   const selfReview=ok.some(p=>p.checks.some(c=>c.label==='Review / rating schema'&&c.status==='warn'));
   const penalties=[
     (cpEarly.countClaims||[]).length && {points:2, reason:'Hard-coded count claims that don’t match the site'},
@@ -2454,6 +2473,7 @@ async function crawlSiteRun(root, opts){
       slow:ok.filter(p=>p.loadMs!=null&&p.loadMs>2000).map(p=>({url:p.url,ms:p.loadMs,retestMs:p.retestMs||null,loadOnly:!!p.slowUnderLoadOnly})).sort((a,b)=>b.ms-a.ms) }; }
   const crossPage=Object.assign(cpEarly, content, { redirectChains:graph.chains, brokenLinks, redirectLinks, orphans,
     sitemapRedirects:redirected.filter(x=>smKeys.has(keyOf(x.url))), sitemapBroken:broken.filter(x=>smKeys.has(keyOf(x.url))) });
+  delete crossPage.siteTypes; // working data for the count check, not result
   ok.forEach(p=>{ p.linkCount=(p.links||[]).length; delete p.links; delete p._blocks; delete p._bh; delete p._sh; delete p._ownText; delete p._simWith; delete p._place; }); // working data, not results (crawl results get saved)
   return { engineVersion:ENGINE_VERSION, nonHtml, root:disc.base, siteScore, pageAverage, siteBreakdown, siteChecks:aux.checks, siteFindings:findingsOut, stack, speed:speedRuns, perf, local, crossPage, pages,
     coverage:{ discovered:queued.size, inSitemap:(disc.sitemapUrls||[]).length, audited:ok.length, failed:pages.length-ok.length, redirected:redirected.length, broken:broken.length, nonHtml:nonHtml.length,

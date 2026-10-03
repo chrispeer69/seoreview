@@ -162,6 +162,27 @@ test('10. Crawl fetches go only through our server; a bot challenge backs off, r
   await assert.rejects(SEO.fetchHtml(ROOT + '/x'), /HTTP 404/); assert.ok(!routes.renderCalls);
 });
 
+test("NAP: venue addresses in prose or in a described place are not the business address; one by a phone number is", () => {
+  const { _x } = engine({});
+  const page = (i, extra) => ({ url: ROOT + "/v" + i, nap: Object.assign({ tel: ["(614) 555-0100"], visible: [], streets: ["100 main st"], napStreets: ["100 main st@(614) 555-0100"], placeStreets: [], schema: { names: ["Capital Towing"], phones: ["(614) 555-0100"], streets: ["100 main st"] } }, extra || {}) });
+  const pages = Array.from({ length: 20 }, (_, i) => page(i));
+  // A stadium address quoted on two venue pages, far from any phone number: not a NAP problem.
+  pages[3] = page(3, { streets: ["100 main st", "400 n high st"] });
+  pages[4] = page(4, { streets: ["100 main st", "400 n high st"] });
+  assert.ok(!_x.napIssues(pages).inconsistent.includes("address"));
+  // The schema address of a place the page describes, even next to a phone number: still a venue.
+  pages[3] = page(3, { streets: ["100 main st", "400 n high st"], napStreets: ["100 main st@(614) 555-0100", "400 n high st@(614) 555-0100"], placeStreets: ["400 n high st"] });
+  assert.ok(!_x.napIssues(pages).inconsistent.includes("address"));
+  // An old address written next to the phone number on two pages is the real inconsistency.
+  pages[3] = page(3, { streets: ["100 main st", "55 old rd"], napStreets: ["100 main st@(614) 555-0100", "55 old rd@(614) 555-0100"] });
+  pages[4] = page(4, { streets: ["100 main st", "55 old rd"], napStreets: ["100 main st@(614) 555-0100", "55 old rd@(614) 555-0100"] });
+  assert.ok(_x.napIssues(pages).inconsistent.includes("address"));
+  // Beside someone else's phone number (the city impound lot's), it is their address, not ours.
+  pages[3] = page(3, { streets: ["100 main st", "55 old rd"], napStreets: ["100 main st@(614) 555-0100", "55 old rd@(614) 645-3111"] });
+  pages[4] = page(4, { streets: ["100 main st", "55 old rd"], napStreets: ["100 main st@(614) 555-0100", "55 old rd@(614) 645-3111"] });
+  assert.ok(!_x.napIssues(pages).inconsistent.includes("address"));
+});
+
 test('11. NAP: 2+ consistent addresses = "Multiple locations detected" (info); only a street on a few pages is an inconsistency', () => {
   const { _x } = engine({});
   const nap = (streets, schemaStreets) => ({ tel: ['6145550100'], visible: [], streets, schema: { names: ['Capital Towing'], phones: ['6145550100'], streets: schemaStreets || [] } });

@@ -219,6 +219,21 @@ test('Count claims: "all 40 service areas" matches 40 top-level area pages even 
   assert.strictEqual(_x.claimIssues([...cities.slice(0, 35), ...hoods, about]).length, 1);
 });
 
+test("Count claims: a crawl that stopped short is judged on the sitemap, not on the pages it happened to reach", () => {
+  const { _x } = engine();
+  const loc = u => ({ url: "https://t" + u, pageType: "location", claims: [] });
+  const about = { url: "https://t/about", pageType: "other", claims: [{ kind: "location", n: 40, atLeast: false, text: "all 40 Central Ohio service areas" }] };
+  const cities = Array.from({ length: 40 }, (_, i) => loc("/service-area/c" + i));
+  const hoods = Array.from({ length: 26 }, (_, i) => loc("/service-area/c0/n" + i));
+  const crawled = [...cities.slice(0, 29), ...hoods, about]; // 55 location pages reached
+  assert.strictEqual(_x.claimIssues(crawled).length, 1, "without the sitemap the partial crawl looks wrong");
+  const siteTypes = Object.fromEntries([...cities, ...hoods, about].map(p => [p.url, p.pageType]));
+  same(_x.claimIssues(crawled, siteTypes), []);
+  // A wrong count is still wrong with the full list.
+  const wrong = { ...about, claims: [{ kind: "location", n: 34, atLeast: false, text: "all 34 service areas" }] };
+  assert.strictEqual(_x.claimIssues([...cities, wrong], siteTypes).length, 1);
+});
+
 // ---------------- Phase 5 — local SEO ----------------
 test('Service coverage vs towing taxonomy: dedicated page = covered, mention = partial, else missing', async () => {
   const SEO = engine(); await SEO._x.loadIndustry('towing');
