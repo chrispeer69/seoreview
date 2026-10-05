@@ -383,7 +383,7 @@ async function snapshotOne(url, i, n, psi){
 const PHASE_TEXT={ discovering:'finding pages (sitemap + links)', links:'checking links', pagespeed:'PageSpeed (3 runs × mobile + desktop on 3 key pages)…', scoring:'scoring' };
 async function crawlOne(root, i, n, psi){
   try{
-    return await crawlSite(root,{ max:150, concurrency:6, render:(window.__RENDER?renderPage:null), speed:psi.on, psiKey:psi.key, industry:industryOf(),
+    return await crawlSite(root,{ max:500, concurrency:6, render:(window.__RENDER?renderPage:null), speed:psi.on, psiKey:psi.key, industry:industryOf(),
       places:(q,o)=>fetch('/api/places?q='+encodeURIComponent(q||'')+'&phone='+encodeURIComponent((o&&o.phone)||'')+'&address='+encodeURIComponent((o&&o.address)||'')).then(r=>r.ok?r.json():null).catch(()=>null),
       onPhase:(ph)=>{ if(PHASE_TEXT[ph]) setProgress(i,n,PHASE_TEXT[ph]); },
       onProgress:(d,t)=>setProgress(i,n,'crawling pages ('+d+'/'+t+')') });

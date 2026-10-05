@@ -15,7 +15,7 @@ check that couldn't run (e.g. speed quota). No silent gaps. Nothing fabricated i
 ## 1. Crawl (every page, first to last)
 - Discover pages via **sitemap.xml** (handles sitemap-index); **fallback = link-crawl** from the
   homepage following internal links.
-- Cap configurable (default up to ~150 pages); report exactly what was and wasn't covered.
+- Cap configurable (web page audits up to 500 pages; API default 100, max 500 via SEO_API_MAX_PAGES); report exactly what was and wasn't covered.
 - Fetch **raw HTML** (what Bing & AI crawlers mostly see) **and render with headless Chrome**
   (what Google sees) — then **compare the two** and flag content that only exists after JS.
 
