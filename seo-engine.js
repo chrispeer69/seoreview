@@ -242,7 +242,7 @@ async function loadIndustry(name, market){
 function resetLinkCache(){ _linkCache.clear(); _fetchMeta.clear(); _lcAvailable=true; _renderTried.clear(); _renderFallbacks=0; _pageCache.clear(); _renderCache.clear(); _speedCache.clear(); }
 // A crawl keeps each page's HTML (and fetch time), rendered HTML and PageSpeed run, so a resumed crawl (opts.resume:
 // first 100 pages, then "continue" to 500) re-audits the pages it already has without fetching them again. Only on
-// during a crawl, so homepage snapshots always fetch fresh.
+// during a crawl that asks for it (opts.cache), so homepage snapshots always fetch fresh.
 const _pageCache=new Map(), _renderCache=new Map(), _speedCache=new Map(); let _pageCacheOn=false;
 function checkUrl(u){
   if(_linkCache.has(u)) return _linkCache.get(u);
@@ -2277,13 +2277,13 @@ async function crawlSite(root, opts){
   if(!opts.resume) resetLinkCache();
   _nowOverride=opts.now?Date.parse(opts.now):null;
   await loadIndustry(opts.industry, opts.market);
-  _pageCacheOn=true;
+  _pageCacheOn=!!opts.cache; // opt-in (the web tool's resumable crawl); API crawls never resume
   try{ return await crawlSiteRun(root, opts); } finally { _nowOverride=null; _pageCacheOn=false; }
 }
 async function crawlSiteRun(root, opts){
   const max=opts.max||150, conc=opts.concurrency||5, onProgress=opts.onProgress||function(){};
   const render=typeof opts.render==='function'
-    ? (u=>_renderCache.has(u)?Promise.resolve(_renderCache.get(u)):Promise.resolve(opts.render(u)).then(h=>{ if(h) _renderCache.set(u,h); return h; }))
+    ? (u=>_renderCache.has(u)?Promise.resolve(_renderCache.get(u)):Promise.resolve(opts.render(u)).then(h=>{ if(h&&_pageCacheOn) _renderCache.set(u,h); return h; }))
     : null;
   // onPhase(name, info) lets a UI say what the crawl is doing: discovering, crawling, links, pagespeed, scoring.
   const phase=(name,info)=>{ try{ if(typeof opts.onPhase==='function') opts.onPhase(name,info||{}); }catch(e){} };
@@ -2411,7 +2411,7 @@ async function crawlSiteRun(root, opts){
       const m=ps(s.speed&&s.speed.mobile), d=ps(s.speed&&s.speed.desktop);
       const blend=m!=null&&d!=null?Math.round(0.7*m+0.3*d):(m!=null?m:d);
       const run={ url:p.url, score:blend, mobile:s.speed&&s.speed.mobile||null, desktop:s.speed&&s.speed.desktop||null, checks:s.checks };
-      if(blend!=null) _speedCache.set(p.url, run);
+      if(blend!=null&&_pageCacheOn) _speedCache.set(p.url, run);
       return run;
     }));
   }

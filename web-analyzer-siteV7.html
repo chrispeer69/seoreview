@@ -402,7 +402,7 @@ const FIRST_PASS_PAGES=100, MAX_PAGES=500;
 async function crawlOne(root, i, n, psi, more){
   more=more||{};
   try{
-    return await crawlSite(root,{ max:more.max||FIRST_PASS_PAGES, resume:!!more.resume, concurrency:6, render:(window.__RENDER?renderPage:null), speed:psi.on, psiKey:psi.key, industry:industryOf(),
+    return await crawlSite(root,{ max:more.max||FIRST_PASS_PAGES, resume:!!more.resume, cache:true, concurrency:6, render:(window.__RENDER?renderPage:null), speed:psi.on, psiKey:psi.key, industry:industryOf(),
       places:(q,o)=>fetch('/api/places?q='+encodeURIComponent(q||'')+'&phone='+encodeURIComponent((o&&o.phone)||'')+'&address='+encodeURIComponent((o&&o.address)||'')).then(r=>r.ok?r.json():null).catch(()=>null),
       onPhase:(ph)=>{ if(PHASE_TEXT[ph]) setProgress(i,n,PHASE_TEXT[ph],PHASE_FRAC[ph]); },
       onProgress:(d,t)=>setProgress(i,n,'crawling pages ('+d+'/'+t+')',0.03+0.77*(t?d/t:0)) });
