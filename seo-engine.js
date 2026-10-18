@@ -62,7 +62,7 @@ const AISEARCH = 'AI Search & Answer Engines';
 const sleep = ms => new Promise(r=>setTimeout(r,ms));
 // Whole-scan AbortController (the public tool's Stop button). The page hands it over with SEO.setAbort(ctrl).
 let scanCtrl=null;
-function setAbort(ctrl){ scanCtrl=ctrl||null; resetLinkCache(); } // a new scan also starts with fresh URL checks
+function setAbort(ctrl, keepCache){ scanCtrl=ctrl||null; if(!keepCache) resetLinkCache(); } // a new scan also starts with fresh URL checks (a resumed crawl keeps them)
 function linkAbort(ctrl){ if(scanCtrl){ if(scanCtrl.signal.aborted){ try{ctrl.abort();}catch(e){} } else scanCtrl.signal.addEventListener('abort',()=>{try{ctrl.abort();}catch(e){}},{once:true}); } }
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 // Fixes that are bigger projects (need content, dev work, or third-party setup) vs. quick wins.
@@ -239,7 +239,11 @@ async function loadIndustry(name, market){
   _market={ name:m.name||dm||null, areaCodes:codes, cities:Array.isArray(m.cities)?m.cities:null };
   return _industry;
 }
-function resetLinkCache(){ _linkCache.clear(); _fetchMeta.clear(); _lcAvailable=true; _renderTried.clear(); _renderFallbacks=0; }
+function resetLinkCache(){ _linkCache.clear(); _fetchMeta.clear(); _lcAvailable=true; _renderTried.clear(); _renderFallbacks=0; _pageCache.clear(); _renderCache.clear(); _speedCache.clear(); }
+// A crawl keeps each page's HTML (and fetch time), rendered HTML and PageSpeed run, so a resumed crawl (opts.resume:
+// first 100 pages, then "continue" to 500) re-audits the pages it already has without fetching them again. Only on
+// during a crawl, so homepage snapshots always fetch fresh.
+const _pageCache=new Map(), _renderCache=new Map(), _speedCache=new Map(); let _pageCacheOn=false;
 function checkUrl(u){
   if(_linkCache.has(u)) return _linkCache.get(u);
   const p=new Promise(res=>{ _lcQueue.push({u,res}); if(!_lcTimer) _lcTimer=setTimeout(flushLinkChecks,40); });
@@ -541,8 +545,12 @@ async function auditOne(raw, prefetchedHtml){
   if(!/^https?:\/\//i.test(url)) url='https://'+url;
   const o=new URL(url); const origin=o.origin;
   const _t0=Date.now();
-  const html=(prefetchedHtml!=null)?prefetchedHtml:await fetchHtml(url);
-  const loadMs=(prefetchedHtml!=null)?null:(Date.now()-_t0); // server response time (measured during fetch)
+  let html=prefetchedHtml, loadMs=null; // server response time (measured during fetch)
+  if(html==null){
+    const hit=_pageCacheOn?_pageCache.get(url):null;
+    if(hit){ html=hit.html; loadMs=hit.ms; }
+    else { html=await fetchHtml(url); loadMs=Date.now()-_t0; if(_pageCacheOn) _pageCache.set(url,{html, ms:loadMs}); }
+  }
   const doc=new DOMParser().parseFromString(html,'text/html');
 
   // guards
@@ -2266,14 +2274,17 @@ async function retestSlowPages(pages){
 }
 async function crawlSite(root, opts){
   opts=opts||{};
-  resetLinkCache();
+  if(!opts.resume) resetLinkCache();
   _nowOverride=opts.now?Date.parse(opts.now):null;
   await loadIndustry(opts.industry, opts.market);
-  try{ return await crawlSiteRun(root, opts); } finally { _nowOverride=null; }
+  _pageCacheOn=true;
+  try{ return await crawlSiteRun(root, opts); } finally { _nowOverride=null; _pageCacheOn=false; }
 }
 async function crawlSiteRun(root, opts){
   const max=opts.max||150, conc=opts.concurrency||5, onProgress=opts.onProgress||function(){};
-  const render=typeof opts.render==='function'?opts.render:null;
+  const render=typeof opts.render==='function'
+    ? (u=>_renderCache.has(u)?Promise.resolve(_renderCache.get(u)):Promise.resolve(opts.render(u)).then(h=>{ if(h) _renderCache.set(u,h); return h; }))
+    : null;
   // onPhase(name, info) lets a UI say what the crawl is doing: discovering, crawling, links, pagespeed, scoring.
   const phase=(name,info)=>{ try{ if(typeof opts.onPhase==='function') opts.onPhase(name,info||{}); }catch(e){} };
   phase('discovering');
@@ -2329,7 +2340,7 @@ async function crawlSiteRun(root, opts){
     catch(e1){ // one free retry — most failures are transient (slow origin throttling under concurrency)
       if(e1&&e1.challenged) throw e1; // bot challenge: fetchHtml already backed off, retried and tried ScrapingBee
       try{ r=await auditOne(u); }
-      catch(e2){ if(render && !_renderTried.has(u)){ _renderTried.add(u); const html=await render(u); if(html){ r=await auditOne(u, html); r._rendered=true; rendered++; keepHtml(r,null,html); return r; } } throw e2; }
+      catch(e2){ if(render && (!_renderTried.has(u)||_renderCache.has(u))){ _renderTried.add(u); const html=await render(u); if(html){ r=await auditOne(u, html); r._rendered=true; rendered++; keepHtml(r,null,html); return r; } } throw e2; }
     }
     if(r.jsShell && render){ try{ const raw=r._html; const html=await render(u); if(html){ r=await auditOne(u, html); r._rendered=true; rendered++; keepHtml(r,raw,html); } }catch(e){} }
     return r;
@@ -2392,13 +2403,16 @@ async function crawlSiteRun(root, opts){
   if(opts.speed!==false){
     const speedPages=[home].concat(money).filter((p,i,a)=>a.indexOf(p)===i).slice(0,3);
     speedRuns=await Promise.all(speedPages.map(async p=>{
+      if(_speedCache.has(p.url)) return _speedCache.get(p.url);
       const s={ url:p.url, checks:[] };
       try{ await addSpeed(s, opts.psiKey||''); }catch(e){}
       // Mobile counts 70%, desktop 30% (Google ranks the mobile version; most local searches are on phones).
       const ps=x=>x&&!x.error&&x.score!=null?x.score:null;
       const m=ps(s.speed&&s.speed.mobile), d=ps(s.speed&&s.speed.desktop);
       const blend=m!=null&&d!=null?Math.round(0.7*m+0.3*d):(m!=null?m:d);
-      return { url:p.url, score:blend, mobile:s.speed&&s.speed.mobile||null, desktop:s.speed&&s.speed.desktop||null, checks:s.checks };
+      const run={ url:p.url, score:blend, mobile:s.speed&&s.speed.mobile||null, desktop:s.speed&&s.speed.desktop||null, checks:s.checks };
+      if(blend!=null) _speedCache.set(p.url, run);
+      return run;
     }));
   }
   // Google Business Profile (Places), needed by the GBP comparison.

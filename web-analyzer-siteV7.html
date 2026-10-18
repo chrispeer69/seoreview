@@ -193,7 +193,8 @@
         <button id="resetBtn" class="btnGhost" onclick="resetScan()" style="display:none">Start over</button>
       </div>
       <p class="hint" style="margin-top:6px"><strong>Full-site crawl:</strong> audits every page of the first site (~2–4 min). Other sites get a homepage snapshot.</p>
-      <div id="progress" style="display:none;margin:4px 0 12px;padding:10px 12px;border:1px solid #bfdbfe;background:#eff6ff;border-radius:8px;font-size:14px;color:#1e3a8a"></div>
+      <style>@keyframes pbarMove{from{background-position:0 0}to{background-position:28px 0}}</style>
+      <div id="progress" style="display:none;position:sticky;top:0;z-index:50;box-shadow:0 2px 8px rgba(15,23,42,.08);margin:4px 0 12px;padding:10px 12px;border:1px solid #bfdbfe;background:#eff6ff;border-radius:8px;font-size:14px;color:#1e3a8a"></div>
       <p class="hint" id="compareHint">Comparing competitors? Tick <strong>Compare</strong> above, then enter your client first and each competitor on its own line — the report opens with a ranked side-by-side comparison. Leave it unchecked to get separate reports for each site.</p>
 
       <div id="errorBox" style="display:none"></div>
@@ -322,12 +323,26 @@ function psiSettings(){ const psiEl=document.getElementById('psiOn'), keyEl=docu
   return { on:!(psiEl&&!psiEl.checked), key:(keyEl&&keyEl.value.trim())||window.BCAI_PSI_KEY||'' }; }
 // "Site 2 of 3 · crawling pages (42/87)" plus the time estimate given up front.
 let progressEstimate='';
-function setProgress(i,n,step){ const p=document.getElementById('progress'); if(!p) return;
-  if(i==null){ p.style.display='none'; p.innerHTML=''; return; }
-  p.style.display=''; p.innerHTML='<b>Site '+(i+1)+' of '+n+'</b> · '+step+(progressEstimate?'<div style="font-size:12px;color:#475569;margin-top:3px">'+esc(progressEstimate)+'</div>':''); }
+// Progress: a bar for the whole run (sites x this site's fraction), the current step and a ticking elapsed clock, so
+// a long phase (PageSpeed, link checks) never looks frozen. frac = this site's progress 0..1; it never moves back.
+let progressState=null, progressStart=0, progressTimer=null;
+function setProgress(i,n,step,frac){ const p=document.getElementById('progress'); if(!p) return;
+  if(i==null){ p.style.display='none'; p.innerHTML=''; progressState=null; clearInterval(progressTimer); progressTimer=null; return; }
+  const prev=progressState&&progressState.i===i?progressState.frac:0;
+  progressState={ i, n, step, frac:frac==null?prev:Math.max(prev,Math.min(1,frac)) };
+  if(!progressStart) progressStart=Date.now();
+  if(!progressTimer) progressTimer=setInterval(drawProgress,1000);
+  drawProgress(); }
+function drawProgress(){ const p=document.getElementById('progress'); if(!p||!progressState) return;
+  const st=progressState, pct=Math.round(100*(st.i+st.frac)/st.n), sec=Math.round((Date.now()-progressStart)/1000);
+  const el=sec>=60?Math.floor(sec/60)+'m '+(sec%60)+'s':sec+'s';
+  p.style.display='';
+  p.innerHTML='<div style="display:flex;justify-content:space-between;gap:10px"><span><b>Site '+(st.i+1)+' of '+st.n+'</b> · '+st.step+'</span><span style="white-space:nowrap"><b>'+pct+'%</b> · '+el+' elapsed</span></div>'
+    +'<div style="height:10px;background:#dbeafe;border-radius:5px;overflow:hidden;margin-top:6px"><div style="height:100%;width:'+Math.max(2,pct)+'%;background-color:#2563eb;background-image:linear-gradient(45deg,rgba(255,255,255,.22) 25%,transparent 25%,transparent 50%,rgba(255,255,255,.22) 50%,rgba(255,255,255,.22) 75%,transparent 75%);background-size:28px 28px;animation:pbarMove 1s linear infinite;transition:width .4s"></div></div>'
+    +(progressEstimate?'<div style="font-size:12px;color:#475569;margin-top:4px">'+esc(progressEstimate)+'</div>':''); }
 function estimateText(n, crawls, snapshots, psi){
   const lo=crawls*2+snapshots*(psi?0.5:0.2), hi=crawls*4+snapshots*(psi?1:0.4);
-  return 'Estimated time: '+(crawls?'~2–4 min per full-site crawl':'')+(crawls&&snapshots?', ':'')+(snapshots?'~'+(psi?'30–60 s':'10–25 s')+' per homepage snapshot':'')
+  return 'Estimated time: '+(crawls?'~2–4 min per full-site crawl (first '+FIRST_PASS_PAGES+' pages)':'')+(crawls&&snapshots?', ':'')+(snapshots?'~'+(psi?'30–60 s':'10–25 s')+' per homepage snapshot':'')
     +(n>1?' — about '+Math.max(1,Math.round(lo))+'–'+Math.max(1,Math.ceil(hi))+' min in total.':'.');
 }
 function onCompareChange(){
@@ -339,9 +354,9 @@ function onCompareChange(){
     : 'Comparing competitors? Tick <strong>Compare</strong> above, then enter your client first and each competitor on its own line — the report opens with a ranked side-by-side comparison. Leave it unchecked to get separate reports for each site.';
   if(typeof reports!=='undefined'&&reports.length) renderResults();
 }
-function beginRun(){
+function beginRun(keepCache){
   const eb=document.getElementById('errorBox'); eb.style.display='none';
-  scanning=true; resetting=false; scanCtrl=new AbortController(); SEO.setAbort(scanCtrl);
+  scanning=true; resetting=false; scanCtrl=new AbortController(); SEO.setAbort(scanCtrl, keepCache); progressStart=Date.now();
   document.getElementById('scanBtn').disabled=true; document.getElementById('crawlBtn').disabled=true;
   document.getElementById('resetBtn').style.display='none';
   const stopBtn=document.getElementById('stopBtn'); stopBtn.style.display=''; stopBtn.disabled=false; stopBtn.textContent='Stop';
@@ -360,18 +375,18 @@ function endRun(){
 // One homepage snapshot: the page's checks + site files + sitemap summary (+ PageSpeed).
 async function snapshotOne(url, i, n, psi){
   try{
-    setProgress(i,n,'fetching homepage · '+esc(url));
+    setProgress(i,n,'fetching homepage · '+esc(url),0.05);
     try{ await SEO.loadIndustry(industryOf()); }catch(e){}
     const r=await auditOne(url);
     if(scanCtrl.signal.aborted) return null;
-    setProgress(i,n,'checking crawlability & AI readiness');
+    setProgress(i,n,'checking crawlability & AI readiness',0.25);
     try{ await addAux(r); }catch(e){}
-    setProgress(i,n,'reading the sitemap');
+    setProgress(i,n,'reading the sitemap',0.4);
     try{ r.sitemap=await SEO.sitemapSummary(r.origin||r.url, { primaryCity:r.primaryCity }); }catch(e){}
-    setProgress(i,n,'measuring images & scripts');
+    setProgress(i,n,'measuring images & scripts',0.55);
     try{ await SEO.measureAssets([r], 120); }catch(e){}
     if(scanCtrl.signal.aborted) return null;
-    if(psi.on){ setProgress(i,n,'PageSpeed (3 runs × mobile + desktop)…'); try{ await addSpeed(r, psi.key); }catch(e){} }
+    if(psi.on){ setProgress(i,n,'PageSpeed (3 runs × mobile + desktop)…',0.65); try{ await addSpeed(r, psi.key); }catch(e){} }
     r.engine='Homepage snapshot';
     return r;
   }catch(e){
@@ -381,12 +396,16 @@ async function snapshotOne(url, i, n, psi){
   }
 }
 const PHASE_TEXT={ discovering:'finding pages (sitemap + links)', links:'checking links', pagespeed:'PageSpeed (3 runs × mobile + desktop on 3 key pages)…', scoring:'scoring' };
-async function crawlOne(root, i, n, psi){
+const PHASE_FRAC={ discovering:0.02, links:0.82, pagespeed:0.87, scoring:0.96 }; // crawling pages fills 3%–80%
+// A crawl audits the first 100 pages; a capped site gets a "Continue crawl" button that resumes up to 500.
+const FIRST_PASS_PAGES=100, MAX_PAGES=500;
+async function crawlOne(root, i, n, psi, more){
+  more=more||{};
   try{
-    return await crawlSite(root,{ max:500, concurrency:6, render:(window.__RENDER?renderPage:null), speed:psi.on, psiKey:psi.key, industry:industryOf(),
+    return await crawlSite(root,{ max:more.max||FIRST_PASS_PAGES, resume:!!more.resume, concurrency:6, render:(window.__RENDER?renderPage:null), speed:psi.on, psiKey:psi.key, industry:industryOf(),
       places:(q,o)=>fetch('/api/places?q='+encodeURIComponent(q||'')+'&phone='+encodeURIComponent((o&&o.phone)||'')+'&address='+encodeURIComponent((o&&o.address)||'')).then(r=>r.ok?r.json():null).catch(()=>null),
-      onPhase:(ph)=>{ if(PHASE_TEXT[ph]) setProgress(i,n,PHASE_TEXT[ph]); },
-      onProgress:(d,t)=>setProgress(i,n,'crawling pages ('+d+'/'+t+')') });
+      onPhase:(ph)=>{ if(PHASE_TEXT[ph]) setProgress(i,n,PHASE_TEXT[ph],PHASE_FRAC[ph]); },
+      onProgress:(d,t)=>setProgress(i,n,'crawling pages ('+d+'/'+t+')',0.03+0.77*(t?d/t:0)) });
   }catch(e){ return { root, error:(e&&e.message)||'crawl failed' }; }
 }
 async function runScan(){
@@ -436,6 +455,25 @@ async function runCrawl(){
     }
   } finally { endRun(); }
 }
+// Resume a capped crawl up to MAX_PAGES. Pages already fetched are reused from the engine's crawl cache, so only the
+// new pages are fetched (the cache is the last crawl's — a site crawled earlier in a compare is fetched again).
+async function continueCrawl(k){
+  if(scanning) return;
+  const prev=siteResults[k]; if(!prev||!prev.root) return;
+  const psi=psiSettings();
+  beginRun(true); progressEstimate='Continuing up to '+MAX_PAGES+' pages — the '+((prev.coverage||{}).audited||0)+' already audited are reused. A large site can take 5–15 min.';
+  document.getElementById('progress').scrollIntoView({behavior:'smooth',block:'nearest'});
+  try{
+    const res=await crawlOne(prev.root, k, siteResults.length, psi, { max:MAX_PAGES, resume:true });
+    if(res&&!res.error) siteResults[k]=res;
+  } finally { endRun(); }
+}
+function continueBtnHTML(res,k){
+  const c=res&&!res.error&&res.coverage; if(!c||!c.capped||c.cap>=MAX_PAGES) return '';
+  return '<div style="margin:0 0 14px;padding:12px 14px;border:1px solid #bbf7d0;background:#f0fdf4;border-radius:8px;display:flex;flex-wrap:wrap;align-items:center;gap:10px">'
+    +'<span style="flex:1;min-width:220px;font-size:14px;color:#14532d">The first <b>'+c.cap+'</b> pages were audited — this site has more.</span>'
+    +'<button class="primaryDark" onclick="continueCrawl('+k+')"'+(scanning?' disabled':'')+'>Continue crawl (up to '+MAX_PAGES+' pages)</button></div>';
+}
 // Compare with a full-site crawl of every site — slower, but the comparison that sells.
 async function runDeepCompare(list){
   const psi=psiSettings();
@@ -464,10 +502,10 @@ function renderSiteResults(){
   if(!siteResults.length){ out.innerHTML=''; updateLeadBox(); return; }
   const unlocked=isUnlocked(), multi=siteResults.length>1;
   let html=multi?'<div style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:20px;margin-bottom:14px">'+SEO.siteComparisonHTML(siteResults)+'</div>':'';
-  siteResults.forEach(res=>{
-    html+= unlocked && res && !res.error
+  siteResults.forEach((res,k)=>{
+    html+= continueBtnHTML(res,k) + (unlocked && res && !res.error
       ? '<div style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:20px;margin-bottom:14px">'+siteReportHTML(res)+'</div>'
-      : siteSummaryCard(res);
+      : siteSummaryCard(res));
   });
   if(unlocked && siteResults.some(r=>r&&!r.error)) html+='<div style="margin:0 0 16px"><button class="primaryDark" onclick="printSiteReport()">🖨 Print full-site report'+(multi?'s':'')+'</button></div>';
   out.innerHTML=html; updateLeadBox();
